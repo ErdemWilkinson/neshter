@@ -127,3 +127,82 @@ def test_license_from_readme_and_config(tmp_path, tiny_model_dir):
     (tmp_path / "m/README.md").write_text("---\nlanguage: tr\nlicense: apache-2.0\n---\n# x\n")
     lm = load_model(tmp_path / "m", device="cpu", dtype=torch.float32)
     assert lm.license == "apache-2.0"
+
+
+# --- Fix wave: C1 (Ollama blob), I7 (cihaz politikası), Minor 13/17 ---------------------------------
+
+
+def test_suffixless_gguf_blob_routes_to_gguf_loader(tmp_path, monkeypatch):
+    blob = tmp_path / "blobs" / ("sha256-" + "a" * 64)
+    blob.parent.mkdir()
+    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)  # Ollama blob: uzantı yok
+    seen = {}
+
+    def boom(*args, **kwargs):
+        seen["args"], seen["kwargs"] = args, kwargs
+        raise NotImplementedError("not supported")
+
+    monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", boom)
+    with pytest.raises(UnsupportedArchitecture, match="GGUF"):
+        load_model(blob, device="cpu")
+    assert seen["args"] == (blob.parent,)
+    assert seen["kwargs"]["gguf_file"] == blob.name
+    assert seen["kwargs"]["trust_remote_code"] is False
+
+
+def test_suffixless_non_gguf_file_still_unsupported(tmp_path):
+    f = tmp_path / ("sha256-" + "b" * 64)
+    f.write_bytes(b"PK\x03\x04 bir zip")
+    with pytest.raises(UnsupportedArchitecture, match="desteklenmiyor"):
+        load_model(f, device="cpu")
+
+
+def test_is_gguf_magic(tmp_path):
+    (tmp_path / "a").write_bytes(b"GGUFxxxx")
+    (tmp_path / "b").write_bytes(b"GGU")
+    assert loader.is_gguf(tmp_path / "a")
+    assert not loader.is_gguf(tmp_path / "b") and not loader.is_gguf(tmp_path / "yok")
+
+
+def test_display_name_override(tiny_model_dir):
+    lm = load_model(tiny_model_dir, device="cpu", dtype=torch.float32, name="qwen2.5:7b")
+    assert lm.name == "qwen2.5:7b"
+
+
+def test_default_dtype_is_bf16(tiny_model_dir):
+    lm = load_model(tiny_model_dir, device="cpu")
+    assert next(lm.model.parameters()).dtype == torch.bfloat16
+    assert lm.device_note is None
+
+
+def test_auto_device_stays_on_cpu_when_vram_too_small(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (1000, 8 * 1024**3))
+    lm = load_model(tiny_model_dir, device="auto", dtype=torch.float32)
+    assert next(lm.model.parameters()).device.type == "cpu"
+    assert lm.device_note == loader.GPU_FALLBACK_NOTE
+
+
+def test_auto_device_picks_cuda_when_it_fits(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (8 * 1024**3, 8 * 1024**3))
+    seen = []
+    monkeypatch.setattr(loader, "_pick_device", lambda m, d, _orig=loader._pick_device: seen.append(_orig(m, d)) or ("cpu", None))
+    load_model(tiny_model_dir, device="auto", dtype=torch.float32)
+    assert seen == [("cuda", None)]
+
+
+def test_folder_without_safetensors_is_rejected(tmp_path, tiny_model_dir):
+    ref = load_model(tiny_model_dir, device="cpu", dtype=torch.float32)
+    m = tmp_path / "m"
+    m.mkdir()
+    for name in ("config.json", "tokenizer.json", "tokenizer_config.json"):
+        if (tiny_model_dir / name).exists():
+            shutil.copy(tiny_model_dir / name, m)
+    torch.save(ref.model.state_dict(), m / "pytorch_model.bin")
+    with pytest.raises(UnsupportedArchitecture, match="safetensors"):
+        load_model(m, device="cpu", dtype=torch.float32)
+
+
+def test_read_license_is_public():
+    assert loader.read_license is loader._read_license

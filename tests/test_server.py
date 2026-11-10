@@ -58,7 +58,8 @@ def ready(tiny_model_dir):
     """Tiny model yüklenmiş sunucu istemcisi (modül boyunca paylaşılır)."""
     c = _make()
     a = {"X-Neshter-Token": TOKEN}
-    job = c.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=a).json()["job_id"]
+    body = {"path": str(tiny_model_dir), "dtype": "float32"}  # testler float32 (kural); varsayılan bf16
+    job = c.post("/api/session/load", json=body, headers=a).json()["job_id"]
     wait_done(c, a, job)
     return c, a
 
@@ -640,3 +641,48 @@ def test_cancel_finished_job_is_noop_and_unknown_raises():
         jm.status("yok")
     with pytest.raises(KeyError):
         jm.cancel("yok")
+
+
+# --- Fix wave: yükleme (C1 ad, I7 dtype, Minor 6/12) ---------------------------------------------
+
+
+def test_load_defaults_to_bf16_and_accepts_name(client, auth, tiny_model_dir):
+    body = {"path": str(tiny_model_dir), "name": "qwen2.5:7b"}
+    st = wait_done(client, auth, client.post("/api/session/load", json=body, headers=auth).json()["job_id"])
+    assert st["result"]["name"] == "qwen2.5:7b"
+    assert st["result"]["device"] == "cpu" and st["result"]["device_note"] is None
+    import torch
+
+    assert next(client.app.state.session.lm.model.parameters()).dtype == torch.bfloat16
+
+
+def test_load_rejects_unknown_dtype(client, auth, tiny_model_dir):
+    body = {"path": str(tiny_model_dir), "dtype": "int8"}
+    assert client.post("/api/session/load", json=body, headers=auth).status_code == 422
+
+
+def test_cancel_during_load_leaves_session_empty(client, auth, lm, monkeypatch, tiny_model_dir):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_load(path, dtype, name):
+        entered.set()
+        assert release.wait(10)
+        return lm
+
+    monkeypatch.setattr(app_module, "_load", slow_load)
+    job = client.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=auth).json()["job_id"]
+    assert entered.wait(10)
+    client.post(f"/api/jobs/{job}/cancel", headers=auth)
+    release.set()
+    wait_done(client, auth, job, expect="cancelled")
+    assert client.app.state.session.lm is None
+
+
+def test_unexpected_load_error_is_wrapped_in_turkish(client, auth, monkeypatch, tiny_model_dir):
+    def bad(*a, **kw):
+        raise KeyError("model.layers.0.weight")
+
+    monkeypatch.setattr(app_module, "load_model", bad)
+    job = client.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=auth).json()["job_id"]
+    st = wait_done(client, auth, job, expect="error")
+    assert st["error"].startswith("Model yüklenemedi: KeyError")
