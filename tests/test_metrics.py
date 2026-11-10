@@ -384,3 +384,76 @@ def test_effect_reports_progress_and_cancels(lm):
     ev.set()
     with pytest.raises(Cancelled):
         m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, cancel=ev)
+
+
+# --- Final fix wave I8: KL istekleri yığınlanır (sola dolgu + dikkat maskesi), değerler aynı kalır -----------
+
+_MIXED_PROMPTS = [
+    "a",  # last_k'dan kısa
+    "merhaba dünya",
+    "the quick brown fox jumps over the lazy dog " * 6,
+    "dikkat kafaları",
+    "kediler çatıda uyuyor ve köpekler bahçede oynuyor, " * 3,
+    "x y",
+    "she sells sea shells by the sea shore",
+    "İstanbul'da yağmur yağıyor, şemsiyemi unuttum " * 4,
+    "bir iki üç dört beş altı yedi sekiz dokuz on",  # 9. istek: ikinci yığın
+    "hello",
+]
+
+
+def _unbatched_reference_kl(lm, prompts, interventions, last_k):
+    """Bağımsız başvuru: istek başına tek, dolgusuz ileri geçiş (eski davranış)."""
+    out = []
+    for p in prompts:
+        enc = lm.tokenizer(p, return_tensors="pt")
+        with torch.no_grad():
+            lp = lm.model(**enc, use_cache=False).logits[0, -last_k:].float().log_softmax(-1)
+            with apply(lm, interventions):
+                lq = lm.model(**enc, use_cache=False).logits[0, -last_k:].float().log_softmax(-1)
+        out.append((lp.exp() * (lp - lq)).sum(-1).mean().item())
+    return out
+
+
+@pytest.mark.parametrize("last_k", [16, 1, 4])
+def test_kl_effect_batched_matches_unbatched_reference(lm, last_k):
+    from neshter.interventions import DirectionAblation
+
+    g = torch.Generator().manual_seed(3)
+    for ivs in ([HeadAblation(0, 1)], [HeadAblation(1, 2), DirectionAblation(torch.randn(64, generator=g))]):
+        got = kl_effect(lm, _MIXED_PROMPTS, ivs, last_k=last_k)
+        ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, ivs, last_k)
+        assert len(got) == len(ref) and all(r > 0 for r in ref)
+        for a, b in zip(got, ref):
+            assert a == pytest.approx(b, abs=1e-5, rel=1e-4)
+
+
+def test_recipe_effect_batched_matches_unbatched_reference(lm):
+    heads = [HeadAblation(0, 1)]
+    r = m.recipe_effect(lm, heads, _MIXED_PROMPTS, n_random=3, seed=5)
+    ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, heads, 16)
+    assert r.kl == pytest.approx(sum(ref) / len(ref), abs=1e-5)
+    rng, gen = random.Random(5), torch.Generator().manual_seed(5)
+    for got in r.random_kls:
+        control, _ = m.random_control(lm, heads, rng, gen)
+        ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, control, 16)
+        assert got == pytest.approx(sum(ref) / len(ref), abs=1e-5)
+
+
+def test_kl_forward_passes_are_batched(lm):
+    calls = []
+    h = lm.model.register_forward_pre_hook(lambda mod, args, kwargs: calls.append(kwargs["input_ids"].shape[0]), with_kwargs=True)
+    try:
+        kl_effect(lm, _MIXED_PROMPTS, [HeadAblation(0, 1)])
+    finally:
+        h.remove()
+    # 10 istek, yığın 8: orijinal 2 + müdahaleli 2 geçiş (eskiden 10 + 10)
+    assert calls == [8, 2, 8, 2]
+
+
+def test_kl_effect_batched_matches_unbatched_reference_gemma2(gemma_lm):
+    ivs = [HeadAblation(0, 1), HeadAblation(1, 3)]
+    got = kl_effect(gemma_lm, _MIXED_PROMPTS, ivs)
+    ref = _unbatched_reference_kl(gemma_lm, _MIXED_PROMPTS, ivs, 16)
+    for a, b in zip(got, ref):
+        assert a == pytest.approx(b, abs=1e-5, rel=1e-4)
