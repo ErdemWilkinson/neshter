@@ -7,6 +7,8 @@ Gömülen model, kancalı modelle (neshter.interventions.apply) birebir aynı da
     rezidüele yazan o_proj ve down_proj için W ← W − Q (Qᵀ W) (varsa bias da: b ← b − Q (Qᵀ b)).
     Yazıcı/taban listesi kancayla aynıdır (interventions.writer_bases). Rezidüel girdisi zaten
     span(R)'ye dik olduğundan katman çıktısı da diktir → kanca ile aynı; yön sırası önemsiz.
+    gemma2: o_proj/down_proj için taban S = direction_basis([γ ⊙ r_i]) (γ = 1 + post-norm ağırlığı);
+    W ← W − S (Sᵀ W) post-norm çıktısını her r_i'ye dik yapar (rms skaler) → yine kanca ile aynı.
 Kaynak modelin dosyalarına asla yazılmaz.
 """
 
@@ -107,12 +109,6 @@ def bake(
     _validate(lm, interventions, None, "zero", None)
     model, arch = lm.model, lm.arch
     directions = [iv.direction for iv in interventions if isinstance(iv, DirectionAblation)]
-    if directions and arch.family == "gemma2":
-        raise NotImplementedError(
-            "gemma2 için yön silme ağırlıklara gömülemiyor: o_proj/down_proj ile rezidüel toplama "
-            "arasındaki ek normlar (post-attention/post-feedforward) yüzünden ağırlık dikleştirmesi "
-            "kanca ile aynı sonucu vermez. Head susturma desteklenir."
-        )
 
     originals: dict[int, tuple[nn.Parameter, torch.Tensor]] = {}
 

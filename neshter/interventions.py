@@ -4,11 +4,17 @@ Bu modüldeki matematik, kayıt (export) aşamasında ağırlıklara işlenecek 
   - HeadAblation: o_proj girdisinin ilgili head dilimi 0 (ya da ortalama) -> o_proj sütunlarını sıfırlamaya denk.
   - DirectionAblation: tüm yönler TEK izdüşümle silinir. Q = direction_basis(r_1..r_k), yönlerin
     gerdiği uzayın dik birim tabanıdır (SVD; kopya/bağımlı yönler tabanı büyütmez). Rezidüel akıma
-    YAZAN her modülün çıktısında x <- x - (x Q) Q^T: embed, her katmanda o_proj ve down_proj
-    (gemma2: post_attention_layernorm ve post_feedforward_layernorm). Böylece katman içi ara
-    rezidüel (MLP girdisi) dahil rezidüel akım her noktada HER r_i'ye diktir; yönlerin sırası önemsiz
+    YAZAN her modülün çıktısında x <- x - (x S) S^T: embed, her katmanda o_proj ve down_proj
+    (her aile için aynı modüller; taban seçimi writer_bases). Böylece katman içi ara rezidüel
+    (MLP girdisi) dahil rezidüel akım her noktada HER r_i'ye diktir; yönlerin sırası önemsiz
     (eski "liste sırasında sıralı bileşim" kuralının yerini alır: ilintili yönlerde sıralı izdüşüm
     önceki yönü geri getirebiliyordu). Sonuç ağırlık dikleştirmesiyle birebir aynıdır.
+    gemma2: o_proj/down_proj çıktısı rezidüele γ ⊙ o / rms(o) olarak eklenir (post-norm,
+    γ = 1 + weight, float32). rᵀ(γ ⊙ v) = (γ ⊙ r)ᵀ v ve rms(o) > 0 skaler olduğundan
+    çıktı ⟂ r_i ⇔ o ⟂ γ ⊙ r_i (eps ve rms ne olursa olsun, tam). Bu yüzden o_proj/down_proj için
+    taban S = direction_basis([γ ⊙ r_i]) kullanılır (post-attention / post-feedforward normunun γ'sı);
+    gömme için düz Q (embed_scale skalerdir). Norm, izdüşülmüş vektörün rms'ini hesaplar, böylece
+    kanca ağırlık dikleştirmesiyle birebir aynıdır.
     Son norm çıktısına dokunulmaz.
 """
 
@@ -28,13 +34,12 @@ from neshter.loader import LoadedModel
 
 
 def residual_writers(model, family: str) -> list[nn.Module]:
-    """Çıktısı doğrudan rezidüel akıma eklenen modüller (yön silme kancalarının yeri)."""
+    """Çıktısı rezidüel akıma yazan modüller (yön silme kancalarının yeri), her aile için
+    [embed, o_proj_0, down_proj_0, ...]. gemma2'de çıktı rezidüele post-norm üzerinden gider;
+    bunu writer_bases γ-ölçekli tabanla hesaba katar. `family` imza uyumu için tutulur."""
     mods: list[nn.Module] = [embed(model)]
-    for i, layer in enumerate(decoder_layers(model)):
-        if family == "gemma2":
-            mods += [layer.post_attention_layernorm, layer.post_feedforward_layernorm]
-        else:
-            mods += [o_proj(model, i), down_proj(model, i)]
+    for i in range(len(decoder_layers(model))):
+        mods += [o_proj(model, i), down_proj(model, i)]
     return mods
 
 
@@ -70,16 +75,35 @@ def direction_basis(directions: Sequence[torch.Tensor], rtol: float = 1e-6) -> t
     return U[:, keep].to(torch.float32).contiguous()
 
 
+def _gamma(norm: nn.Module) -> torch.Tensor:
+    """Gemma2RMSNorm çarpanı: γ = 1 + weight (float32, transformers Gemma2RMSNorm.forward ile aynı)."""
+    return 1.0 + norm.weight.detach().to(device="cpu", dtype=torch.float32)
+
+
 def writer_bases(
     model, family: str, directions: Sequence[torch.Tensor]
 ) -> list[tuple[nn.Module, torch.Tensor]]:
     """residual_writers(model, family) içindeki her modül için (modül, taban) çiftleri.
 
     Kanca (apply) ve gömme (export.bake) aynı listeyi kullanır; böylece ikisi birebir eşdeğer kalır.
-    Şimdilik her modül aynı direction_basis(directions) tabanını alır.
+    llama/qwen2: her modül Q = direction_basis(directions) alır. gemma2: gömme Q alır; katman ℓ'de
+    o_proj S = direction_basis([γ_attn,ℓ ⊙ r_i]), down_proj S = direction_basis([γ_mlp,ℓ ⊙ r_i])
+    (γ = 1 + post_attention_layernorm / post_feedforward_layernorm ağırlığı). γ'nın sıfır olduğu
+    eksenler SVD rank düşüşüyle ele alınır (taban k' = 0 sütun olabilir).
     """
     basis = direction_basis(directions)
-    return [(module, basis) for module in residual_writers(model, family)]
+    if family != "gemma2":
+        return [(module, basis) for module in residual_writers(model, family)]
+    rs = [torch.as_tensor(r).detach().to(device="cpu", dtype=torch.float32) for r in directions]
+    out: list[tuple[nn.Module, torch.Tensor]] = [(embed(model), basis)]
+    for i, layer in enumerate(decoder_layers(model)):
+        for module, norm in (
+            (o_proj(model, i), layer.post_attention_layernorm),
+            (down_proj(model, i), layer.post_feedforward_layernorm),
+        ):
+            gamma = _gamma(norm)
+            out.append((module, direction_basis([gamma * r for r in rs])))
+    return out
 
 
 @dataclass(frozen=True)
