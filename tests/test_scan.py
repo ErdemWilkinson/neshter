@@ -1,10 +1,14 @@
 import json
 
+import gguf
+
 from neshter.hardware import SystemInfo, system_info
 from neshter.scan import default_roots, scan_all, scan_hf_cache, scan_lmstudio, scan_ollama
 
+DIGEST = "ab" * 32
 
-def _make_ollama(root, name="qwen2.5", tag="7b", digest="abc", blob_bytes=12):
+
+def _make_ollama(root, name="qwen2.5", tag="7b", digest=DIGEST, blob_bytes=12):
     mdir = root / "manifests/registry.ollama.ai/library" / name
     mdir.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -24,12 +28,12 @@ def test_scan_ollama(tmp_path):
     [e] = scan_ollama(tmp_path)
     assert (e.name, e.fmt, e.size_bytes) == ("qwen2.5:7b", "gguf", 12)
     assert e.source == "ollama"
-    assert e.path == tmp_path / "blobs" / "sha256-abc"
+    assert e.path == tmp_path / "blobs" / ("sha256-" + DIGEST)
 
 
 def test_scan_ollama_skips_missing_blob(tmp_path):
     _make_ollama(tmp_path)
-    (tmp_path / "blobs" / "sha256-abc").unlink()
+    (tmp_path / "blobs" / ("sha256-" + DIGEST)).unlink()
     assert scan_ollama(tmp_path) == []
 
 
@@ -111,3 +115,62 @@ def test_hf_hub_cache_env_takes_precedence(monkeypatch, tmp_path):
     assert default_roots()["huggingface"] == [tmp_path / "hubcache"]
     monkeypatch.delenv("HF_HUB_CACHE")
     assert default_roots()["huggingface"] == [tmp_path / "home" / "hub"]
+
+
+def test_scan_entries_carry_license(tmp_path):
+    snap = tmp_path / "hf" / "models--Qwen--Qwen2.5-0.5B" / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"z" * 20)
+    (snap / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
+    assert [e.license for e in scan_hf_cache(tmp_path / "hf")] == ["apache-2.0"]
+    d = tmp_path / "lm" / "pub" / "Foo-GGUF"
+    d.mkdir(parents=True)
+    w = gguf.GGUFWriter(str(d / "foo.gguf"), "qwen2")
+    w.add_string("general.license", "mit")
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    assert [e.license for e in scan_lmstudio(tmp_path / "lm")] == ["mit"]
+
+
+def test_scan_hf_license_file_fallback(tmp_path):
+    snap = tmp_path / "models--a--b" / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "w.safetensors").write_bytes(b"z")
+    (snap / "LICENSE").write_text("Gemma Terms of Use", encoding="utf-8")
+    assert [e.license for e in scan_hf_cache(tmp_path)] == ["gemma"]
+
+
+def test_scan_ollama_license_from_gguf_then_layer(tmp_path):
+    lic_digest = "cd" * 32
+    _make_ollama(tmp_path)
+    mf = tmp_path / "manifests/registry.ollama.ai/library/qwen2.5/7b"
+    data = json.loads(mf.read_text())
+    data["layers"].append(
+        {"mediaType": "application/vnd.ollama.image.license", "digest": f"sha256:{lic_digest}", "size": 5}
+    )
+    mf.write_text(json.dumps(data))
+    (tmp_path / "blobs" / f"sha256-{lic_digest}").write_text("Qwen RESEARCH LICENSE AGREEMENT", encoding="utf-8")
+    assert [e.license for e in scan_ollama(tmp_path)] == ["qwen-research"]  # blob GGUF değil -> katman metni
+    blob = tmp_path / "blobs" / f"sha256-{DIGEST}"
+    w = gguf.GGUFWriter(str(blob), "qwen2")
+    w.add_string("general.license", "apache-2.0")
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    assert [e.license for e in scan_ollama(tmp_path)] == ["apache-2.0"]  # üst veri kazanır
+
+
+def test_scan_ollama_rejects_invalid_digest(tmp_path):
+    # AS L7: model katmanı digest'i ^sha256:[0-9a-f]{64}$ olmalı; yoksa girdi atlanır (yol kurulmaz).
+    _make_ollama(tmp_path, name="m", tag="ok")
+    (tmp_path / "blobs" / "x").write_bytes(b"gizli")  # '../x' hilesi buna ulaşmaya çalışırdı
+    mdir = tmp_path / "manifests/registry.ollama.ai/library/m"
+    for i, bad in enumerate(("sha256:../x", "sha256:" + "AB" * 32, "sha256:abc", f"sha256:{DIGEST}\n")):
+        layer = {"mediaType": "application/vnd.ollama.image.model", "digest": bad, "size": 1}
+        (mdir / f"bad{i}").write_text(json.dumps({"layers": [layer]}))
+    assert [e.name for e in scan_ollama(tmp_path)] == ["m:ok"]

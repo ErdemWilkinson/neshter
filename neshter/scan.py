@@ -8,7 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-_OLLAMA_MODEL_MEDIA = "application/vnd.ollama.image.model"
+from neshter.licenses import (
+    OLLAMA_MODEL_MEDIA,
+    _gguf_value,
+    folder_license,
+    license_id_from_text,
+    ollama_layer_text,
+    read_gguf_license,
+    valid_digest,
+)
 
 
 @dataclass
@@ -18,6 +26,7 @@ class ModelEntry:
     path: Path
     fmt: Literal["gguf", "safetensors", "pt"]
     size_bytes: int
+    license: str | None = None
 
 
 def scan_ollama(root: Path) -> list[ModelEntry]:
@@ -28,15 +37,19 @@ def scan_ollama(root: Path) -> list[ModelEntry]:
     for manifest in sorted(p for p in lib.glob("*/*") if p.is_file()):
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
-            layer = next(l for l in data["layers"] if l["mediaType"] == _OLLAMA_MODEL_MEDIA)
+            layer = next(l for l in data["layers"] if l["mediaType"] == OLLAMA_MODEL_MEDIA)
             digest = layer["digest"]
-            if not digest.startswith("sha256:"):
+            if not valid_digest(digest):  # AS L7: blob yolu yalnızca doğrulanmış digest'ten kurulur
                 continue
             blob = Path(root) / "blobs" / ("sha256-" + digest.removeprefix("sha256:"))
             size = blob.stat().st_size
         except (OSError, ValueError, KeyError, TypeError, StopIteration, AttributeError):
             continue
-        entries.append(ModelEntry(f"{manifest.parent.name}:{manifest.name}", "ollama", blob, "gguf", size))
+        lid = read_gguf_license(blob)
+        if lid is None:
+            text = ollama_layer_text(Path(root), data)
+            lid = license_id_from_text(text) if text else None
+        entries.append(ModelEntry(f"{manifest.parent.name}:{manifest.name}", "ollama", blob, "gguf", size, lid))
     return entries
 
 
@@ -50,7 +63,7 @@ def scan_lmstudio(root: Path) -> list[ModelEntry]:
             size = f.stat().st_size
         except OSError:
             continue
-        entries.append(ModelEntry(f.stem, "lmstudio", f, "gguf", size))
+        entries.append(ModelEntry(f.stem, "lmstudio", f, "gguf", size, read_gguf_license(f)))
     return entries
 
 
@@ -69,7 +82,7 @@ def scan_hf_cache(root: Path) -> list[ModelEntry]:
                 size = sum(w.stat().st_size for w in weights)
             except OSError:
                 continue
-            entries.append(ModelEntry(name, "huggingface", snap, "safetensors", size))
+            entries.append(ModelEntry(name, "huggingface", snap, "safetensors", size, folder_license(snap)[0]))
     return entries
 
 
@@ -89,11 +102,6 @@ def default_roots() -> dict[str, list[Path]]:
         "lmstudio": [home / ".lmstudio" / "models", home / ".cache" / "lm-studio" / "models"],
         "huggingface": [hf],
     }
-
-
-def _gguf_value(reader, key: str):
-    field = reader.fields.get(key)
-    return None if field is None else field.contents()
 
 
 def model_arch(path: Path, fmt: str) -> dict | None:

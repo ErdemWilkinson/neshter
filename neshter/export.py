@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import date
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
@@ -38,6 +39,7 @@ from neshter.interventions import (
     _validate,
     writer_bases,
 )
+from neshter.licenses import clean_id
 from neshter.loader import LoadedModel, sha256_path
 from neshter.recipe import DirectionOp, HeadOp, Recipe, save_recipe
 
@@ -180,15 +182,70 @@ def _describe(op: HeadOp | DirectionOp) -> str:
     return f"direction ({op.d_model})"
 
 
+GEMMA_NOTICE = "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms"
+_GEMMA_POLICY = "ai.google.dev/gemma/prohibited_use_policy"
+_SAFE_ID = re.compile(r"[^A-Za-z0-9._+\- ]")
+
+
+def _display_license(lm: LoadedModel) -> str | None:
+    """Karta yazılacak lisans kimliği: modelden gelen güvenilmez metin, kısa ve işaretlemeden arındırılmış."""
+    if not lm.license:
+        return None
+    safe = _SAFE_ID.sub("?", clean_id(lm.license))[:64].strip()
+    return safe or None
+
+
+def is_llama3(lm: LoadedModel) -> bool:
+    if lm.arch.family != "llama":
+        return False
+    return (
+        (lm.license or "").startswith("llama3")
+        or re.search(r"llama[-_ ]?3", lm.name, re.IGNORECASE) is not None
+        or getattr(lm.model.config, "vocab_size", None) == 128256
+    )
+
+
+def license_notices(lm: LoadedModel) -> list[str]:
+    """Aileye göre çift dilli lisans/kullanım notları (model kartı satırları)."""
+    lid = _display_license(lm)
+    out: list[str] = []
+    if is_llama3(lm):
+        out.append(
+            "**Lisans / License:** Built with Llama. Llama 3.x topluluk lisansı gereği türetilmiş "
+            "modelin adı \"Llama\" ile başlamalıdır. Under the Llama 3.x Community License, the "
+            "derivative model name must start with \"Llama\"."
+        )
+    if lm.arch.family == "gemma2":
+        out.append(
+            f"**Lisans / License:** {GEMMA_NOTICE}. Kullanım kısıtları / Prohibited Use Policy: {_GEMMA_POLICY}"
+        )
+    if lm.arch.family == "qwen2" and lid != "apache-2.0":
+        out.append(
+            f"**Uyarı / Warning:** Bu Qwen modelinin lisansı Apache-2.0 değil ({lid or 'bilinmiyor'}); "
+            "dağıtmadan önce lisans koşullarını kontrol edin. "
+            f"This Qwen model's license is not Apache-2.0 ({lid or 'unknown'}); "
+            "check the license terms before redistributing."
+        )
+    if lid is None:
+        out.append(
+            "**Uyarı / Warning:** Kaynak modelin lisansı bulunamadı; dağıtmadan önce kontrol edin. "
+            "The source model's license was not found; check it before redistributing."
+        )
+    return out
+
+
 def model_card(
     lm: LoadedModel, recipe: Recipe, summary: Summary | None, safety_ablated: bool
 ) -> str:
     tags = ["neshter"] + (["safety-ablated"] if safety_ablated else [])
-    front = yaml.safe_dump(
-        {"license": lm.license or "other", "base_model": lm.name, "tags": tags},
-        allow_unicode=True,
-        sort_keys=False,
-    )
+    lid = _display_license(lm)
+    meta: dict = {"license": lid or "other"}
+    if lid is None:
+        meta["license_name"] = "unknown"
+    meta |= {"base_model": lm.name, "tags": tags}
+    front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False)
+    n_heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    n_dirs = sum(isinstance(op, DirectionOp) for op in recipe.interventions)
     lines = [
         "---",
         front.rstrip("\n"),
@@ -203,6 +260,9 @@ def model_card(
         "attention heads and/or removing directions from the residual stream. The changes are baked "
         "into the weights.",
         "",
+        f"Modified with Neşter {neshter.__version__} on {date.today().isoformat()}: "
+        f"{n_heads} heads silenced, {n_dirs} directions removed.",
+        "",
     ]
     if safety_ablated:
         lines += [
@@ -211,13 +271,8 @@ def model_card(
             "safety guardrails may be reduced.",
             "",
         ]
-    if lm.arch.family == "llama":
-        lines += [
-            "**Lisans / License:** Llama lisansı, türetilmiş model adlarının \"Llama\" ile "
-            "başlamasını gerektirir. The Llama license requires derivative model names to start "
-            "with \"Llama\".",
-            "",
-        ]
+    for notice in license_notices(lm):
+        lines += [notice, ""]
     lines += ["## Tarif / Recipe", ""]
     lines += [f"- concept: {recipe.concept or '-'}"]
     lines += [f"- method: {recipe.method}"]
@@ -370,6 +425,10 @@ def save_safetensors(
             )
             save_recipe(recipe, tmp / "recipe.nester.json")
             _copy_license_files(Path(lm.source_path), tmp)
+            if lm.license_text and not any(tmp.glob("LICENSE*")):
+                (tmp / "LICENSE").write_text(lm.license_text, encoding="utf-8")
+            if lm.arch.family == "gemma2" and not any(tmp.glob("NOTICE*")):
+                (tmp / "NOTICE").write_text(GEMMA_NOTICE + "\n", encoding="utf-8")
             os.replace(tmp, out_dir)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
