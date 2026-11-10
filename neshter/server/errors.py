@@ -6,6 +6,8 @@ Bu modül `app`'i içe aktarmaz (jobs.py ve app.py ikisi de buradan alır).
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +18,9 @@ from neshter.compare import _is_oom
 from neshter.export import DiskFull, LlamaCppMissing
 from neshter.loader import UnsafeModelFile, UnsupportedArchitecture
 from neshter.progress import Cancelled
+
+
+log = logging.getLogger("neshter.server")
 
 
 class NoModel(Exception):
@@ -97,3 +102,9 @@ def install_handlers(app: FastAPI) -> None:
         return JSONResponse(
             {"detail": jsonable_encoder(exc.errors()), "error_code": "invalid_input"}, status_code=422
         )
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception):
+        # Yığın izi ve istisna metni istemciye gitmez (yol/bilgi sızıntısı); sunucu günlüğüne yazılır.
+        log.error("Beklenmeyen hata: %s %s", request.method, request.url.path, exc_info=exc)
+        return JSONResponse({"detail": "Beklenmeyen hata.", "error_code": "internal"}, status_code=500)

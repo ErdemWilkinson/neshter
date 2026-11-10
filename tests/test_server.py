@@ -147,6 +147,13 @@ def test_every_registered_api_route_is_behind_the_guard(client):
 
     routes = [r for r in client.app.routes if isinstance(r, APIRoute) and r.path.startswith("/api")]
     assert len(routes) >= 15  # bekçi: numaralandırma boş dönmesin
+    # /api altındaki her şey APIRoute olmalı (Mount/WebSocket sessizce numaralandırmadan kaçmasın).
+    api_like = [r for r in client.app.routes if getattr(r, "path", "").startswith("/api")]
+    assert len(api_like) == len(routes)
+    assert not [r for r in client.app.routes if type(r).__name__ == "WebSocketRoute"]
+    # /api dışındakiler açık izin listesinde olmalı: yer tutucu sayfa ya da statik arayüz bağlaması.
+    outside = {(getattr(r, "path", None), getattr(r, "name", None)) for r in client.app.routes if r not in routes}
+    assert outside <= {("/", "placeholder"), ("", "web")}, outside
     paths = {r.path for r in routes}
     assert {"/api/jobs", "/api/session", "/api/system", "/api/export/estimate"} <= paths
     for r in routes:
@@ -1845,9 +1852,10 @@ def test_suite_quick_mode(ready, monkeypatch):
     monkeypatch.setattr(app_module, "_recipe_metrics", _recording_metrics(seen))
     c, a = ready
     body = {"recipe_ops": HEAD_OPS, "target": "code", "quick": True, "max_new_tokens": 200}
-    wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
+    st = wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
     assert seen["cats"] == {"code", "general"} and seen["mnt"] == 64 and seen["n_random"] == 20
     assert seen["target"] == "code"
+    assert st["result"]["quick"] is True
 
 
 def test_suite_quick_without_target_and_small_budget(ready, monkeypatch):
@@ -1866,5 +1874,85 @@ def test_suite_full_mode_is_unchanged(ready, monkeypatch):
     monkeypatch.setattr(app_module, "_recipe_metrics", _recording_metrics(seen))
     c, a = ready
     body = {"recipe_ops": HEAD_OPS, "target": "code", "max_new_tokens": 200}
-    wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
+    st = wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
     assert len(seen["cats"]) > 2 and seen["mnt"] == 200 and seen["n_random"] is DEFAULT_N_RANDOM_FOR_TESTS
+    assert st["result"]["quick"] is False
+
+
+# --- Görev 12, düzeltme turu 1 ------------------------------------------------------------------
+
+
+def test_activity_prompt_char_limit(ready):
+    c, a = ready
+    r = c.post("/api/activity", json={"prompt": "a" * (app_module.MAX_ACTIVITY_CHARS + 1)}, headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    ok = c.post("/api/activity", json={"prompt": "a" * 50}, headers=a)
+    assert ok.status_code == 200
+
+
+def test_activity_token_limit(ready, monkeypatch):
+    c, a = ready
+    assert app_module.MAX_ACTIVITY_TOKENS == 512
+    n = len(c.post("/api/activity", json={"prompt": "merhaba güzel dünya"}, headers=a).json()["tokens"])
+    monkeypatch.setattr(app_module, "MAX_ACTIVITY_TOKENS", n - 1)
+    r = c.post("/api/activity", json={"prompt": "merhaba güzel dünya"}, headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert r.json()["detail"] == f"İstem çok uzun: en fazla {n - 1} token (şu an {n})."
+    monkeypatch.setattr(app_module, "MAX_ACTIVITY_TOKENS", n)  # tam sınırda kabul
+    assert c.post("/api/activity", json={"prompt": "merhaba güzel dünya"}, headers=a).status_code == 200
+
+
+def test_activity_real_token_limit_is_enforced(ready):
+    """Gerçek sınır: karakter sınırının altında ama 512 token'ı aşan istem 422 döner."""
+    c, a = ready
+    prompt = ", ".join(str(i) for i in range(400))  # ~800+ token, ~1900 karakter
+    assert len(prompt) < app_module.MAX_ACTIVITY_CHARS
+    r = c.post("/api/activity", json={"prompt": prompt}, headers=a)
+    assert r.status_code == 422 and "en fazla 512 token" in r.json()["detail"]
+
+
+def _no_drive(monkeypatch):
+    def boom(path):
+        raise FileNotFoundError(3, "The system cannot find the path specified", str(path))
+
+    monkeypatch.setattr(app_module.shutil, "disk_usage", boom)
+
+
+def test_estimate_on_missing_drive_is_422(unlabelled, monkeypatch):
+    c, a = unlabelled
+    _no_drive(monkeypatch)
+    r = c.post("/api/export/estimate", json={"format": "safetensors", "out_dir": "Q:\\x"}, headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert "Hedef klasörün sürücüsü bulunamadı" in r.json()["detail"]
+
+
+def test_export_on_missing_drive_is_422_and_starts_no_job(unlabelled, monkeypatch):
+    c, a = unlabelled
+    before = len(c.get("/api/jobs", headers=a).json())
+    _no_drive(monkeypatch)
+    r = c.post("/api/export", json=_export_body("Q:\\x\\y"), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert "Hedef klasörün sürücüsü bulunamadı" in r.json()["detail"]
+    assert len(c.get("/api/jobs", headers=a).json()) == before
+
+
+def test_free_bytes_uses_nearest_existing_ancestor(tmp_path):
+    assert app_module._free_bytes(str(tmp_path / "a" / "b")) > 0
+
+
+def test_unexpected_exception_is_500_without_leaking(auth, caplog):
+    from fastapi.routing import APIRoute
+
+    app = create_app(TOKEN, PORT, roots={})
+
+    def boom():
+        raise RuntimeError("gizli-yol C:\\Users\\x\\sir")
+
+    app.router.routes.insert(0, APIRoute("/api/boom", boom, methods=["GET"]))
+    c = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", raise_server_exceptions=False)
+    with caplog.at_level("ERROR", logger="neshter.server"):
+        r = c.get("/api/boom", headers=auth)
+    assert r.status_code == 500
+    assert r.json() == {"detail": "Beklenmeyen hata.", "error_code": "internal"}
+    assert "gizli-yol" not in r.text and "Traceback" not in r.text
+    assert any(rec.exc_info and "gizli-yol" in str(rec.exc_info[1]) for rec in caplog.records)  # günlükte var
