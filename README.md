@@ -15,27 +15,37 @@ It is **100% local**: there is no cloud API in it, no account, and **no telemetr
   - **Head ablation:** silence a query attention head (its `o_proj` columns are zeroed).
   - **Direction orthogonalization:** remove a behavior direction from the weights.
 - Both keep tensor shapes, so the result is GGUF compatible. Structural pruning is not in v0.1.
-- The real effect of a cut is measured as KL divergence against a random-head control, with
-  Wilson 95% intervals; an interval that includes zero is reported as "uncertain".
+- **Verified on real weights:** Qwen2 (Qwen2.5-0.5B). Llama and Gemma2 run on tiny random models in
+  the tests.
+- The real effect of a cut is measured as KL divergence against 30 layer-matched random head sets,
+  reported as a percentile and a permutation p-value. Single rates carry Wilson 95% intervals. Test
+  suite differences use McNemar's exact test with Holm adjustment across categories, and are reported
+  as "uncertain" (belirsiz) when p >= 0.05.
+- Suite KL and perplexity are measured through hooks, while the generated answers of direction
+  recipes come from baked, save-rounded weights. So "measure what you ship" holds for the answers,
+  not for those two numbers.
+- On CPUs without native bf16, Neşter computes in float32 when RAM allows. On CPU the default hunt
+  method is `activation_diff` (attribution is the GPU recommendation).
 
 ## Install and run
 
-Neşter is not published on PyPI yet, so run it from a clone of this repository:
+Neşter is not published on PyPI yet, so run it from a clone of this repository, with the locked
+dependency set (`uv.lock`):
 
 ```
 git clone <repo-url> neshter
 cd neshter
-uvx --from . neshter
+uv run --frozen neshter
 ```
 
-or, without cloning, `uvx --from git+<repo-url> neshter`. Do not run a bare `uvx neshter`: until
-the package is published, that name on PyPI is not ours. (Once it is published, `uvx neshter` will
-work too.)
+On Windows you can double-click or run `neshter.bat` in the clone. It runs this checkout with the
+lockfile, and if [uv](https://docs.astral.sh/uv/) is missing it asks (Y/N) before installing it with
+Astral's official installer script (pinned version). Neşter starts a local server and opens your
+browser. Options: `--no-browser`, `--port N`.
 
-On Windows you can double-click or run `neshter.bat` in the clone; it installs
-[uv](https://docs.astral.sh/uv/) if it is missing and then runs this checkout
-(`uvx --from <clone folder> neshter`). Neşter starts a local server and opens your browser.
-Options: `--no-browser`, `--port N`.
+`uvx --from git+<repo-url> neshter` also works, but it is unlocked: dependencies resolve to whatever is
+newest within the allowed ranges, at your own risk. Do not run a bare `uvx neshter`: until the
+package is published, that name on PyPI is not ours.
 
 Apply a shared recipe (`.nester.json`) without the UI:
 
@@ -49,10 +59,13 @@ neshter apply recipe.nester.json path/to/model --out path/to/new_model --format 
 
 ## GGUF and Ollama
 
-GGUF export needs [llama.cpp](https://github.com/ggml-org/llama.cpp) on your machine
-(`convert_hf_to_gguf.py` and `llama-quantize`). Point the `NESHTER_LLAMA_CPP` environment variable at
-its folder, or put `llama-quantize` on your `PATH`. Without it, save as safetensors; the GGUF option
-reports "llama.cpp required".
+GGUF export is **experimental** until it has been tested end-to-end. It needs
+[llama.cpp](https://github.com/ggml-org/llama.cpp) on your machine (`convert_hf_to_gguf.py` and
+`llama-quantize`). Point the `NESHTER_LLAMA_CPP` environment variable at its folder, or put
+`llama-quantize` on your `PATH`. `NESHTER_LLAMA_CPP` must point to a llama.cpp you trust (its Python
+converter runs with your rights). Without it, save as safetensors; the GGUF option reports
+"llama.cpp required". GGUF and Ollama outputs keep the model card, recipe and license files next to
+the `.gguf`.
 
 Importing the saved GGUF into Ollama is optional and **off by default**. When enabled, Neşter runs
 `ollama create` for you.
@@ -60,6 +73,10 @@ Importing the saved GGUF into Ollama is optional and **off by default**. When en
 ## Security model
 
 - The server binds to `127.0.0.1` only. There is no option to listen on other addresses.
+- Every response carries a Content-Security-Policy (`frame-ancestors 'none'`, same-origin only),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
+- The sample model download is pinned to one revision and fetches only config, tokenizer, weight and
+  license files. Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 - A random session token is generated at start and required on every API request
   (`X-Neshter-Token`). It travels in the URL fragment, which browsers never send to a server.
 - `Origin` must be `http://127.0.0.1:<port>` or `http://localhost:<port>` (or absent), and `Host` must
@@ -80,10 +97,12 @@ Neşter has a built-in `refusal` concept. Models saved after cutting it carry th
 behavior is reduced. Use such models responsibly, and respect the license of the base model
 (for example, the Llama license has naming and use-policy requirements for derivatives).
 
-The safety label is best-effort and conservative. In the app it is applied automatically when the
+The safety label is best-effort, meant for honest redistribution, and trivially removable. The base
+model's license and use policy still apply to what you save and share. In the app it is applied automatically when the
 exported recipe contains one of the top 20 heads or a direction (cosine >= 0.99) found by a refusal
-hunt in the current session. The CLI cannot verify what a recipe claims, so it relies on the recipe's
-`concept` being `refusal` or on `neshter apply --label-safety`.
+hunt in the current session. The CLI cannot verify what a shared recipe's directions do, so it relies
+on the recipe's `concept` being `refusal` or on `neshter apply --label-safety`: use `--label-safety`
+whenever you apply a recipe you did not make.
 
 ## Status
 

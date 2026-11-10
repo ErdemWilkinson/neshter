@@ -67,6 +67,10 @@ from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 SAMPLE_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+# Duman testinde doğrulanan anlık görüntü; "main" sessizce değişmesin. README.md, read_license'ın
+# okuduğu lisans ön bilgisini taşır (yoksa Apache örnek "Qwen Apache değil" uyarısı alırdı).
+SAMPLE_REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
+SAMPLE_PATTERNS = ["*.json", "*.safetensors", "*.txt", "LICENSE*", "README.md"]
 _QUANT = {"gguf_q4_k_m": "Q4_K_M", "gguf_q8_0": "Q8_0"}
 
 Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
@@ -275,6 +279,19 @@ def _bad_input():
 # --- Güvenlik ara katmanı (saf ASGI; akışlı yanıtları bozmaz) ------------------------------------
 
 
+# Derlenmiş yerel arayüz için yeterli en dar CSP: satır içi betik yok; stil için 'unsafe-inline' (React stil öznitelikleri).
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+_SECURITY_HEADER_PAIRS = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in SECURITY_HEADERS.items()]
+
+
 class _Guard:
     def __init__(self, app, token: str, port: int) -> None:
         self.app = app
@@ -300,10 +317,20 @@ class _Guard:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         reason = self._deny(scope["path"], headers)
+
+        async def send_with_security_headers(message):
+            if message["type"] == "http.response.start":
+                names = {k for k, _ in message.get("headers", [])}
+                extra = [(k, v) for k, v in _SECURITY_HEADER_PAIRS if k not in names]
+                message = {**message, "headers": [*message.get("headers", []), *extra]}
+            await send(message)
+
         if reason is None:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send_with_security_headers)
         elif scope["type"] == "http":
-            await JSONResponse({"detail": reason, "error_code": "forbidden"}, status_code=403)(scope, receive, send)
+            await JSONResponse({"detail": reason, "error_code": "forbidden"}, status_code=403)(
+                scope, receive, send_with_security_headers
+            )
         else:
             await send({"type": "websocket.close", "code": 1008})
 
@@ -555,7 +582,9 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     return True
 
             report(0.0, "İndirme başlıyor")
-            return {"path": str(snapshot_download(SAMPLE_REPO, tqdm_class=Bar))}
+            return {"path": str(snapshot_download(
+                    SAMPLE_REPO, revision=SAMPLE_REVISION, allow_patterns=SAMPLE_PATTERNS, tqdm_class=Bar
+                ))}
 
         return start(fn, "download")
 

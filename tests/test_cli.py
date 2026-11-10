@@ -248,17 +248,14 @@ def test_serve_tokens_are_fresh(served):
 # --- Fix wave: I9 (tedarik zinciri) ---------------------------------------------------------------
 
 
-def test_launcher_runs_checkout_not_pypi_and_deps_are_bounded():
-    import re
-    import tomllib
-
-    root = Path(__file__).resolve().parent.parent
-    bat = (root / "neshter.bat").read_text(encoding="utf-8")
-    assert 'uvx --from "%~dp0." neshter %*' in bat
-    assert not re.search(r"^\s*uvx neshter", bat, re.MULTILINE)
-    deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    for d in deps:
-        assert "<" in d, f"üst sınır yok: {d}"
+def test_launcher_uses_lockfile_and_asks_before_installing_uv():
+    raw = (ROOT / "neshter.bat").read_bytes()
+    bat = raw.decode("ascii")  # yalnızca ASCII (cmd kod sayfasından bağımsız)
+    assert raw.count(b"\r\n") == raw.count(b"\n") > 0  # CRLF
+    assert 'uv run --project "%~dp0." --frozen neshter %*' in bat and "uvx" not in bat
+    assert "choice /M" in bat and re.search(r"https://astral\.sh/uv/\d+\.\d+\.\d+/install\.ps1", bat)
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert all("<" in d for d in deps) and "jinja2>=3.1.6,<4" in deps
     assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps
 
 

@@ -574,12 +574,13 @@ wheels = [
 
 [[package]]
 name = "neshter"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "gguf" },
     { name = "huggingface-hub" },
+    { name = "jinja2" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "psutil" },
@@ -604,6 +605,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "gguf", specifier = ">=0.10,<1" },
     { name = "huggingface-hub", specifier = ">=0.34,<3" },
+    { name = "jinja2", specifier = ">=3.1.6,<4" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "psutil", specifier = ">=5.9,<8" },
     { name = "pydantic", specifier = ">=2.7,<3" },
