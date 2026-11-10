@@ -18,6 +18,8 @@ from neshter.concepts.hunt import (
     layer_scores,
 )
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset, split
+from neshter.interventions import HeadAblation, apply
+from neshter.metrics import kl_effect, load_neutral, wilson
 from neshter.progress import Cancelled
 
 
@@ -57,6 +59,8 @@ def test_hunt_shapes(lm):
         assert len(r.layer_scores) == 3 and max(r.layer_scores) == pytest.approx(1)
         assert all(0 <= l < 2 and 0 <= h < 4 for l, h, _ in r.heads)
         assert (r.direction is not None) == (method == "direction")
+        assert r.ref_layer == 1 and r.layer_scores[r.ref_layer] == pytest.approx(1)
+        assert 0 <= r.val_accuracy <= 1 and r.val_n > 0 and 0 <= r.val_correct <= r.val_n
 
 
 # --- Ek testler -------------------------------------------------------------------------------
@@ -238,8 +242,9 @@ def test_hunt_all_presets_all_methods(lm, cid):
         assert len(r.heads) == 8 and len({(l, h) for l, h, _ in r.heads}) == 8
         scores = [s for _, _, s in r.heads]
         assert scores == sorted(scores, reverse=True) and all(type(s) is float for s in scores)
-        assert -1 <= r.val_consistency <= 1
-        ref = max(range(3), key=lambda i: r.layer_scores[i])
+        assert not hasattr(r, "val_consistency") and 0 <= r.val_accuracy <= 1
+        ref = r.ref_layer  # pencere ref'i 1'e zorlar; en büyük d pencerenin dışında olabilir
+        assert r.layer_scores[ref] == pytest.approx(1.0)
         if method == "direction":
             assert r.direction_layer == ref and r.direction.shape == (64,)
             assert r.direction.dtype == torch.float32 and r.direction.device.type == "cpu"
@@ -338,3 +343,126 @@ def test_batched_activation_diff_matches_unbatched(lm, monkeypatch):
     monkeypatch.setattr(hunt_mod, "HUNT_BATCH", 1)
     single = activation_diff(lm, c)
     assert torch.allclose(batched, single, atol=1e-4)
+
+
+# --- v0.1.1 Task 3: katman penceresi, doğrulama doğruluğu (Wilson), ölçülmüş ilk 20 --------------
+
+
+def test_candidate_layers():
+    assert list(hunt_mod.candidate_layers(24)) == list(range(1, 20))
+    assert list(hunt_mod.candidate_layers(2)) == [1]
+    assert list(hunt_mod.candidate_layers(1)) == [1]
+
+
+def test_hunt_ref_layer_stays_in_window(lm, monkeypatch):
+    monkeypatch.setattr(hunt_mod, "_cohen_d", lambda *a: torch.tensor([0.0, 0.5, 9.0]))
+    assert hunt_mod.hunt(lm, load_preset("code"), "activation_diff").ref_layer == 1
+
+
+def test_hunt_raises_when_only_out_of_window_layers_separate(lm, monkeypatch):
+    monkeypatch.setattr(hunt_mod, "_cohen_d", lambda *a: torch.tensor([0.0, -0.5, 9.0]))
+    with pytest.raises(ValueError, match="ayrışmıyor"):
+        hunt_mod.hunt(lm, load_preset("code"), "activation_diff")
+
+
+def test_val_accuracy_counts():
+    e = torch.eye(4)[0]
+    tp, tn = torch.stack([e, e]), torch.stack([-e, -e])  # eşik 0
+    vp, vn = torch.stack([0.5 * e, -0.2 * e]), torch.stack([-0.3 * e])
+    assert hunt_mod.val_accuracy(e, tp, tn, vp, vn) == (2, 3)
+
+
+def test_val_accuracy_threshold_is_train_midpoint():
+    e = torch.eye(4)[0]
+    tp, tn = torch.stack([3 * e]), torch.stack([1 * e])  # eşik 2
+    vp, vn = torch.stack([2.5 * e, 1.5 * e]), torch.stack([2.0 * e, 2.5 * e])  # pos: 2.5 doğru; neg: 2.0 doğru (≤ t)
+    assert hunt_mod.val_accuracy(e, tp, tn, vp, vn) == (2, 4)
+
+
+def test_hunt_reports_val_accuracy_with_wilson(lm):
+    r = hunt_mod.hunt(lm, load_preset("code"), "activation_diff")
+    assert r.val_ci == wilson(r.val_correct, r.val_n)[1:] and 0 <= r.val_accuracy <= 1
+    assert r.val_accuracy == pytest.approx(r.val_correct / r.val_n)
+    assert not hasattr(r, "val_consistency")
+
+
+def test_layer_scores_normalized_over_window(lm, monkeypatch):
+    monkeypatch.setattr(hunt_mod, "_cohen_d", lambda *a: torch.tensor([0.0, 0.5, 9.0]))
+    scores = hunt_mod.layer_scores(lm, load_preset("code"), load_preset("code"))
+    assert scores[2] == 0.0 and scores[1] == 1.0  # tiny modelde pencere range(1, 2)
+
+
+def _manual_signal_drop(lm, concept, ref, layer, head):
+    """measure_top_heads'ten bağımsız: apply() altında tam ileri geçişle elle hesap."""
+    train, val = split(concept, seed=0)
+    pos, _ = hunt_mod._last_token_states(lm, train.positive)
+    neg, _ = hunt_mod._last_token_states(lm, train.negative)
+    r_ref = hunt_mod._directions_from(pos, neg)[ref]
+    vp = hunt_mod._last_token_states(lm, val.positive)[0][ref] @ r_ref
+    vn = hunt_mod._last_token_states(lm, val.negative)[0][ref] @ r_ref
+    with apply(lm, [HeadAblation(layer, head)]):
+        vp_h = hunt_mod._last_token_states(lm, val.positive)[0][ref] @ r_ref
+    return float((vp.mean() - vp_h.mean()) / (vp.mean() - vn.mean()))
+
+
+def test_measure_top_heads_matches_manual_zeroing(lm):
+    c = load_preset("code")
+    r = hunt_mod.hunt(lm, c, "attribution")
+    assert len(r.measured) == min(20, lm.arch.n_layers * lm.arch.n_heads)
+    drops = [m.signal_drop for m in r.measured]
+    assert drops == sorted(drops, reverse=True)
+    assert any(m.layer < r.ref_layer for m in r.measured)  # tiny modelde ref=1: katman 0 etkili
+    est = {(l, h): s for l, h, s in r.heads}
+    neutral = load_neutral()[:8]
+    for m in r.measured:
+        expected = _manual_signal_drop(lm, c, r.ref_layer, m.layer, m.head) if m.layer < r.ref_layer else 0.0
+        assert m.signal_drop == pytest.approx(expected, abs=1e-5)
+        assert m.estimated == est[(m.layer, m.head)]
+        kl = kl_effect(lm, neutral, [HeadAblation(m.layer, m.head)])
+        assert m.neutral_kl == pytest.approx(sum(kl) / len(kl), abs=1e-5)
+    assert any(m.signal_drop != 0.0 for m in r.measured)  # katman 0 head'i gerçekten bir şey değiştirir
+
+
+def test_measured_heads_at_or_after_ref_layer_have_zero_signal_drop(lm):
+    r = hunt_mod.hunt(lm, load_preset("code"), "attribution")
+    late = [m for m in r.measured if m.layer >= r.ref_layer]
+    assert late and all(m.signal_drop == 0.0 for m in late)
+
+
+def test_measure_applies_to_every_method(lm):
+    for method in ("activation_diff", "direction"):
+        r = hunt_mod.hunt(lm, load_preset("code"), method)
+        assert len(r.measured) == 8 and all(m.neutral_kl >= 0 for m in r.measured)
+
+
+def test_measure_top_heads_respects_k(lm, monkeypatch):
+    monkeypatch.setattr(hunt_mod, "MEASURE_TOP_K", 3)
+    r = hunt_mod.hunt(lm, load_preset("code"), "activation_diff")
+    assert len(r.measured) == 3
+    assert {(m.layer, m.head) for m in r.measured} == {(l, h) for l, h, _ in r.heads[:3]}
+
+
+def test_measure_stage_progress_in_last_slice_and_cancels(lm):
+    seen = []
+    hunt_mod.hunt(lm, load_preset("code"), "activation_diff", progress=lambda p, m: seen.append(p))
+    assert seen == sorted(seen) and all(0 <= p <= 1 for p in seen) and seen[-1] == pytest.approx(1.0)
+    assert any(0.8 < p < 1.0 for p in seen)  # ölçüm dilimi (0.8–1.0) ara ilerleme bildirir
+    ev = threading.Event()
+
+    def cancel_in_measure(p, m):
+        if p > 0.8:
+            ev.set()
+
+    with pytest.raises(Cancelled):
+        hunt_mod.hunt(lm, load_preset("code"), "activation_diff", progress=cancel_in_measure, cancel=ev)
+
+
+def test_encode_batch_pads_left_even_if_tokenizer_default_is_right(lm):
+    tok = lm.tokenizer
+    old = tok.padding_side
+    tok.padding_side = "right"
+    try:
+        enc = hunt_mod._encode_batch(lm, ["kısa", "bu biraz daha uzun bir istek metni"])
+    finally:
+        tok.padding_side = old
+    assert int(enc["attention_mask"][:, -1].min()) == 1  # son sütun gerçek token

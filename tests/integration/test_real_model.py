@@ -152,7 +152,7 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
     heads = [HeadAblation(l, h) for l, h in top]
     results["checks"]["top_heads"] = top
     results["checks"]["layer_scores_argmax"] = max(range(len(code_hunt.layer_scores)), key=code_hunt.layer_scores.__getitem__)
-    results["checks"]["val_consistency"] = code_hunt.val_consistency
+    results["checks"]["val_accuracy"] = code_hunt.val_accuracy
     print(f"[smoke] ilk {TOP_HEADS} head: {top}", flush=True)
 
     # 1) gerçek etki > rastgele kontrol
