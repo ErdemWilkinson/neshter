@@ -284,7 +284,7 @@ def _suite_hooked(
     for done, item in enumerate(items):
         if cancel is not None and cancel.is_set():
             return []
-        orig, mod, _ = generate_pair(lm, item.prompt, interventions, max_new_tokens=max_new_tokens)
+        orig, mod, _ = generate_pair(lm, item.prompt, interventions, max_new_tokens=max_new_tokens, baked=False)
         nll_o = answer_nll(lm, item.prompt, orig)
         nll_m = answer_nll(lm, item.prompt, mod)
         _tally(cells, item, target, orig, mod, nll_o, nll_m)
@@ -437,18 +437,28 @@ def summarize(results: list[CategoryResult], target: str) -> Summary:
             f"Hedef davranış azaldı, ama şu kategorilerde de belirgin düşüş var: {names}.",
             f"The target behavior dropped, but these categories also dropped clearly: {names}.",
         )
+    # Özet yalnızca gerçekten denetlenen kontrol kategorilerini iddia eder (quick kipte yalnız "general").
+    checked = ", ".join(r.category for r in others)
     soft = [r for r in others if _points(r) < -2]
     if soft:
         names = _names(soft)
         return out(
             "mixed",
-            f"Hedef davranış belirgin şekilde azaldı. Bazı kategorilerde hafif düşüş var ama "
-            f"hata payı içinde: {names}. Daha fazla test önerilir. {mde_tr}",
-            f"The target behavior dropped clearly. Some categories dropped slightly but within "
-            f"the margin of error: {names}. More tests are advised. {mde_en}",
+            f"Hedef davranış belirgin şekilde azaldı. Kontrol edilen kategorilerden ({checked}) bazılarında hafif "
+            f"düşüş var ama hata payı içinde: {names}. Daha fazla test önerilir. {mde_tr}",
+            f"The target behavior dropped clearly. Of the checked categories ({checked}), some dropped slightly "
+            f"but within the margin of error: {names}. More tests are advised. {mde_en}",
+        )
+    if not others:
+        return out(
+            "good",
+            "Hedef davranış belirgin şekilde azaldı. Kontrol kategorisi denetlenmedi.",
+            "The target behavior dropped clearly. No control category was checked.",
         )
     return out(
         "good",
-        f"Hedef davranış belirgin şekilde azaldı; diğer kategorilerde anlamlı bir düşüş görülmedi. {mde_tr}",
-        f"The target behavior dropped clearly; no other category dropped significantly. {mde_en}",
+        f"Hedef davranış belirgin şekilde azaldı; kontrol edilen diğer kategorilerde ({checked}) anlamlı bir "
+        f"düşüş görülmedi. {mde_tr}",
+        f"The target behavior dropped clearly; no other checked category ({checked}) dropped significantly. "
+        f"{mde_en}",
     )
