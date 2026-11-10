@@ -247,7 +247,29 @@ def test_effect_job(ready):
     body = {"heads": [[0, 1]], "prompts": ["merhaba dünya", "hello world"]}
     job = c.post("/api/effect", json=body, headers=a).json()["job_id"]
     res = wait_done(c, a, job)["result"]
-    assert set(res) == {"kl", "kl_std", "random_kl", "n_prompts"} and res["n_prompts"] == 2
+    assert set(res) == {
+        "kl", "kl_std", "kl_se", "n_prompts", "random_kl", "random_kls", "random_p05", "random_p95",
+        "percentile", "p_value", "n_random", "layer_matched",
+    }
+    assert res["n_prompts"] == 2 and res["n_random"] == 30 and len(res["random_kls"]) == 30
+    assert 0 <= res["percentile"] <= 100 and 0 < res["p_value"] <= 1
+
+
+def test_effect_n_random_bounds(ready):
+    c, a = ready
+    for bad in (19, 51):
+        assert c.post("/api/effect", json={"heads": [[0, 0]], "n_random": bad}, headers=a).status_code == 422
+    body = {"heads": [[0, 0]], "prompts": ["bir iki"], "n_random": 20}
+    res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+    assert res["n_random"] == 20
+
+
+def test_recipe_metrics_adds_percentile_and_p(lm):
+    from neshter.interventions import HeadAblation
+
+    out = app_module._recipe_metrics(lm, [HeadAblation(0, 1)], n_random=20)
+    assert 0 <= out["kl_percentile"] <= 100 and 0 < out["kl_random_p"] <= 1
+    assert out["kl_random"] >= 0 and out["kl_random_note"] is None
 
 
 def test_effect_rejects_out_of_range_head(ready):
@@ -756,6 +778,7 @@ def test_suite_job_returns_recipe_metrics_and_wilson(ready, monkeypatch):
     res = wait_done(c, a, job, timeout=120)["result"]
     m = res["metrics"]
     assert m["kl"] >= 0 and m["kl_random"] >= 0 and m["kl_random_note"] is None
+    assert "kl_random_p" in m and "kl_percentile" in m
     assert m["perplexity_orig"] > 1 and m["perplexity_int"] > 1
     assert m["n_prompts"] == len(load_neutral())
     assert res["categories"][0]["orig_ci"] == list(wilson(10, 10)[1:])
@@ -770,7 +793,7 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
         from neshter.metrics import EffectResult
 
         seen["prompts"] = prompts
-        return EffectResult(0.0, 0.0, 0.0, len(prompts))
+        return EffectResult(0.0, 0.0, 0.0, len(prompts), 0.0, [0.0] * 20, 0.0, 0.0, 0.0, 1.0, 20, True)
 
     monkeypatch.setattr(app_module, "real_effect", fake)
     c, a = ready

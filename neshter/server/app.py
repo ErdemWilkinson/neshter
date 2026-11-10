@@ -47,7 +47,8 @@ from neshter.loader import (
     load_model,
     read_license,
 )
-from neshter.metrics import kl_effect, load_neutral, perplexity, real_effect, recipe_effect
+from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
+from neshter.progress import sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import model_arch, scan_all
 from neshter.server.jobs import TERMINAL, JobManager
@@ -86,6 +87,7 @@ class LoadReq(_Req):
 class EffectReq(_Req):
     heads: list[tuple[int, int]] = Field(min_length=1)
     prompts: list[str] | None = Field(default=None, min_length=1)
+    n_random: int = Field(DEFAULT_N_RANDOM, ge=20, le=50)  # kullanıcıya dönük alt sınır 20; kütüphane en az 1
 
 
 class HuntReq(_Req):
@@ -288,7 +290,7 @@ def _default_effect_prompts() -> list[str]:
     return load_neutral()
 
 
-def _recipe_metrics(lm: LoadedModel, interventions: list) -> dict:
+def _recipe_metrics(lm: LoadedModel, interventions: list, n_random: int = DEFAULT_N_RANDOM) -> dict:
     """Tarif düzeyi metrikler (nötr set): KL + aynı biçimde rastgele kontrol, perplexity önce/sonra.
 
     Hedef davranış ORANI için rastgele kontrol v0.2'de (test setini ikinci kez koşturmak gerekir).
@@ -296,11 +298,16 @@ def _recipe_metrics(lm: LoadedModel, interventions: list) -> dict:
     neutral = load_neutral()
     out: dict = {"n_prompts": len(neutral), "kl_random_note": None}
     try:
-        eff = recipe_effect(lm, interventions, neutral)
-        out.update(kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl)
+        eff = recipe_effect(lm, interventions, neutral, n_random=n_random)
+        out.update(
+            kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl, kl_random_p=eff.p_value, kl_percentile=eff.percentile
+        )
     except ValueError as e:  # ör. neredeyse tüm head'ler seçili: aynı sayıda rastgele kontrol yok
         values = kl_effect(lm, neutral, interventions)
-        out.update(kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_note=str(e))
+        out.update(
+            kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_p=None, kl_percentile=None,
+            kl_random_note=str(e),
+        )
     out["perplexity_orig"] = perplexity(lm, neutral)
     out["perplexity_int"] = perplexity(lm, neutral, interventions)
     return out
@@ -547,7 +554,12 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 if cancel.is_set():
                     return None
                 report(0.1, "Gerçek etki hesaplanıyor")
-                return asdict(real_effect(lm, heads, prompts))
+                return asdict(
+                    real_effect(
+                        lm, heads, prompts, n_random=body.n_random,
+                        progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
+                    )
+                )
 
         return start(fn)
 
