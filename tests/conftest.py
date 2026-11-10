@@ -75,3 +75,16 @@ def tiny_model_dir(tmp_path_factory):
     model.save_pretrained(path)
     tokenizer.save_pretrained(path)
     return path
+
+
+@pytest.fixture(scope="session")
+def lm(tiny_model_dir):
+    from neshter.loader import load_model
+
+    return load_model(tiny_model_dir, device="cpu", dtype=torch.float32)
+
+
+def logits(lm, text):
+    """Tek metin için ham logit'ler (müdahale testlerinde paylaşılan yardımcı)."""
+    with torch.no_grad():
+        return lm.model(**lm.tokenizer(text, return_tensors="pt")).logits
