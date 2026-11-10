@@ -36,7 +36,7 @@ from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
 from neshter.concepts.hunt import hunt
 from neshter.concepts.model import Concept, load_preset
-from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf
+from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf, verify_source_untouched
 from neshter.hardware import system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import LoadedModel, UnsafeModelFile, UnsupportedArchitecture, load_model, read_license
@@ -118,6 +118,11 @@ class ExportReq(_Req):
     def _ollama_needs_gguf(self) -> ExportReq:
         if self.ollama and self.format == "safetensors":
             raise ValueError("Ollama'ya eklemek için GGUF biçimi seçilmeli.")
+        if self.out_dir.startswith(("\\\\", "//")):
+            # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
+            raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
+        if not Path(self.out_dir).is_absolute():
+            raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
         return self
 
 
@@ -138,6 +143,8 @@ class Session:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.lm: LoadedModel | None = None
+        # Bu modelde safety_ablation'lı kavramlardan (ör. refusal) bulunan birim yönler (CPU float32).
+        self.safety_dirs: list[torch.Tensor] = []
 
     def require(self) -> LoadedModel:
         if self.lm is None:
@@ -146,6 +153,7 @@ class Session:
 
     def free(self) -> None:
         self.lm = None
+        self.safety_dirs = []
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -173,6 +181,28 @@ def _recipe_from_ops(lm: LoadedModel, ops: list, concept: str | None = None) -> 
     if not check.ok:
         raise InvalidRecipe(" ".join(check.errors))
     return recipe
+
+
+SAFETY_COS = 0.99
+
+
+def _is_safety(session: Session, ops: list, concept: str | None) -> bool:
+    """Kayıt güvenlik-ablasyonu sayılır mı? İstemcinin "refusal" demesi YA DA sunucu tarafı eşleşme:
+    tarifteki herhangi bir yön, bu oturumda güvenlik kavramından bulunmuş bir yöne |cos| ≥ 0.99."""
+    if concept == "refusal":
+        return True
+    if not session.safety_dirs:
+        return False
+    dirs = [op for op in ops if isinstance(op, DirectionOp)]
+    if not dirs:
+        return False
+    for iv in to_interventions(Recipe.model_construct(interventions=dirs)):
+        v = iv.direction.detach().to("cpu", torch.float32)
+        v = v / v.norm()
+        for s in session.safety_dirs:
+            if v.shape == s.shape and abs(float(v @ s)) >= SAFETY_COS:
+                return True
+    return False
 
 
 @contextmanager
@@ -464,6 +494,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     return None
                 report(0.1, "Kavram aranıyor")
                 r = hunt(lm, concept, body.method, seed=body.seed)
+                if concept.safety_ablation and r.direction is not None:
+                    # Bu yön kaydedilirse etiket istemciye bağlı kalmasın (bkz. _is_safety).
+                    d = r.direction.detach().to("cpu", torch.float32)
+                    session.safety_dirs.append(d / d.norm())
             return {
                 "layer_scores": r.layer_scores,
                 "heads": [{"layer": layer, "head": head, "score": score} for layer, head, score in r.heads],
@@ -515,16 +549,36 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         lm = require_model()
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops, body.concept)
+        if lm.arch.family == "gemma2" and any(isinstance(op, DirectionOp) for op in body.recipe_ops):
+            raise HTTPException(
+                422,
+                "gemma2 için yön silme ağırlıklara gömülemiyor (post-attention/post-feedforward normları "
+                "yüzünden kanca ile aynı sonucu vermez). Head susturma desteklenir.",
+            )
 
         def fn(report, cancel):
             with session.lock:
                 lm = require_model()
-                recipe = _recipe_from_ops(lm, body.recipe_ops, body.concept)
+                safety = _is_safety(session, body.recipe_ops, body.concept)
+                concept = "refusal" if safety else body.concept  # istemci etiketi kaldıramaz
+                recipe = _recipe_from_ops(lm, body.recipe_ops, concept)
                 out_dir = Path(body.out_dir)
                 if body.format == "safetensors":
                     report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-                    return {"path": str(save_safetensors(lm, recipe, out_dir))}
-                return {"path": str(_export_gguf(lm, recipe, out_dir, body, report))}
+                    path = save_safetensors(lm, recipe, out_dir, safety_ablated=safety)
+                else:
+                    path = _export_gguf(lm, recipe, out_dir, body, report, safety)
+                report(0.95, "Kaynak model doğrulanıyor")
+                if not verify_source_untouched(lm):
+                    raise RuntimeError(
+                        "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor)."
+                    )
+            return {
+                "path": str(path),
+                "source_sha256": lm.source_sha256,
+                "source_untouched": True,
+                "safety_ablated": safety,
+            }
 
         return start(fn)
 
@@ -578,7 +632,9 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     return app
 
 
-def _export_gguf(lm: LoadedModel, recipe: Recipe, out_dir: Path, body: ExportReq, report) -> Path:
+def _export_gguf(
+    lm: LoadedModel, recipe: Recipe, out_dir: Path, body: ExportReq, report, safety: bool = False
+) -> Path:
     """safetensors ara klasörü → GGUF (→ Ollama). out_dir yeni olmalı; ara klasör işin sonunda silinir."""
     llama_cpp = find_llama_cpp()
     if llama_cpp is None:
@@ -591,7 +647,7 @@ def _export_gguf(lm: LoadedModel, recipe: Recipe, out_dir: Path, body: ExportReq
     try:
         hf_dir = out_dir / "_hf"
         report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-        save_safetensors(lm, recipe, hf_dir)
+        save_safetensors(lm, recipe, hf_dir, safety_ablated=safety)
         report(0.5, "GGUF'a dönüştürülüyor")
         try:
             gguf = to_gguf(hf_dir, out_dir / f"{body.name}.gguf", _QUANT[body.format], llama_cpp)
