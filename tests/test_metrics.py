@@ -1,4 +1,6 @@
 import math
+import random
+import threading
 
 import pytest
 import torch
@@ -6,6 +8,7 @@ from conftest import logits
 
 from neshter.interventions import HeadAblation, apply
 from neshter.metrics import kl_effect, perplexity, rate_diff, real_effect, wilson
+from neshter.progress import Cancelled
 
 
 def test_wilson_known_value():
@@ -124,8 +127,10 @@ def test_real_effect_random_control_excludes_chosen_and_averages(lm, monkeypatch
     for control in seen[1:]:
         assert len(control) == 2 and len(set(control)) == 2
         assert not set(control) & set(chosen)
+        assert sorted(h.layer for h in control) == [0, 1]  # katman eşleşmeli
     means = [sum(vals) / len(vals) for vals in (kl_effect(lm, prompts, c) for c in seen[1:])]
     assert r.random_kl == pytest.approx(sum(means) / 5)
+    assert r.random_kls == pytest.approx(means) and r.n_random == 5 and r.layer_matched
 
 
 def test_real_effect_dedupes_heads(lm):
@@ -191,7 +196,7 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
     monkeypatch.setattr(m, "_kl_from", lambda lm_, b, p, iv, k: seen.append(list(iv)) or real(lm_, b, p, iv, k))
     d = DirectionAblation(torch.ones(lm.arch.d_model))
     r = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
-    assert r.kl > 0 and r.random_kl >= 0
+    assert r.kl > 0 and r.random_kl >= 0 and len(r.random_kls) == 2
     for control in seen[1:]:
         dirs = [iv for iv in control if isinstance(iv, DirectionAblation)]
         heads = [iv for iv in control if isinstance(iv, HeadAblation)]
@@ -199,6 +204,16 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
         assert not torch.allclose(dirs[0].direction, d.direction)
     again = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
     assert again == r  # tohumlu
+    ctrl, matched = m.random_control(lm, [d, HeadAblation(0, 1)], random.Random(0), torch.Generator().manual_seed(0))
+    assert matched and len(ctrl) == 2  # artık (kontrol, eşleşti_mi) çifti döner
+
+
+def test_effect_does_not_touch_global_seed(lm):
+    torch.manual_seed(123)
+    random.seed(456)
+    t_before, r_before = torch.get_rng_state(), random.getstate()
+    real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, seed=5)
+    assert torch.equal(t_before, torch.get_rng_state()) and r_before == random.getstate()
 
 
 def test_neutral_prompts_are_reserved():
@@ -225,3 +240,64 @@ def test_kl_uses_logits_to_keep(lm, monkeypatch):
     monkeypatch.setattr(lm.model, "forward", spy)
     kl_effect(lm, ["bir iki üç dört beş altı"], [HeadAblation(0, 0)], last_k=3)
     assert seen == [3, 3]
+
+
+# --- Task 6: katman eşleşmeli kontrol, yüzdelik ve permütasyon p ----------------------------------
+
+
+def test_layer_matched_control_same_layers(lm):
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(0, 0), HeadAblation(0, 1), HeadAblation(1, 3)]
+    ctrl, matched = m.layer_matched_heads(lm, chosen, random.Random(0))
+    assert matched and sorted(h.layer for h in ctrl) == [0, 0, 1] and not set(ctrl) & set(chosen)
+
+
+def test_layer_matched_control_falls_back_to_nearest_layer(lm):  # tiny modelde H = 4
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(0, 0), HeadAblation(0, 1), HeadAblation(0, 2)]
+    ctrl, matched = m.layer_matched_heads(lm, chosen, random.Random(0))
+    assert not matched and sorted(h.layer for h in ctrl) == [0, 1, 1]
+    assert len(set(ctrl)) == 3 and not set(ctrl) & set(chosen)
+
+
+def test_layer_matched_control_raises_when_model_too_small(lm):
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(l, h) for l in range(2) for h in range(4)][:7]
+    with pytest.raises(ValueError, match="yeterli seçilmemiş head"):
+        m.layer_matched_heads(lm, chosen, random.Random(0))
+
+
+def test_effect_percentile_and_p_value(lm, monkeypatch):
+    import neshter.metrics as m
+
+    values = iter([[0.5]] + [[0.1]] * 18 + [[0.6], [0.7]])
+    monkeypatch.setattr(m, "_kl_from", lambda *a, **k: next(values))
+    r = m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=20)
+    assert r.p_value == pytest.approx(3 / 21) and r.percentile == pytest.approx(90.0)
+    assert r.random_p05 == pytest.approx(0.1) and r.random_p95 == pytest.approx(0.605)
+    assert r.n_random == 20 and len(r.random_kls) == 20 and r.random_kl == pytest.approx(sum(r.random_kls) / 20)
+    assert r.kl_se == pytest.approx(r.kl_std / math.sqrt(r.n_prompts))
+
+
+def test_effect_default_is_30_draws(lm):
+    import neshter.metrics as m
+
+    assert m.DEFAULT_N_RANDOM == 30
+    r = m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"])
+    assert r.n_random == 30 and len(r.random_kls) == 30
+
+
+def test_effect_reports_progress_and_cancels(lm):
+    import neshter.metrics as m
+
+    seen = []
+    m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, progress=lambda p, msg: seen.append(p))
+    assert len(seen) >= 3 and seen == sorted(seen) and seen[-1] >= 0.9
+    assert all(0.0 <= p <= 1.0 for p in seen)
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, cancel=ev)
