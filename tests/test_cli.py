@@ -1,14 +1,18 @@
+import base64
+import dataclasses
 import json
 import socket
 import threading
 from pathlib import Path
 
 import pytest
+import torch
 from conftest import recipe_for
 
 from neshter import cli
 from neshter.cli import main
 from neshter.interventions import HeadAblation
+from neshter.interventions import DirectionAblation
 from neshter.recipe import SourceRef, load_recipe, save_recipe
 
 
@@ -131,6 +135,23 @@ def test_apply_unsupported_format_is_usage_error(tmp_path, tiny_model_dir, lm):
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "onnx") == 2
 
 
+def test_apply_gemma2_direction_recipe_fails_with_clear_message(
+    tmp_path, tiny_model_dir, lm, monkeypatch, capsys
+):
+    real_load = cli.load_model
+
+    def as_gemma2(path, **kw):
+        loaded = real_load(path, **kw)
+        return dataclasses.replace(loaded, arch=dataclasses.replace(loaded.arch, family="gemma2"))
+
+    monkeypatch.setattr(cli, "load_model", as_gemma2)
+    direction = DirectionAblation(torch.ones(lm.arch.d_model))
+    r = _recipe_file(tmp_path, lm, [direction])
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 1
+    assert "gemma2" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
+
+
 # --- serve ------------------------------------------------------------------------------------
 
 
@@ -197,6 +218,12 @@ def test_serve_explicit_port(served):
         port = s.getsockname()[1]
     assert main(["serve", "--no-browser", "--port", str(port)]) == 0
     assert served["app_port"] == port == served["run_kw"]["port"]
+
+
+@pytest.mark.parametrize("bad", ["0", "65536", "-1", "abc"])
+def test_serve_rejects_invalid_port(served, bad):
+    assert main(["serve", "--no-browser", "--port", bad]) == 2
+    assert "run_kw" not in served
 
 
 def test_serve_has_no_host_flag(served):

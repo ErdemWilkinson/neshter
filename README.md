@@ -14,6 +14,7 @@ It is **100% local**: there is no cloud API in it, no account, and **no telemetr
 - **Cut types in v0.1:**
   - **Head ablation:** silence a query attention head (its `o_proj` columns are zeroed).
   - **Direction orthogonalization:** remove a behavior direction from the weights.
+- On Gemma2, only head ablation can be saved; direction removal can be explored but not saved in v0.1.
 - Both keep tensor shapes, so the result is GGUF compatible. Structural pruning is not in v0.1.
 - The real effect of a cut is measured as KL divergence against a random-head control, with
   Wilson 95% intervals; an interval that includes zero is reported as "uncertain".

@@ -14,6 +14,7 @@ dosyası olarak kaydeder.
 - **v0.1 kesim türleri:**
   - **Head susturma:** bir sorgu (Q) dikkat head'ini susturur (`o_proj` sütunları sıfırlanır).
   - **Yön ortogonalizasyonu:** bir davranış yönünü ağırlıklardan çıkarır.
+- Gemma2'de yalnızca head susturma kaydedilebilir; yön kaldırma v0.1'de bu ailede kaydedilemez.
 - İkisi de tensör şeklini korur, bu yüzden sonuç GGUF ile uyumludur. Yapısal budama v0.1'de yok.
 - Bir kesimin gerçek etkisi, rastgele head kontrolüne karşı KL ıraksaması olarak ve Wilson %95
   aralıklarıyla ölçülür; aralık 0'ı kapsıyorsa sonuç "belirsiz" diye bildirilir.

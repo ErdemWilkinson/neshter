@@ -52,6 +52,16 @@ def _open_when_ready(url: str, port: int, timeout: float = 30.0) -> None:
     webbrowser.open(url)
 
 
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"geçersiz port: {value!r}") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port 1 ile 65535 arasında olmalı: {port}")
+    return port
+
+
 def _serve(args: argparse.Namespace) -> int:
     port = args.port if args.port else _free_port()
     token = secrets.token_urlsafe(24)
@@ -149,7 +159,7 @@ def _parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="yerel sunucuyu başlat ve tarayıcıyı aç (varsayılan)")
     serve.add_argument("--no-browser", action="store_true", help="tarayıcıyı açma")
-    serve.add_argument("--port", type=int, default=0, help="sabit port (varsayılan: boş bir port)")
+    serve.add_argument("--port", type=_port, default=0, help="sabit port (varsayılan: boş bir port)")
     serve.set_defaults(func=_serve)
 
     apply = sub.add_parser("apply", help="bir .nester.json tarifini modele uygula ve kaydet")
