@@ -46,3 +46,6 @@ explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Gerçek model duman testi varsayılan çalıştırmada atlanır: `pytest -m integration` ile açılır.
+addopts = '-m "not integration"'
+markers = ["integration: gerçek model indirip çalıştıran yavaş testler (varsayılan olarak atlanır)"]
