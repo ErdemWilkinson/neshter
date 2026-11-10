@@ -1,6 +1,7 @@
 import json
 
 import gguf
+import pytest
 
 from neshter.hardware import SystemInfo, system_info
 from neshter.scan import default_roots, scan_all, scan_hf_cache, scan_lmstudio, scan_ollama
@@ -253,3 +254,77 @@ def test_scan_hf_entry_carries_arch_and_license_name(tmp_path):
     (snap / "README.md").write_text("---\nlicense: other\nlicense_name: qwen-research\n---\n", encoding="utf-8")
     [e] = scan_hf_cache(tmp_path)
     assert e.license == "qwen-research" and e.arch["family"] == "qwen2" and e.arch["n_layers"] == 2
+
+
+# --- Final fix wave I2: tek bir düşmanca config/başlık değeri model listesini düşüremez -------------------
+
+
+def _hf_snap(root, repo, config_text):
+    snap = root / f"models--{repo}" / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(config_text, encoding="utf-8")
+    (snap / "model.safetensors").write_bytes(b"z")
+    return snap
+
+
+def test_hf_config_with_infinity_nan_or_huge_is_listed_without_arch(tmp_path):
+    from neshter.scan import model_arch
+
+    _hf_snap(tmp_path, "a--inf", '{"model_type":"llama","num_hidden_layers":Infinity}')
+    _hf_snap(tmp_path, "b--nan", '{"model_type":"llama","num_attention_heads":NaN}')
+    _hf_snap(tmp_path, "c--neginf", '{"model_type":"llama","intermediate_size":-Infinity}')
+    _hf_snap(tmp_path, "d--big", '{"model_type":"llama","pad":"' + "x" * (2 * 1024 * 1024) + '"}')
+    _hf_snap(tmp_path, "e--ok", json.dumps({"model_type": "llama", "num_hidden_layers": 2}))
+    entries = {e.name: e for e in scan_hf_cache(tmp_path)}
+    assert set(entries) == {"a/inf", "b/nan", "c/neginf", "d/big", "e/ok"}
+    for name in ("a/inf", "b/nan", "c/neginf", "d/big"):
+        assert entries[name].arch is None, name
+    assert entries["e/ok"].arch["n_layers"] == 2
+    # sınırlı okuma (1 MiB): 2 MiB'lık config hiç tam okunmaz, kesik JSON -> yapı bilinmiyor
+    assert model_arch(tmp_path / "models--d--big" / "snapshots" / "r1", "safetensors") is None
+
+
+@pytest.mark.parametrize("value", [1e300, -1, 2**40, True, "32", 3.5])
+def test_clean_arch_rejects_out_of_range_numbers(tmp_path, value):
+    _hf_snap(tmp_path, "x--y", json.dumps({"model_type": "llama", "num_hidden_layers": value, "num_attention_heads": 4}))
+    [e] = scan_hf_cache(tmp_path)
+    assert e.arch["n_layers"] is None and e.arch["n_heads"] == 4
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), float("-inf")])
+def test_gguf_float_inf_nan_header_value_is_listed(tmp_path, bad):
+    d = tmp_path / "pub"
+    d.mkdir()
+    w = gguf.GGUFWriter(str(d / "kotu.gguf"), "llama")
+    w.add_float32("llama.block_count", bad)
+    w.add_float32("llama.attention.head_count", bad)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    _gguf(d / "iyi.gguf")
+    entries = {e.name: e for e in scan_lmstudio(tmp_path)}
+    assert entries["kotu"].arch["n_layers"] is None and entries["kotu"].arch["n_heads"] is None
+    assert entries["iyi"].arch["n_layers"] == 32
+
+
+def test_api_models_survives_hostile_entries(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from neshter.server.app import create_app
+
+    hf = tmp_path / "hf"
+    _hf_snap(hf, "a--inf", '{"model_type":"llama","num_hidden_layers":Infinity}')
+    _hf_snap(hf, "b--ok", json.dumps({"model_type": "llama", "num_hidden_layers": 2}))
+    lms = tmp_path / "lms"
+    lms.mkdir()
+    w = gguf.GGUFWriter(str(lms / "nan.gguf"), "llama")
+    w.add_float32("llama.block_count", float("nan"))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    c = TestClient(create_app("t", 47998, roots={"huggingface": [hf], "lmstudio": [lms]}), base_url="http://127.0.0.1:47998")
+    r = c.get("/api/models", headers={"X-Neshter-Token": "t"})
+    assert r.status_code == 200
+    assert {e["name"] for e in r.json()} == {"a/inf", "b/ok", "nan"}

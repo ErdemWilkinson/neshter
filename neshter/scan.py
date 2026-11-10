@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from neshter.licenses import (
+    _MAX_CONFIG_BYTES,
     MAX_MANIFEST_BYTES,
+    _read_folder_file,
     OLLAMA_MODEL_MEDIA,
     folder_license,
     license_id_from_text,
@@ -122,13 +125,31 @@ def _gguf_done(found: dict) -> bool:
     )
 
 
+_MAX_ARCH_INT = 2**31
+
+
+def _arch_int(v: object) -> int | None:
+    """Güvenilmez üst veri sayısı: yalnızca sonlu, tam sayı değerli, 0..2^31 aralığında; aksi halde None.
+
+    (inf/NaN için `int()` OverflowError/ValueError fırlatır; tek bir düşmanca değer listeyi düşürmemeli.)
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, float) and not (math.isfinite(v) and v.is_integer()):
+        return None
+    return int(v) if 0 <= v <= _MAX_ARCH_INT else None
+
+
 def _clean_arch(arch: dict) -> dict | None:
     if not isinstance(arch["family"], str):
         return None
     for k in ("n_layers", "n_heads", "n_kv_heads", "d_mlp"):
-        v = arch[k]
-        arch[k] = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        arch[k] = _arch_int(arch[k])
     return arch
+
+
+def _reject_constant(name: str):
+    raise ValueError(f"JSON'da sayı olmayan sabit: {name}")
 
 
 def gguf_info(path: Path) -> tuple[str | None, dict | None]:
@@ -159,18 +180,22 @@ def model_arch(path: Path, fmt: str) -> dict | None:
         return gguf_info(path)[1]
     try:
         folder = Path(path) if Path(path).is_dir() else Path(path).parent
-        cfg = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        text = _read_folder_file(folder, "config.json", _MAX_CONFIG_BYTES)  # sınırlı, klasör dışına çıkmaz
+        if text is None:
+            return None
+        cfg = json.loads(text, parse_constant=_reject_constant)  # NaN / Infinity reddedilir
         n_heads = cfg.get("num_attention_heads")
-        arch = {
-            "family": cfg.get("model_type"),
-            "n_layers": cfg.get("num_hidden_layers"),
-            "n_heads": n_heads,
-            "n_kv_heads": cfg.get("num_key_value_heads") or n_heads,
-            "d_mlp": cfg.get("intermediate_size"),
-        }
-    except Exception:  # bozuk/eksik üst veri: liste yine gösterilir, yapı bilinmiyor
+        return _clean_arch(
+            {
+                "family": cfg.get("model_type"),
+                "n_layers": cfg.get("num_hidden_layers"),
+                "n_heads": n_heads,
+                "n_kv_heads": cfg.get("num_key_value_heads") or n_heads,
+                "d_mlp": cfg.get("intermediate_size"),
+            }
+        )
+    except Exception:  # bozuk/eksik/düşmanca üst veri: liste yine gösterilir, yapı bilinmiyor
         return None
-    return _clean_arch(arch)
 
 
 def scan_all(roots: dict[str, list[Path]] | None = None) -> list[ModelEntry]:
@@ -181,6 +206,6 @@ def scan_all(roots: dict[str, list[Path]] | None = None) -> list[ModelEntry]:
         for root in roots.get(source, []):
             try:
                 entries.extend(scan(Path(root)))
-            except OSError:
+            except (OSError, ValueError, OverflowError, RecursionError):  # son savunma: diğer kaynaklar listelenir
                 continue
     return entries
