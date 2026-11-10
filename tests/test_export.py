@@ -1189,3 +1189,46 @@ def test_save_refusal_label_is_case_insensitive(lm, tmp_path):
     out = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)], concept="Refusal"), tmp_path / "o")
     cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
     assert cfg["neshter"]["abliterated"] == "refusal"
+
+
+
+# --- Final fix wave M11: kare olmayan o_proj'lu Gemma2 (gerçek Gemma2 gibi n_heads·head_dim ≠ hidden) --------
+
+
+def test_wide_gemma2_fixture_is_non_square(gemma_wide_lm):
+    a = gemma_wide_lm.arch
+    assert a.n_heads * a.head_dim == 96 != a.d_model == 64
+    assert tuple(gemma_wide_lm.model.model.layers[0].self_attn.o_proj.weight.shape) == (64, 96)
+
+
+@pytest.mark.parametrize("kind", ["head", "direction", "both"])
+def test_wide_gemma2_bake_matches_hook(gemma_wide_lm, kind):
+    lm = gemma_wide_lm
+    ivs = _gemma_ivs(lm.arch.d_model)
+    ivs = {
+        "head": [iv for iv in ivs if isinstance(iv, HeadAblation)],
+        "direction": [iv for iv in ivs if isinstance(iv, DirectionAblation)],
+        "both": ivs,
+    }[kind]
+    before = _state(lm)
+    base = logits(lm, GEMMA_TEXT)
+    with apply(lm, ivs):
+        hooked = logits(lm, GEMMA_TEXT)
+    undo = bake(lm, ivs)
+    baked = logits(lm, GEMMA_TEXT)
+    undo()
+    assert not torch.allclose(hooked, base, atol=1e-3)
+    assert torch.allclose(hooked, baked, atol=1e-4)
+    assert all(torch.equal(before[k], v) for k, v in lm.model.state_dict().items())
+
+
+def test_wide_gemma2_save_reload_equivalent(gemma_wide_lm, tmp_path):
+    from neshter.loader import load_model
+
+    lm = gemma_wide_lm
+    ivs = _gemma_ivs(lm.arch.d_model)
+    with apply(lm, ivs):
+        hooked = logits(lm, GEMMA_TEXT)
+    out = save_safetensors(lm, recipe_for(lm, ivs), tmp_path / "out", dtype=torch.float32)
+    m2 = load_model(out, device="cpu", dtype=torch.float32)
+    assert torch.allclose(logits(m2, GEMMA_TEXT), hooked, atol=1e-4)
