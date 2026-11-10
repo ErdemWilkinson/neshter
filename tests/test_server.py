@@ -1099,3 +1099,25 @@ def test_end_to_end_hunt_compare_suite_export(ready, tmp_path, monkeypatch, tiny
     assert json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
     with safe_open(str(out / "model.safetensors"), "pt") as f:
         assert {f.get_slice(k).get_dtype() for k in f.keys()} == {"BF16"}
+
+
+def test_models_endpoint_reads_each_gguf_header_once(tmp_path, auth, monkeypatch):
+    from gguf import GGUFWriter
+
+    from neshter import scan
+
+    path = tmp_path / "m.gguf"
+    w = GGUFWriter(str(path), "llama")
+    w.add_string("general.license", "mit")
+    w.add_block_count(2)
+    w.add_head_count(4)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    calls = []
+    real = scan.read_gguf_header
+    monkeypatch.setattr(scan, "read_gguf_header", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
+    (entry,) = _make({"lmstudio": [tmp_path]}).get("/api/models", headers=auth).json()
+    assert entry["license"] == "mit" and entry["arch"]["n_layers"] == 2 and entry["supported"] is True
+    assert len(calls) == 1

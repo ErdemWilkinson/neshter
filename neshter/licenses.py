@@ -11,8 +11,11 @@ import json
 import re
 from pathlib import Path
 
+from neshter.gguf_header import read_gguf_header
+
 MAX_LICENSE_BYTES = 256 * 1024
-_MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
+_MAX_CONFIG_BYTES = 1024 * 1024
 _MAX_ID_CHARS = 128
 
 OLLAMA_MODEL_MEDIA = "application/vnd.ollama.image.model"
@@ -21,6 +24,9 @@ OLLAMA_LICENSE_MEDIA = "application/vnd.ollama.image.license"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _BLOB_NAME = re.compile(r"sha256-[0-9a-f]{64}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_FRONT = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+_LICENSE_KEY = re.compile(r"^license:\s*['\"]?([^'\"\r\n#]+?)['\"]?\s*$", re.MULTILINE)
+_LICENSE_NAME_KEY = re.compile(r"^license_name:\s*['\"]?([^'\"\r\n#]+?)['\"]?\s*$", re.MULTILINE)
 
 # Sıra önemlidir: ilk eşleşme kazanır. \b: "permit license" / "submit license" "mit license" sayılmaz.
 _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -56,23 +62,43 @@ def valid_digest(digest: object) -> bool:
     return isinstance(digest, str) and _DIGEST.fullmatch(digest) is not None
 
 
-def read_license(folder: Path) -> str | None:
-    """config.json'daki `license`, yoksa README.md ön yazısındaki `license:`."""
-    try:
-        value = json.loads((folder / "config.json").read_text(encoding="utf-8")).get("license")
-        if isinstance(value, str) and value.strip():
-            return clean_id(value) or None
-    except (OSError, ValueError, AttributeError):
-        pass
-    try:
-        text = (folder / "README.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+def _read_folder_file(folder: Path, name: str, limit: int) -> str | None:
+    """Modelin kendi klasöründeki dosyayı sınırlı okur; klasör dışına çözülen bağları izlemez."""
+    f = Path(folder) / name
+    if not inside_model(Path(folder), f):
         return None
-    front = re.match(r"\A---\r?\n(.*?)\r?\n---", text, re.DOTALL)
+    try:
+        return _read_bounded(f, limit)
+    except OSError:
+        return None
+
+
+def read_license(folder: Path) -> str | None:
+    """config.json'daki `license`, yoksa README.md ön yazısındaki `license:`.
+
+    README'de `license: other` ise `license_name:` kimlik olarak kullanılır (ör. Qwen: qwen-research)."""
+    folder = Path(folder)
+    cfg_text = _read_folder_file(folder, "config.json", _MAX_CONFIG_BYTES)
+    if cfg_text is not None:
+        try:
+            value = json.loads(cfg_text).get("license")
+            if isinstance(value, str) and value.strip():
+                return clean_id(value) or None
+        except (ValueError, AttributeError, RecursionError):
+            pass
+    text = _read_folder_file(folder, "README.md", MAX_LICENSE_BYTES)
+    if text is None:
+        return None
+    front = _FRONT.match(text)
     if front:
-        m = re.search(r"^license:\s*['\"]?([^'\"\r\n#]+?)['\"]?\s*$", front.group(1), re.MULTILINE)
+        m = _LICENSE_KEY.search(front.group(1))
         if m:
-            return clean_id(m.group(1)) or None
+            lid = clean_id(m.group(1)) or None
+            if lid and lid.lower() == "other":
+                n = _LICENSE_NAME_KEY.search(front.group(1))
+                if n and clean_id(n.group(1)):
+                    return clean_id(n.group(1))
+            return lid
     return None
 
 
@@ -81,7 +107,7 @@ def _read_bounded(path: Path, limit: int = MAX_LICENSE_BYTES) -> str:
         return f.read(limit).decode("utf-8", errors="replace")
 
 
-def _inside_model(folder: Path, f: Path) -> bool:
+def inside_model(folder: Path, f: Path) -> bool:
     """Dosya gerçekten modelin klasöründe mi? HF snapshot dosyaları kardeş `blobs/` dizinine sembolik
     bağdır (repo/snapshots/rev/F -> repo/blobs/hash); yalnızca o düzene izin verilir."""
     try:
@@ -92,7 +118,7 @@ def _inside_model(folder: Path, f: Path) -> bool:
             return True
         if folder.parent.name == "snapshots":
             return real.is_relative_to((folder.parent.parent / "blobs").resolve())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         pass
     return False
 
@@ -105,7 +131,7 @@ def read_license_text(folder: Path) -> str | None:
     except OSError:
         return None
     for f in candidates:
-        if not _inside_model(folder, f):
+        if not inside_model(folder, f):
             continue
         try:
             return _read_bounded(f)
@@ -123,23 +149,22 @@ def folder_license(folder: Path) -> tuple[str | None, str | None]:
     return lid, text
 
 
-def _gguf_value(reader, key: str):
-    field = reader.fields.get(key)
-    return None if field is None else field.contents()
-
-
 def read_gguf_license(path: Path) -> str | None:
-    """GGUF üst verisinden `general.license`, yoksa `general.license.name`."""
-    try:
-        from gguf import GGUFReader
+    """GGUF üst verisinden `general.license`, yoksa `general.license.name` (sınırlı yürüyüşçüyle;
+    gguf.GGUFReader güvenilmeyen dosyada kullanılmaz)."""
+    meta = read_gguf_header(
+        path,
+        keys=("general.license", "general.license.name"),
+        done=lambda found: "general.license" in found,
+    )
+    return gguf_license_from(meta)
 
-        reader = GGUFReader(str(path))
-        for key in ("general.license", "general.license.name"):
-            value = _gguf_value(reader, key)
-            if isinstance(value, str) and clean_id(value):
-                return clean_id(value)
-    except Exception:  # bozuk/eksik üst veri: lisans bilinmiyor
-        pass
+
+def gguf_license_from(meta: dict | None) -> str | None:
+    for key in ("general.license", "general.license.name"):
+        value = (meta or {}).get(key)
+        if isinstance(value, str) and clean_id(value):
+            return clean_id(value)
     return None
 
 
@@ -155,7 +180,7 @@ def ollama_layer_text(root: Path, manifest: object) -> str | None:
                 text = _read_bounded(blob)
                 if text.strip():
                     return text
-    except (OSError, KeyError, TypeError):
+    except (OSError, KeyError, TypeError, RecursionError):
         pass
     return None
 
@@ -176,13 +201,13 @@ def ollama_license_text(blob: Path) -> str | None:
         return None
     for manifest in manifests:
         try:
-            if manifest.stat().st_size > _MAX_MANIFEST_BYTES:
+            if manifest.stat().st_size > MAX_MANIFEST_BYTES:
                 continue
             data = json.loads(manifest.read_text(encoding="utf-8"))
             model = next(l for l in data["layers"] if l["mediaType"] == OLLAMA_MODEL_MEDIA)
             if not valid_digest(model["digest"]) or model["digest"] != want:
                 continue
-        except (OSError, ValueError, KeyError, TypeError, StopIteration, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, AttributeError, RecursionError):
             continue
         text = ollama_layer_text(root, data)
         if text is not None:

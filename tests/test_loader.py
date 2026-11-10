@@ -420,7 +420,7 @@ def test_gguf_load_reads_license_from_gguf_then_ollama_layer(tmp_path, monkeypat
 def test_inside_model_accepts_hf_blobs_but_not_outside(tmp_path):
     # HF düzeni: repo/snapshots/rev/LICENSE -> repo/blobs/<hash> (sembolik bağ; Windows'ta oluşturulamayabilir,
     # bu yüzden çözümlenmiş hedef taklit edilir).
-    from neshter.licenses import _inside_model
+    from neshter.licenses import inside_model
 
     class FakeLink:
         def __init__(self, target):
@@ -437,10 +437,41 @@ def test_inside_model_accepts_hf_blobs_but_not_outside(tmp_path):
     blob.write_text("lisans", encoding="utf-8")
     outside = tmp_path / "baska.txt"
     outside.write_text("sır", encoding="utf-8")
-    assert _inside_model(snap, FakeLink(blob))
-    assert not _inside_model(snap, FakeLink(outside))
+    assert inside_model(snap, FakeLink(blob))
+    assert not inside_model(snap, FakeLink(outside))
     plain = tmp_path / "plain"  # snapshots düzeni değilse kardeş blobs/ kabul edilmez
     plain.mkdir()
     (tmp_path / "blobs").mkdir()
     (tmp_path / "blobs" / "z").write_text("x", encoding="utf-8")
-    assert not _inside_model(plain, FakeLink(tmp_path / "blobs" / "z"))
+    assert not inside_model(plain, FakeLink(tmp_path / "blobs" / "z"))
+
+
+# --- Task 9 fix round 1 ---------------------------------------------------------------------------
+
+
+def test_read_license_uses_license_name_when_other(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "---\nlicense: other\nlicense_name: qwen-research\nlicense_link: https://x\n---\n", encoding="utf-8"
+    )
+    assert loader.read_license(tmp_path) == "qwen-research"
+    (tmp_path / "README.md").write_text("---\nlicense: other\n---\n", encoding="utf-8")
+    assert loader.read_license(tmp_path) == "other"
+    (tmp_path / "README.md").write_text("---\nlicense: mit\nlicense_name: x\n---\n", encoding="utf-8")
+    assert loader.read_license(tmp_path) == "mit"
+
+
+def test_read_license_is_bounded_and_tolerant(tmp_path):
+    # Dev README: ön yazı en başta olduğundan kimlik okunur; devasa/bozuk config.json kimliği bozmaz.
+    (tmp_path / "README.md").write_text("---\nlicense: mit\n---\n" + "x" * (2 * 1024 * 1024), encoding="utf-8")
+    (tmp_path / "config.json").write_text("[" * 100000, encoding="utf-8")  # RecursionError üretir
+    assert loader.read_license(tmp_path) == "mit"
+    (tmp_path / "README.md").write_bytes(b"\xff\xfe---\nlicense: mit\n---\n")  # bozuk UTF-8
+    assert loader.read_license(tmp_path) is None
+
+
+def test_read_license_does_not_follow_files_outside_folder(tmp_path, monkeypatch):
+    from neshter import licenses
+
+    (tmp_path / "README.md").write_text("---\nlicense: mit\n---\n", encoding="utf-8")
+    monkeypatch.setattr(licenses, "inside_model", lambda folder, f: False)
+    assert loader.read_license(tmp_path) is None

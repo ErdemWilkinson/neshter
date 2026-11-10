@@ -174,3 +174,82 @@ def test_scan_ollama_rejects_invalid_digest(tmp_path):
         layer = {"mediaType": "application/vnd.ollama.image.model", "digest": bad, "size": 1}
         (mdir / f"bad{i}").write_text(json.dumps({"layers": [layer]}))
     assert [e.name for e in scan_ollama(tmp_path)] == ["m:ok"]
+
+
+# --- Task 9 fix round 1 ---------------------------------------------------------------------------
+
+
+def _gguf(path, arch="llama", **kv):
+    w = gguf.GGUFWriter(str(path), arch)
+    for k, v in kv.items():
+        w.add_string(k.replace("__", "."), v)
+    w.add_block_count(32)
+    w.add_head_count(32)
+    w.add_head_count_kv(8)
+    w.add_feed_forward_length(14336)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def test_scan_reads_each_gguf_header_once_for_license_and_arch(tmp_path, monkeypatch):
+    from neshter import scan
+
+    d = tmp_path / "pub" / "Foo-GGUF"
+    d.mkdir(parents=True)
+    _gguf(d / "foo.gguf", general__license="mit")
+    calls = []
+    real = scan.read_gguf_header
+    monkeypatch.setattr(scan, "read_gguf_header", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
+    [e] = scan_lmstudio(tmp_path)
+    assert e.license == "mit"
+    assert e.arch == {"family": "llama", "n_layers": 32, "n_heads": 32, "n_kv_heads": 8, "d_mlp": 14336}
+    assert len(calls) == 1
+
+
+def test_scan_ollama_arch_and_license_from_blob(tmp_path):
+    _make_ollama(tmp_path)
+    _gguf(tmp_path / "blobs" / f"sha256-{DIGEST}", general__license="apache-2.0")
+    [e] = scan_ollama(tmp_path)
+    assert e.license == "apache-2.0" and e.arch["family"] == "llama" and e.arch["n_layers"] == 32
+
+
+def test_scan_survives_malicious_gguf(tmp_path):
+    # 149 baytlık, uint8 dizisi sayısı 2^62 olan dosya: tarama sonsuza dek takılmaz ve girdi yine listelenir.
+    import struct
+
+    d = tmp_path / "pub"
+    d.mkdir()
+    bomb = (
+        b"GGUF" + struct.pack("<IQQ", 3, 0, 1) + struct.pack("<Q", 1) + b"a" + struct.pack("<I", 9)
+        + struct.pack("<IQ", 0, 2**62) + b"\0" * 100
+    )
+    (d / "bomb.gguf").write_bytes(bomb)
+    [e] = scan_lmstudio(tmp_path)
+    assert e.name == "bomb" and e.license is None and e.arch is None
+
+
+def test_scan_ollama_survives_deeply_nested_manifest(tmp_path):
+    _make_ollama(tmp_path, name="x", tag="ok")
+    lib = tmp_path / "manifests/registry.ollama.ai/library/x"
+    (lib / "deep").write_text("[" * 200_000 + "]" * 200_000)  # ~400 KB, RecursionError üretir
+    (lib / "deeper").write_text('{"layers":' + "[" * 200_000 + "]" * 200_000 + "}")
+    assert [e.name for e in scan_ollama(tmp_path)] == ["x:ok"]
+
+
+def test_scan_ollama_skips_oversize_manifest(tmp_path):
+    _make_ollama(tmp_path, name="x", tag="ok")
+    lib = tmp_path / "manifests/registry.ollama.ai/library/x"
+    (lib / "big").write_text(" " * (2 * 1024 * 1024) + "{}")
+    assert [e.name for e in scan_ollama(tmp_path)] == ["x:ok"]
+
+
+def test_scan_hf_entry_carries_arch_and_license_name(tmp_path):
+    snap = tmp_path / "models--Qwen--Qwen2.5-3B" / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps({"model_type": "qwen2", "num_hidden_layers": 2}))
+    (snap / "model.safetensors").write_bytes(b"z")
+    (snap / "README.md").write_text("---\nlicense: other\nlicense_name: qwen-research\n---\n", encoding="utf-8")
+    [e] = scan_hf_cache(tmp_path)
+    assert e.license == "qwen-research" and e.arch["family"] == "qwen2" and e.arch["n_layers"] == 2

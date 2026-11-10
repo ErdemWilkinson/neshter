@@ -629,3 +629,70 @@ def test_bake_round_to_rounds_untied_lm_head_copy(tied_lm):
         undo()
     assert lm.model.get_output_embeddings().weight is lm.model.get_input_embeddings().weight
     assert torch.equal(lm.model.get_input_embeddings().weight, orig)
+
+
+# --- Task 9 fix round 1 ---------------------------------------------------------------------------
+
+
+def test_is_llama3_regex_is_anchored(lm):
+    assert not is_llama3(_with(lm, None, "llama", name="llama-30b"))
+    assert not is_llama3(_with(lm, None, "llama", name="open-llama-33B"))
+    assert is_llama3(_with(lm, None, "llama", name="Llama-3-8B"))
+    assert is_llama3(_with(lm, None, "llama", name="Llama-3.1-8B-Instruct"))
+
+
+def test_license_ids_compare_case_insensitively(lm):
+    assert is_llama3(_with(lm, "Llama3.1", "llama"))
+    assert license_notices(_with(lm, "Apache-2.0")) == []
+    assert license_notices(_with(lm, "APACHE-2.0")) == []
+
+
+def test_qwen_unknown_license_gets_one_combined_notice(lm):
+    notes = license_notices(_with(lm, None))
+    assert len(notes) == 1
+    assert "lisansı bulunamadı" in notes[0] and "Qwen" in notes[0] and "not found" in notes[0]
+    assert len(license_notices(_with(lm, "qwen-research"))) == 1
+    non_qwen = _with(lm, None, "llama", name="SmolLM2")
+    assert len(license_notices(non_qwen)) == 1 and "Qwen" not in license_notices(non_qwen)[0]
+
+
+def test_card_heading_escapes_model_name(lm):
+    evil = _with(lm, "mit", name="x\n## SAHTE <img src=x onerror=1> [a](http://e.vil) `" + "N" * 150)
+    card = _card(evil)
+    heading = next(line for line in card.splitlines() if line.startswith("# "))
+    assert "<img" not in heading and "[a](" not in heading and "`" not in heading
+    assert len(heading) < 140
+    assert "\n## SAHTE" not in card
+    assert _card(_with(lm, "mit", name="qwen2.5:7b")).count("# qwen2.5:7b (neshter)") == 1
+
+
+def test_copy_license_files_skips_files_resolving_outside(tmp_path, tiny_model_dir, monkeypatch):
+    from neshter.loader import load_model
+
+    src = tmp_path / "src"
+    shutil.copytree(tiny_model_dir, src)
+    (src / "LICENSE").write_text("kaynağın lisansı", encoding="utf-8")
+    (src / "NOTICE").write_text("kaynağın notu", encoding="utf-8")
+    m = load_model(src, device="cpu", dtype=torch.float32)
+    real = export.inside_model
+    # Yalnızca NOTICE'in klasör dışına çözüldüğü varsayılır (Windows'ta sembolik bağ kurulamayabilir).
+    monkeypatch.setattr(export, "inside_model", lambda folder, f: False if f.name == "NOTICE" else real(folder, f))
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "LICENSE").read_text(encoding="utf-8") == "kaynağın lisansı"
+    assert not (out / "NOTICE").exists()
+
+
+def test_copy_license_files_skips_real_symlink_outside(tmp_path, tiny_model_dir):
+    from neshter.loader import load_model
+
+    src = tmp_path / "src"
+    shutil.copytree(tiny_model_dir, src)
+    secret = tmp_path / "gizli.txt"
+    secret.write_text("DIŞARIDAKİ SIR", encoding="utf-8")
+    try:
+        (src / "USE_POLICY.md").symlink_to(secret)
+    except OSError:
+        pytest.skip("symlink oluşturulamadı")
+    m = load_model(src, device="cpu", dtype=torch.float32)
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert not (out / "USE_POLICY.md").exists()

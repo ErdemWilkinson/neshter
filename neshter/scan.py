@@ -9,14 +9,15 @@ from pathlib import Path
 from typing import Literal
 
 from neshter.licenses import (
+    MAX_MANIFEST_BYTES,
     OLLAMA_MODEL_MEDIA,
-    _gguf_value,
     folder_license,
     license_id_from_text,
     ollama_layer_text,
-    read_gguf_license,
+    gguf_license_from,
     valid_digest,
 )
+from neshter.gguf_header import read_gguf_header
 
 
 @dataclass
@@ -27,6 +28,7 @@ class ModelEntry:
     fmt: Literal["gguf", "safetensors", "pt"]
     size_bytes: int
     license: str | None = None
+    arch: dict | None = None  # {family, n_layers, n_heads, n_kv_heads, d_mlp}; tarama sırasında bir kez okunur
 
 
 def scan_ollama(root: Path) -> list[ModelEntry]:
@@ -36,6 +38,8 @@ def scan_ollama(root: Path) -> list[ModelEntry]:
     entries: list[ModelEntry] = []
     for manifest in sorted(p for p in lib.glob("*/*") if p.is_file()):
         try:
+            if manifest.stat().st_size > MAX_MANIFEST_BYTES:
+                continue
             data = json.loads(manifest.read_text(encoding="utf-8"))
             layer = next(l for l in data["layers"] if l["mediaType"] == OLLAMA_MODEL_MEDIA)
             digest = layer["digest"]
@@ -43,13 +47,13 @@ def scan_ollama(root: Path) -> list[ModelEntry]:
                 continue
             blob = Path(root) / "blobs" / ("sha256-" + digest.removeprefix("sha256:"))
             size = blob.stat().st_size
-        except (OSError, ValueError, KeyError, TypeError, StopIteration, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, AttributeError, RecursionError):
             continue
-        lid = read_gguf_license(blob)
+        lid, arch = gguf_info(blob)
         if lid is None:
             text = ollama_layer_text(Path(root), data)
             lid = license_id_from_text(text) if text else None
-        entries.append(ModelEntry(f"{manifest.parent.name}:{manifest.name}", "ollama", blob, "gguf", size, lid))
+        entries.append(ModelEntry(f"{manifest.parent.name}:{manifest.name}", "ollama", blob, "gguf", size, lid, arch))
     return entries
 
 
@@ -63,7 +67,8 @@ def scan_lmstudio(root: Path) -> list[ModelEntry]:
             size = f.stat().st_size
         except OSError:
             continue
-        entries.append(ModelEntry(f.stem, "lmstudio", f, "gguf", size, read_gguf_license(f)))
+        lid, arch = gguf_info(f)
+        entries.append(ModelEntry(f.stem, "lmstudio", f, "gguf", size, lid, arch))
     return entries
 
 
@@ -82,7 +87,7 @@ def scan_hf_cache(root: Path) -> list[ModelEntry]:
                 size = sum(w.stat().st_size for w in weights)
             except OSError:
                 continue
-            entries.append(ModelEntry(name, "huggingface", snap, "safetensors", size, folder_license(snap)[0]))
+            entries.append(ModelEntry(name, "huggingface", snap, "safetensors", size, folder_license(snap)[0], model_arch(snap, "safetensors")))
     return entries
 
 
@@ -104,44 +109,68 @@ def default_roots() -> dict[str, list[Path]]:
     }
 
 
-def model_arch(path: Path, fmt: str) -> dict | None:
-    """Yükleme yapmadan yapı bilgisi: {family, n_layers, n_heads, n_kv_heads, d_mlp} ya da None.
+_ARCH_SUFFIXES = (".block_count", ".attention.head_count", ".attention.head_count_kv", ".feed_forward_length")
+_LICENSE_KEYS = ("general.license", "general.license.name")
 
-    Klasör: config.json. GGUF: yalnızca üst veri (gguf.GGUFReader dosyayı belleğe eşler, okumaz).
-    """
-    try:
-        if fmt == "gguf":
-            from gguf import GGUFReader
 
-            reader = GGUFReader(str(path))
-            family = _gguf_value(reader, "general.architecture")
-            n_heads = _gguf_value(reader, f"{family}.attention.head_count")
-            arch = {
-                "family": family,
-                "n_layers": _gguf_value(reader, f"{family}.block_count"),
-                "n_heads": n_heads,
-                "n_kv_heads": _gguf_value(reader, f"{family}.attention.head_count_kv") or n_heads,
-                "d_mlp": _gguf_value(reader, f"{family}.feed_forward_length"),
-            }
-        else:
-            folder = Path(path) if Path(path).is_dir() else Path(path).parent
-            cfg = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-            n_heads = cfg.get("num_attention_heads")
-            arch = {
-                "family": cfg.get("model_type"),
-                "n_layers": cfg.get("num_hidden_layers"),
-                "n_heads": n_heads,
-                "n_kv_heads": cfg.get("num_key_value_heads") or n_heads,
-                "d_mlp": cfg.get("intermediate_size"),
-            }
-    except Exception:  # bozuk/eksik üst veri: liste yine gösterilir, yapı bilinmiyor
-        return None
+def _gguf_done(found: dict) -> bool:
+    family = found.get("general.architecture")
+    return (
+        "general.license" in found
+        and isinstance(family, str)
+        and all(f"{family}{suffix}" in found for suffix in _ARCH_SUFFIXES)
+    )
+
+
+def _clean_arch(arch: dict) -> dict | None:
     if not isinstance(arch["family"], str):
         return None
     for k in ("n_layers", "n_heads", "n_kv_heads", "d_mlp"):
         v = arch[k]
         arch[k] = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
     return arch
+
+
+def gguf_info(path: Path) -> tuple[str | None, dict | None]:
+    """(lisans kimliği, yapı bilgisi) — TEK sınırlı üst veri okumasıyla (gguf.GGUFReader kullanılmaz)."""
+    meta = read_gguf_header(
+        path, keys=("general.architecture", *_LICENSE_KEYS), suffixes=_ARCH_SUFFIXES, done=_gguf_done
+    )
+    if meta is None:
+        return None, None
+    family = meta.get("general.architecture")
+    n_heads = meta.get(f"{family}.attention.head_count")
+    arch = {
+        "family": family,
+        "n_layers": meta.get(f"{family}.block_count"),
+        "n_heads": n_heads,
+        "n_kv_heads": meta.get(f"{family}.attention.head_count_kv") or n_heads,
+        "d_mlp": meta.get(f"{family}.feed_forward_length"),
+    }
+    return gguf_license_from(meta), _clean_arch(arch)
+
+
+def model_arch(path: Path, fmt: str) -> dict | None:
+    """Yükleme yapmadan yapı bilgisi: {family, n_layers, n_heads, n_kv_heads, d_mlp} ya da None.
+
+    Klasör: config.json. GGUF: yalnızca sınırlı üst veri yürüyüşü (bkz. gguf_header).
+    """
+    if fmt == "gguf":
+        return gguf_info(path)[1]
+    try:
+        folder = Path(path) if Path(path).is_dir() else Path(path).parent
+        cfg = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        n_heads = cfg.get("num_attention_heads")
+        arch = {
+            "family": cfg.get("model_type"),
+            "n_layers": cfg.get("num_hidden_layers"),
+            "n_heads": n_heads,
+            "n_kv_heads": cfg.get("num_key_value_heads") or n_heads,
+            "d_mlp": cfg.get("intermediate_size"),
+        }
+    except Exception:  # bozuk/eksik üst veri: liste yine gösterilir, yapı bilinmiyor
+        return None
+    return _clean_arch(arch)
 
 
 def scan_all(roots: dict[str, list[Path]] | None = None) -> list[ModelEntry]:

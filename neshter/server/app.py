@@ -49,7 +49,7 @@ from neshter.loader import (
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.progress import ProgressFn, check_cancel, sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
-from neshter.scan import model_arch, scan_all
+from neshter.scan import scan_all
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -424,7 +424,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "memory_bytes": mem,
                     "badge": fit_badge(mem, info.vram_bytes, info.ram_bytes),
                     "license": e.license,
-                    "arch": (arch := model_arch(e.path, e.fmt)),
+                    "arch": (arch := e.arch),
                     "supported": arch is not None and arch["family"] in SUPPORTED_FAMILIES,
                 }
             )
