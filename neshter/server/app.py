@@ -40,7 +40,7 @@ from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_g
 from neshter.hardware import system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import LoadedModel, UnsafeModelFile, UnsupportedArchitecture, load_model, read_license
-from neshter.metrics import real_effect
+from neshter.metrics import kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
 from neshter.server.jobs import TERMINAL, JobManager
@@ -247,8 +247,26 @@ def _load(path: Path, dtype: torch.dtype, name: str | None) -> LoadedModel:
 
 
 def _default_effect_prompts() -> list[str]:
-    items = load_suite()
-    return [i.prompt for i in items[:: max(1, len(items) // 8)][:8]]
+    """Ayrılmış nötr istekler (asla test setinden değil; spec §3)."""
+    return load_neutral()
+
+
+def _recipe_metrics(lm: LoadedModel, interventions: list) -> dict:
+    """Tarif düzeyi metrikler (nötr set): KL + aynı biçimde rastgele kontrol, perplexity önce/sonra.
+
+    Hedef davranış ORANI için rastgele kontrol v0.2'de (test setini ikinci kez koşturmak gerekir).
+    """
+    neutral = load_neutral()
+    out: dict = {"n_prompts": len(neutral), "kl_random_note": None}
+    try:
+        eff = recipe_effect(lm, interventions, neutral)
+        out.update(kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl)
+    except ValueError as e:  # ör. neredeyse tüm head'ler seçili: aynı sayıda rastgele kontrol yok
+        values = kl_effect(lm, neutral, interventions)
+        out.update(kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_note=str(e))
+    out["perplexity_orig"] = perplexity(lm, neutral)
+    out["perplexity_int"] = perplexity(lm, neutral, interventions)
+    return out
 
 
 def _sse(event: str, status) -> str:
@@ -478,9 +496,17 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     cancel=cancel,
                     max_new_tokens=body.max_new_tokens,
                 )
+                if cancel.is_set():
+                    return None
+                report(0.97, "KL ve perplexity ölçülüyor")
+                metrics = _recipe_metrics(lm, interventions)
             if cancel.is_set():
                 return None
-            return {"categories": [asdict(r) for r in results], "summary": asdict(summarize(results, body.target))}
+            return {
+                "categories": [asdict(r) for r in results],
+                "summary": asdict(summarize(results, body.target)),
+                "metrics": metrics,
+            }
 
         return start(fn)
 

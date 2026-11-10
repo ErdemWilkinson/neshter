@@ -7,9 +7,11 @@ yetmezse aynı ayarlarla sıralı üretime geçilir; çıktılar aynıdır.
 
 from __future__ import annotations
 
+import re
 import threading
+import unicodedata
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal
@@ -18,10 +20,10 @@ import torch
 import yaml
 from pydantic import BaseModel
 
-from neshter.concepts.detectors import detect_code, detect_refusal
+from neshter.concepts.detectors import _lower, detect_code, detect_refusal
 from neshter.interventions import Intervention, apply
 from neshter.loader import LoadedModel
-from neshter.metrics import Diff, rate_diff
+from neshter.metrics import Diff, rate_diff, wilson
 
 # --- Üretim -----------------------------------------------------------------------------------
 
@@ -54,10 +56,14 @@ def _generate(lm: LoadedModel, enc, max_new_tokens: int, seed: int) -> list[str]
     return lm.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
 
+_OOM_MARKERS = ("out of memory", "not enough memory", "can't allocate memory")  # CUDA ve CPU ayırıcıları
+
+
 def _is_oom(exc: BaseException) -> bool:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         return True
-    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+    msg = str(exc).lower()
+    return isinstance(exc, RuntimeError) and any(m in msg for m in _OOM_MARKERS)
 
 
 def generate_pair(
@@ -93,6 +99,10 @@ class SuiteItem(BaseModel):
     prompt: str
     check: Literal["code", "refusal", "contains"]
     answer: str | None = None
+    answers: list[str] | None = None  # herhangi biri geçerse doğru (answer ile birlikte)
+
+    def accepted(self) -> list[str]:
+        return ([self.answer] if self.answer is not None else []) + list(self.answers or [])
 
 
 def load_suite(path: Path | None = None) -> list[SuiteItem]:
@@ -111,6 +121,34 @@ class CategoryResult:
     k_orig: int
     k_int: int
     diff: Diff
+    orig_ci: tuple[float, float] = field(init=False)  # Wilson %95 (orijinal oran)
+    int_ci: tuple[float, float] = field(init=False)  # Wilson %95 (müdahaleli oran)
+
+    def __post_init__(self) -> None:
+        self.orig_ci = wilson(self.k_orig, self.n)[1:]
+        self.int_ci = wilson(self.k_int, self.n)[1:]
+
+
+def _norm_text(text: str) -> str:
+    """NFKC (H₂O → H2O) + Türkçe duyarlı küçük harf (İ → i)."""
+    return _lower(unicodedata.normalize("NFKC", text))
+
+
+def answer_matches(answer: str, text: str) -> bool:
+    """Cevap metinde bağımsız olarak geçiyor mu?
+
+    Sayılar iki yandan sınırlıdır ("12", "120"de ya da "3.12"de değil, "12 ay"da eşleşir). Kelimelerde
+    yalnızca baş sınır aranır: Türkçe ekler ("doğudan", "Ankara'dır") geçerli kalsın, ama "stanbul"
+    gibi kelime içi parçalar eşleşmesin.
+    """
+    ans, txt = _norm_text(answer).strip(), _norm_text(text)
+    if not ans:
+        return False
+    if ans.isdigit():
+        pattern = rf"(?<![\w.,]){re.escape(ans)}(?![\w]|[.,]\d)"
+    else:
+        pattern = rf"(?<!\w){re.escape(ans)}"
+    return re.search(pattern, txt) is not None
 
 
 def _passes(item: SuiteItem, answer: str) -> bool:
@@ -118,9 +156,10 @@ def _passes(item: SuiteItem, answer: str) -> bool:
         return detect_code(answer)
     if item.check == "refusal":
         return detect_refusal(answer)
-    if item.answer is None:
+    accepted = item.accepted()
+    if not accepted:
         raise ValueError(f"'contains' öğesinde answer eksik: {item.prompt!r}")
-    return item.answer.lower() in answer.lower()
+    return any(answer_matches(a, answer) for a in accepted)
 
 
 def run_suite(
@@ -193,7 +232,7 @@ def summarize(results: list[CategoryResult], target: str) -> Summary:
             f"Hedef davranış azaldı, ama şu kategorilerde de belirgin düşüş var: {names}.",
             f"The target behavior dropped, but these categories also dropped clearly: {names}.",
         )
-    soft = [r for r in others if r.diff.diff < 0 and _points(r) < -2]
+    soft = [r for r in others if _points(r) < -2]
     if soft:
         names = _names(soft)
         return Summary(
