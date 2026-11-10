@@ -1994,3 +1994,54 @@ def test_unexpected_exception_is_500_without_leaking(auth, caplog):
     assert "gizli-yol" not in r.text and "Traceback" not in r.text
     assert r.headers.get_list("content-security-policy") == [app_module.SECURITY_HEADERS["Content-Security-Policy"]]
     assert any(rec.exc_info and "gizli-yol" in str(rec.exc_info[1]) for rec in caplog.records)  # günlükte var
+
+
+# --- Final fix wave: I1 (bozuk GGUF iş hatası), I3 + ertelenmiş #4 (GGUF bf16 notu sunucuda) -------------
+
+
+def _gguf_with_tensor(path):
+    import gguf
+    import numpy as np
+
+    w = gguf.GGUFWriter(str(path), "qwen2")
+    w.add_tensor("token_embd.weight", np.zeros((16, 8), dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    return path
+
+
+def test_load_hostile_gguf_fails_fast_with_code(client, auth, tmp_path, monkeypatch):
+    import struct
+
+    def never(*a, **k):
+        raise AssertionError("transformers GGUF ayrıştırıcısı çağrıldı")
+
+    monkeypatch.setattr("neshter.loader.AutoModelForCausalLM.from_pretrained", never)
+    p = tmp_path / "kotu.gguf"
+    key = struct.pack("<Q", 1) + b"a"
+    p.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 1) + key + struct.pack("<IIQ", 9, 0, 2**62) + b"\0" * 100)
+    job = client.post("/api/session/load", json={"path": str(p)}, headers=auth).json()["job_id"]
+    st = wait_done(client, auth, job, timeout=10, expect="error")
+    assert st["error_code"] == "unsupported_arch" and "GGUF dosyası bozuk" in st["error"]
+
+
+def test_load_gguf_bf16_policy_sets_device_note(client, auth, tmp_path, tiny_model_dir, monkeypatch):
+    from neshter import loader
+
+    seen = []
+
+    def fake(path, dtype):
+        seen.append(dtype)
+        m = loader.AutoModelForCausalLM.from_pretrained(tiny_model_dir, dtype=dtype)
+        return m, loader.AutoTokenizer.from_pretrained(tiny_model_dir)
+
+    monkeypatch.setattr(loader, "_load_gguf", fake)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1)
+    body = {"path": str(_gguf_with_tensor(tmp_path / "m.gguf")), "dtype": "auto"}
+    st = wait_done(client, auth, client.post("/api/session/load", json=body, headers=auth).json()["job_id"])
+    assert seen == [torch.bfloat16] and st["result"]["dtype"] == "bfloat16"
+    assert loader.SLOW_BF16_NOTE in st["result"]["device_note"]
+    assert loader.SLOW_BF16_NOTE in client.get("/api/session", headers=auth).json()["device_note"]

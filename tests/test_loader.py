@@ -102,7 +102,7 @@ def test_gguf_unsupported_arch_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", boom)
     with pytest.raises(UnsupportedArchitecture, match="desteklenmiyor"):
-        load_model(tmp_path / "x.gguf", device="cpu")
+        load_model(_valid_gguf(tmp_path / "x.gguf"), device="cpu")
 
 
 def test_gguf_loading_prerequisite_accelerate_is_declared_and_installed():
@@ -128,7 +128,7 @@ def test_gguf_passes_gguf_file_and_safety_flags(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", boom)
     with pytest.raises(UnsupportedArchitecture):
-        load_model(tmp_path / "x.gguf", device="cpu", dtype=torch.float32)
+        load_model(_valid_gguf(tmp_path / "x.gguf"), device="cpu", dtype=torch.float32)
     assert seen["args"] == (tmp_path,)
     assert seen["kwargs"]["gguf_file"] == "x.gguf"
     assert seen["kwargs"]["trust_remote_code"] is False
@@ -195,7 +195,8 @@ def test_display_name_override(tiny_model_dir):
 
 @pytest.mark.parametrize("device,n,ram,native,expected", [
     ("cuda", 10**9, 64 * 2**30, False, torch.bfloat16),
-    ("cpu", 5 * 10**8, 16 * 2**30, False, torch.float32),   # 0.5B·4·1.2 = 2.4 GB < 0.7·16 GB
+    ("cpu", 5 * 10**8, 16 * 2**30, False, torch.float32),   # 0.5B·4·2.0 = 4 GB < 0.7·16 GB
+    ("cpu", 2 * 10**9, 16 * 2**30, False, torch.bfloat16),  # 2B·4·2.0 = 16 GB > 12 GB (1.2 ile geçerdi: I4)
     ("cpu", 8 * 10**9, 16 * 2**30, False, torch.bfloat16),  # 38 GB > 11.2 GB
     ("cpu", 5 * 10**8, 16 * 2**30, True, torch.bfloat16),   # AVX512_BF16 / AMX
 ])
@@ -543,3 +544,130 @@ def test_sha256_path_progress_and_cancel(tmp_path):
         sha256_path(tmp_path, cancel=ev)
     with pytest.raises(Cancelled):
         sha256_path(tmp_path / "a.bin", cancel=ev)
+
+
+# --- Final fix wave: I1 (GGUF ön doğrulama), I3 (GGUF dtype politikası), I5 (fp16 kaynak fp16 kalır) ----------
+
+
+def _hostile_ggufs(tmp_path):
+    import struct
+
+    def s(b):
+        return struct.pack("<Q", len(b)) + b
+
+    hdr = lambda nt, nkv: b"GGUF" + struct.pack("<IQQ", 3, nt, nkv)  # noqa: E731
+    cases = {
+        # T9 incelemesindeki dosya: uint8 dizisi, sayı 2^62 (GGUFReader sonsuz döngü / sınırsız bellek)
+        "array_2_62": hdr(0, 1) + s(b"a") + struct.pack("<I", 9) + struct.pack("<IQ", 0, 2**62) + b"\0" * 100,
+        "tensor_count_huge": hdr(2**40, 0) + b"\0" * 64,
+        "tensor_offset_past_eof": hdr(1, 0) + s(b"t") + struct.pack("<IQIQ", 1, 4, 0, 2**40) + b"\0" * 64,
+    }
+    out = []
+    for name, data in cases.items():
+        p = tmp_path / f"{name}.gguf"
+        p.write_bytes(data)
+        out.append(p)
+    return out
+
+
+def test_invalid_gguf_is_rejected_before_transformers_parser(tmp_path, monkeypatch):
+    calls = []
+
+    def spy(*a, **k):
+        calls.append((a, k))
+        raise AssertionError("transformers ayrıştırıcısı çağrıldı")
+
+    monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", spy)
+    monkeypatch.setattr(loader.AutoTokenizer, "from_pretrained", spy)
+    for p in _hostile_ggufs(tmp_path):
+        with pytest.raises(UnsupportedArchitecture, match="GGUF dosyası bozuk ya da desteklenmeyen biçimde"):
+            load_model(p, device="cpu")
+    assert calls == []
+
+
+def _valid_gguf(path, n=16):
+    import numpy as np
+
+    w = gguf.GGUFWriter(str(path), "qwen2")
+    w.add_tensor("token_embd.weight", np.zeros((n, 8), dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    return path
+
+
+def _spy_gguf_load(monkeypatch, lm):
+    seen = []
+
+    def fake(path, dtype):
+        seen.append(dtype)
+        return lm.model, lm.tokenizer
+
+    monkeypatch.setattr(loader, "_load_gguf", fake)
+    return seen
+
+
+def test_gguf_auto_dtype_follows_policy_fp32_when_ram_allows(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.float32] and got.device_note is None
+
+
+def test_gguf_auto_dtype_bf16_with_note_when_ram_short(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.bfloat16] and loader.SLOW_BF16_NOTE in got.device_note
+
+
+def test_gguf_policy_uses_walker_param_count(tmp_path, monkeypatch, lm):
+    seen = []
+    monkeypatch.setattr(loader, "_load_gguf", lambda path, dtype: (lm.model, lm.tokenizer))
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(
+        loader, "pick_compute_dtype", lambda dev, n, ram, native: seen.append((dev, n)) or torch.float32
+    )
+    load_model(_valid_gguf(tmp_path / "m.gguf", n=32), device="cpu")
+    assert seen == [("cpu", 32 * 8)]
+
+
+def test_gguf_explicit_dtype_and_native_bf16(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.bfloat16] and got.device_note is None
+    load_model(tmp_path / "m.gguf", device="cpu", dtype=torch.float32)
+    assert seen[-1] == torch.float32
+
+
+def _fp16_folder(tmp_path, tiny_model_dir):
+    m = tmp_path / "fp16"
+    shutil.copytree(tiny_model_dir, m)
+    f = m / "model.safetensors"
+    sd = {k: v.to(torch.float16) for k, v in load_file(f).items()}
+    save_file(sd, f, metadata={"format": "pt"})
+    cfg = json.loads((m / "config.json").read_text(encoding="utf-8"))
+    cfg["dtype"] = "float16"
+    (m / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    return m, sd
+
+
+def test_fp16_source_stays_fp16_when_policy_picks_bf16(tmp_path, tiny_model_dir, monkeypatch):
+    from conftest import recipe_for
+
+    from neshter.export import save_safetensors
+    from neshter.interventions import HeadAblation
+
+    src, sd = _fp16_folder(tmp_path, tiny_model_dir)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)  # politika: bf16
+    lm16 = load_model(src, device="cpu")
+    assert next(lm16.model.parameters()).dtype == torch.float16
+    out = save_safetensors(lm16, recipe_for(lm16, [HeadAblation(0, 1)]), tmp_path / "out")
+    saved = load_file(out / "model.safetensors")
+    touched = "model.layers.0.self_attn.o_proj.weight"
+    untouched = [k for k in sd if k != touched]
+    assert untouched and all(saved[k].dtype == torch.float16 and torch.equal(saved[k], sd[k]) for k in untouched)
