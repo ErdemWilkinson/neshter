@@ -88,3 +88,10 @@ def logits(lm, text):
     """Tek metin için ham logit'ler (müdahale testlerinde paylaşılan yardımcı)."""
     with torch.no_grad():
         return lm.model(**lm.tokenizer(text, return_tensors="pt")).logits
+
+
+def recipe_for(lm, interventions, concept="code"):
+    """Müdahale listesinden kesim tarifi (Task 10-12 testlerinde paylaşılan yardımcı)."""
+    from neshter.recipe import from_interventions
+
+    return from_interventions(interventions, lm, concept=concept, method="manual", seed=0)
