@@ -15,8 +15,8 @@ dosyası olarak kaydeder.
   - **Head susturma:** bir sorgu (Q) dikkat head'ini susturur (`o_proj` sütunları sıfırlanır).
   - **Yön ortogonalizasyonu:** bir davranış yönünü ağırlıklardan çıkarır.
 - İkisi de tensör şeklini korur, bu yüzden sonuç GGUF ile uyumludur. Yapısal budama v0.1'de yok.
-- **Gerçek ağırlıklarda doğrulandı:** Qwen2 (Qwen2.5-0.5B). Llama ve Gemma2 testlerde küçük rastgele
-  modellerle çalışır.
+- **Gerçek ağırlıklarda doğrulandı:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) ve GGUF yükleme
+  (SmolLM2-135M Q8_0). Gemma2 testlerde küçük rastgele modellerle çalışır.
 - Bir kesimin gerçek etkisi, katmanı eşleştirilmiş 30 rastgele head kümesine karşı KL ıraksaması olarak
   ölçülür ve yüzdelik dilim ile permütasyon p değeri olarak bildirilir. Tekil oranlar Wilson %95
   aralığı taşır. Test seti farkları McNemar exact testi ve kategoriler arası Holm düzeltmesiyle
