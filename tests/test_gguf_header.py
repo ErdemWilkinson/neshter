@@ -345,3 +345,59 @@ def test_validate_missing_file_is_invalid(tmp_path):
 
     with pytest.raises(GGUFInvalid):
         validate_gguf(tmp_path / "yok.gguf")
+
+
+# --- Follow-up R1: örtüşen / takma adlı / hizasız tensör verisi reddedilir -------------------------------------
+
+
+def _with_data(tensors: list[bytes], data: bytes) -> bytes:
+    raw = hdr(len(tensors), 0) + b"".join(tensors)
+    return raw + b"\0" * ((-len(raw)) % 32) + data
+
+
+def alias_cases() -> dict[str, bytes]:
+    data = b"\0" * 4096
+    return {
+        # İnceleyicinin denemesi: 60000 x 1 MiB tensör, hepsi konum 0'da, 1 MiB veri (3.5 MB dosya, "15.7G parametre")
+        "a_probe_60000_at_zero": _with_data([ti(b"blk.%d.w" % i, [262144]) for i in range(60_000)], b"\0" * (1 << 20)),
+        "a_overlap_same_offset": _with_data([ti(b"a", [16]), ti(b"b", [16])], data),
+        "a_overlap_partial": _with_data([ti(b"a", [16]), ti(b"b", [16], offset=32)], data),  # 64 bayt, 32'de başlar
+        "a_unaligned_offset": _with_data([ti(b"a", [16], offset=3)], data),
+        "a_sum_exceeds_data": _with_data([ti(b"a", [512]), ti(b"b", [512], offset=2048)], b"\0" * 3072),
+    }
+
+
+_ALIAS_RUNNER = _VALIDATE_RUNNER
+
+
+@pytest.fixture(scope="module")
+def alias_results(tmp_path_factory):
+    d = tmp_path_factory.mktemp("alias")
+    paths = []
+    for name, data in alias_cases().items():
+        p = d / f"{name}.gguf"
+        p.write_bytes(data)
+        paths.append(str(p))
+    proc = subprocess.run(
+        [sys.executable, "-c", _ALIAS_RUNNER, *paths], cwd=REPO, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("name", list(alias_cases()))
+def test_validate_rejects_overlapping_or_unaligned_tensor_data(alias_results, name):
+    r = alias_results[name]
+    assert r["ok"] is False and "unexpected" not in r, r
+    assert "GGUF dosyası bozuk ya da desteklenmeyen biçimde" in r["msg"]
+    assert r["secs"] < 2.0, f"{name}: {r['secs']:.2f}s"
+
+
+def test_validate_accepts_adjacent_aligned_tensors_in_any_table_order(tmp_path):
+    from neshter.gguf_header import validate_gguf
+
+    # tablo sırası konum sırasından farklı; bitişik, hizalı, örtüşmesiz
+    p = tmp_path / "ok.gguf"
+    p.write_bytes(_with_data([ti(b"b", [16], offset=64), ti(b"a", [16]), ti(b"c", [8], gtype=1, offset=128)], b"\0" * 160))
+    info = validate_gguf(p)
+    assert info.n_tensors == 3 and info.n_params == 40

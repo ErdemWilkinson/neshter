@@ -306,8 +306,18 @@ def _validate(mm: mmap.mmap, file_size: int) -> GGUFInfo:
     if tensors and data_size < 0:
         raise _invalid("veri bölgesi dosya sonunu aşıyor")
     for offset, nbytes in tensors:
+        if offset % alignment:
+            raise _invalid("tensör verisi hizasız")
         if offset > data_size or nbytes > data_size - offset:
             raise _invalid("tensör verisi dosya sonunu aşıyor")
+    # Takma ad / örtüşme: aynı baytları paylaşan binlerce tensör küçük bir dosyadan sınırsız bellek
+    # ürettirirdi (transformers her birini ayrı açar). Konuma göre sıralı ve ardışık olmalılar.
+    if sum(nbytes for _, nbytes in tensors) > max(data_size, 0):
+        raise _invalid("tensör verilerinin toplamı veri bölgesinden büyük")
+    ordered = sorted(tensors)
+    for (off_a, n_a), (off_b, _) in zip(ordered, ordered[1:]):
+        if off_a + n_a > off_b:
+            raise _invalid("tensör verileri örtüşüyor")
     return GGUFInfo(architecture, n_params, n_tensors, alignment, data_start)
 
 
