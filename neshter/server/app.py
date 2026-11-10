@@ -7,6 +7,7 @@ yerel adres olabilir, Host da yerel adres olmalıdır (DNS-rebinding). CORS ara 
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import gc
 import hmac
@@ -14,7 +15,6 @@ import json
 import shutil
 import subprocess
 import threading
-import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -23,8 +23,8 @@ from typing import Annotated, Literal
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub import snapshot_download
 from huggingface_hub.utils import tqdm as hf_tqdm
@@ -35,14 +35,21 @@ from neshter.activity import head_output_power, normalize_global, normalize_per_
 from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
 from neshter.concepts.hunt import hunt
-from neshter.concepts.model import Concept, load_preset
+from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
 from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf, verify_source_untouched
 from neshter.hardware import system_info
 from neshter.interventions import HeadAblation
-from neshter.loader import LoadedModel, UnsafeModelFile, UnsupportedArchitecture, load_model, read_license
+from neshter.loader import (
+    SUPPORTED_FAMILIES,
+    LoadedModel,
+    UnsafeModelFile,
+    UnsupportedArchitecture,
+    load_model,
+    read_license,
+)
 from neshter.metrics import kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
-from neshter.scan import scan_all
+from neshter.scan import model_arch, scan_all
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -102,7 +109,7 @@ class CompareReq(_Req):
 
 class SuiteReq(_Req):
     recipe_ops: list[Op] = Field(min_length=1)
-    target: str
+    target: str | None = None  # None: özet yok (ör. "tone"un test kategorisi yok)
     max_new_tokens: int = Field(default=200, ge=1, le=1024)
 
 
@@ -307,6 +314,43 @@ class _Cancelled(Exception):
     pass
 
 
+async def job_stream(jobs: JobManager, job_id: str, request, poll: float = 0.1, keepalive: float = 15.0):
+    """SSE akışı (async: threadpool işçisi tutmaz). İstemci koparsa hemen biter; olay yokken
+    `keepalive` saniyede bir yorum satırı gönderir (proxy/tarayıcı bağlantıyı kapatmasın)."""
+    last = None
+    idle = 0.0
+    while True:
+        if await request.is_disconnected():
+            return
+        st = jobs.status(job_id)
+        key = (st.state, st.progress, st.message)
+        if key != last:
+            last = key
+            idle = 0.0
+            if st.state == "error":
+                yield _sse("error", st)
+                return
+            if st.state in TERMINAL:  # done ya da cancelled
+                yield _sse("done", st)
+                return
+            yield _sse("progress", st)
+        await asyncio.sleep(poll)
+        idle += poll
+        if idle >= keepalive:
+            idle = 0.0
+            yield ": keepalive\n\n"
+
+
+_PLACEHOLDER_HTML = """<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><title>Neşter</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
+<h1>Neşter</h1>
+<p>Arayüz henüz derlenmedi; yerel API çalışıyor.</p>
+<p lang="en">The web UI has not been built yet; the local API is running.</p>
+</body></html>
+"""
+
+
 # --- Uygulama -------------------------------------------------------------------------------------
 
 
@@ -358,6 +402,26 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "memory_bytes": mem,
                     "badge": fit_badge(mem, info.vram_bytes, info.ram_bytes),
                     "license": read_license(e.path) if e.path.is_dir() else None,
+                    "arch": (arch := model_arch(e.path, e.fmt)),
+                    "supported": arch is not None and arch["family"] in SUPPORTED_FAMILIES,
+                }
+            )
+        return out
+
+    @app.get("/api/concepts")
+    def get_concepts():
+        out = []
+        for cid in PRESET_ORDER:
+            c = load_preset(cid)
+            out.append(
+                {
+                    "id": c.id,
+                    "name_tr": c.name_tr,
+                    "name_en": c.name_en,
+                    "safety_ablation": c.safety_ablation,
+                    "suite_target": c.suite_target,
+                    "positive": c.positive,
+                    "negative": c.negative,
                 }
             )
         return out
@@ -422,9 +486,19 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
     # -- anlık (eşzamanlı) uçlar --
 
+    @contextmanager
+    def _model_busy_guard():
+        """Eşzamanlı uçlar kilidi beklemez: model bir işte meşgulse hemen 409 (threadpool tükenmesin)."""
+        if not session.lock.acquire(blocking=False):
+            raise HTTPException(409, "Model şu an bir işte meşgul; iş bitince tekrar deneyin.")
+        try:
+            yield
+        finally:
+            session.lock.release()
+
     @app.post("/api/activity")
     def activity(body: ActivityReq):
-        with session.lock, _bad_input():
+        with _model_busy_guard(), _bad_input():
             lm = require_model()
             power = head_output_power(lm, body.prompt)  # [L, H, T]
             n_tokens = power.shape[-1]
@@ -436,13 +510,13 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
     @app.post("/api/mlp")
     def mlp(body: MlpReq):
-        with session.lock, _bad_input():
+        with _model_busy_guard(), _bad_input():
             top = top_mlp_neurons(require_model(), body.prompt, body.token_index)
         return [{"layer": layer, "neuron": neuron, "value": value} for layer, neuron, value in top]
 
     @app.post("/api/compare")
     def compare(body: CompareReq):
-        with session.lock, _bad_input():
+        with _model_busy_guard(), _bad_input():
             lm = require_model()
             interventions = to_interventions(_recipe_from_ops(lm, body.recipe_ops))
             original, modified, mode = generate_pair(lm, body.prompt, interventions, max_new_tokens=body.max_new_tokens)
@@ -513,7 +587,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def suite(body: SuiteReq):
         lm = require_model()
         items = load_suite()
-        if body.target not in {i.category for i in items}:
+        if body.target is not None and body.target not in {i.category for i in items}:
             raise HTTPException(422, f"Hedef kategori '{body.target}' test setinde yok.")
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops)
@@ -538,7 +612,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 return None
             return {
                 "categories": [asdict(r) for r in results],
-                "summary": asdict(summarize(results, body.target)),
+                "summary": None if body.target is None else asdict(summarize(results, body.target)),
                 "metrics": metrics,
             }
 
@@ -601,33 +675,23 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         return asdict(jobs.status(job_id))
 
     @app.get("/api/jobs/{job_id}/events")
-    def job_events(job_id: str):
+    def job_events(job_id: str, request: Request):
         job_status(job_id)
-
-        def stream():
-            last = None
-            while True:
-                st = jobs.status(job_id)
-                key = (st.state, st.progress, st.message)
-                if key != last:
-                    last = key
-                    if st.state == "error":
-                        yield _sse("error", st)
-                        return
-                    if st.state in TERMINAL:  # done ya da cancelled
-                        yield _sse("done", st)
-                        return
-                    yield _sse("progress", st)
-                time.sleep(0.1)
-
         return StreamingResponse(
-            stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            job_stream(jobs, job_id, request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     # -- statik arayüz (yalnızca derlenmişse; API rotaları önceliklidir) --
 
     if WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+    else:
+
+        @app.get("/", response_class=HTMLResponse)
+        def placeholder():
+            return _PLACEHOLDER_HTML
 
     return app
 

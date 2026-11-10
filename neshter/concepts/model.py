@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 from importlib.resources import files
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, field_validator
@@ -19,7 +18,7 @@ class Concept(BaseModel, extra="forbid"):
     name_en: str
     positive: list[str]
     negative: list[str]
-    detector: Literal["code", "refusal"] | None
+    suite_target: str | None = None  # test setindeki hedef kategori (ör. refusal → harmful_refusal)
     safety_ablation: bool = False
 
     @field_validator("positive", "negative")

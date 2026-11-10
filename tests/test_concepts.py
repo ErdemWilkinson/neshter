@@ -2,6 +2,7 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+from neshter.compare import load_suite
 from neshter.concepts.detectors import detect_code, detect_refusal
 from neshter.concepts.hunt import (
     activation_diff,
@@ -30,7 +31,7 @@ def test_presets_valid_and_ordered():
 
 
 def test_too_few_examples_rejected():
-    with pytest.raises(ValidationError): Concept(id="x", name_tr="x", name_en="x", positive=["a"]*5, negative=["b"]*40, detector=None)
+    with pytest.raises(ValidationError): Concept(id="x", name_tr="x", name_en="x", positive=["a"]*5, negative=["b"]*40, suite_target=None)
 
 
 def test_split_disjoint():
@@ -57,10 +58,12 @@ def test_hunt_shapes(lm):
 
 
 def test_presets_content_rules():
-    detectors = {"code": "code", "refusal": "refusal", "math": None, "tone": None}
+    targets = {"code": "code", "refusal": "harmful_refusal", "math": "math", "tone": None}
+    suite_cats = {i.category for i in load_suite()}
     for cid in PRESET_ORDER:
         c = load_preset(cid)
-        assert c.id == cid and c.detector == detectors[cid]
+        assert c.id == cid and c.suite_target == targets[cid]
+        assert c.suite_target is None or c.suite_target in suite_cats
         assert c.safety_ablation == (cid == "refusal")
         allp = c.positive + c.negative
         assert len(set(allp)) == len(allp), f"{cid}: tekrar eden istek var"
@@ -80,7 +83,7 @@ def test_split_sizes_deterministic_and_complete():
 
 def test_extra_fields_forbidden():
     with pytest.raises(ValidationError):
-        Concept(id="x", name_tr="x", name_en="x", positive=["a"] * 40, negative=["b"] * 40, detector=None, foo=1)
+        Concept(id="x", name_tr="x", name_en="x", positive=["a"] * 40, negative=["b"] * 40, suite_target=None, foo=1)
 
 
 def test_detector_edge_cases():

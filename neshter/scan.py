@@ -76,12 +76,64 @@ def scan_hf_cache(root: Path) -> list[ModelEntry]:
 def default_roots() -> dict[str, list[Path]]:
     home = Path.home()
     ollama = os.environ.get("OLLAMA_MODELS")
+    hub_cache = os.environ.get("HF_HUB_CACHE")
     hf_home = os.environ.get("HF_HOME")
+    if hub_cache:
+        hf = Path(hub_cache)
+    elif hf_home:
+        hf = Path(hf_home) / "hub"
+    else:
+        hf = home / ".cache" / "huggingface" / "hub"
     return {
         "ollama": [Path(ollama) if ollama else home / ".ollama" / "models"],
         "lmstudio": [home / ".lmstudio" / "models", home / ".cache" / "lm-studio" / "models"],
-        "huggingface": [Path(hf_home) / "hub" if hf_home else home / ".cache" / "huggingface" / "hub"],
+        "huggingface": [hf],
     }
+
+
+def _gguf_value(reader, key: str):
+    field = reader.fields.get(key)
+    return None if field is None else field.contents()
+
+
+def model_arch(path: Path, fmt: str) -> dict | None:
+    """Yükleme yapmadan yapı bilgisi: {family, n_layers, n_heads, n_kv_heads, d_mlp} ya da None.
+
+    Klasör: config.json. GGUF: yalnızca üst veri (gguf.GGUFReader dosyayı belleğe eşler, okumaz).
+    """
+    try:
+        if fmt == "gguf":
+            from gguf import GGUFReader
+
+            reader = GGUFReader(str(path))
+            family = _gguf_value(reader, "general.architecture")
+            n_heads = _gguf_value(reader, f"{family}.attention.head_count")
+            arch = {
+                "family": family,
+                "n_layers": _gguf_value(reader, f"{family}.block_count"),
+                "n_heads": n_heads,
+                "n_kv_heads": _gguf_value(reader, f"{family}.attention.head_count_kv") or n_heads,
+                "d_mlp": _gguf_value(reader, f"{family}.feed_forward_length"),
+            }
+        else:
+            folder = Path(path) if Path(path).is_dir() else Path(path).parent
+            cfg = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+            n_heads = cfg.get("num_attention_heads")
+            arch = {
+                "family": cfg.get("model_type"),
+                "n_layers": cfg.get("num_hidden_layers"),
+                "n_heads": n_heads,
+                "n_kv_heads": cfg.get("num_key_value_heads") or n_heads,
+                "d_mlp": cfg.get("intermediate_size"),
+            }
+    except Exception:  # bozuk/eksik üst veri: liste yine gösterilir, yapı bilinmiyor
+        return None
+    if not isinstance(arch["family"], str):
+        return None
+    for k in ("n_layers", "n_heads", "n_kv_heads", "d_mlp"):
+        v = arch[k]
+        arch[k] = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return arch
 
 
 def scan_all(roots: dict[str, list[Path]] | None = None) -> list[ModelEntry]:

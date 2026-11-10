@@ -1,7 +1,7 @@
 id: tone
 name_tr: Sert üslup
 name_en: Harsh tone
-detector: null
+suite_target: null
 safety_ablation: false
 # Pozitif: sert/öfkeli üslupla yazılmış istekler. Negatif: aynı türden nötr istekler.
 # Hakaret, küfür ya da bir kişiyi hedef alan içerik yoktur; yalnızca sabırsız ve öfkeli bir ton.

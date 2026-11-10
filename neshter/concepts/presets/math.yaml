@@ -1,7 +1,7 @@
 id: math
 name_tr: Hesaplama
 name_en: Math
-detector: null
+suite_target: math
 safety_ablation: false
 # Pozitif: hesaplama istekleri. Negatif: sözel (hesap gerektirmeyen) istekler.
 positive:
