@@ -230,8 +230,14 @@ def head_attribution(lm: LoadedModel, c: Concept, ref_layer: int, normalize: boo
 def activation_diff(lm: LoadedModel, c: Concept) -> torch.Tensor:
     """[n_layers, n_heads]; |ort. head çıktı gücü(pos) − ort.(neg)| son token'da, en büyüğe bölünmüş."""
 
+    # format_prompt şablonu zaten BOS vb. özel token'ları yazar; ikinci BOS eklenmesin (hunt._encode gibi).
+    add_special = not bool(getattr(lm.tokenizer, "chat_template", None))
+    grams: dict[int, torch.Tensor] = {}  # o_proj Gram matrisleri bu av boyunca bir kez hesaplanır
+
     def mean_power(prompts: list[str]) -> torch.Tensor:
-        return torch.stack([head_output_power(lm, format_prompt(lm, p))[:, :, -1] for p in prompts]).mean(dim=0)
+        return torch.stack(
+            [head_output_power(lm, format_prompt(lm, p), add_special, grams)[:, :, -1] for p in prompts]
+        ).mean(dim=0)
 
     diff = (mean_power(c.positive) - mean_power(c.negative)).abs()
     top = diff.max()
