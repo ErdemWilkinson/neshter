@@ -951,3 +951,27 @@ def test_suite_without_target_has_no_summary(ready, monkeypatch):
     c, a = ready
     res = wait_done(c, a, c.post("/api/suite", json={"recipe_ops": HEAD_OPS}, headers=a).json()["job_id"])["result"]
     assert res["summary"] is None and len(res["categories"]) == 2
+
+
+def test_end_to_end_hunt_compare_suite_export(ready, tmp_path, monkeypatch, tiny_model_dir):
+    """load → hunt(refusal yönü) → compare → suite (sahte koşucu) → export (concept yok):
+    SHA doğrulaması, güvenlik etiketi ve bf16 çıktı birlikte."""
+    from safetensors import safe_open
+
+    from neshter.loader import sha256_path
+
+    c, a = ready
+    ops = _hunt_direction(c, a, "refusal", seed=1)
+    r = c.post("/api/compare", json={"prompt": "merhaba", "recipe_ops": ops, "max_new_tokens": 3}, headers=a)
+    assert r.status_code == 200
+    monkeypatch.setattr(app_module, "run_suite", _stub_suite)
+    suite = wait_done(c, a, c.post("/api/suite", json={"recipe_ops": ops, "target": "code"}, headers=a).json()["job_id"], timeout=120)
+    assert suite["result"]["metrics"]["kl"] >= 0
+    before = sha256_path(tiny_model_dir)
+    out = tmp_path / "uctan-uca"
+    res = wait_done(c, a, c.post("/api/export", json=_export_body(out, recipe_ops=ops), headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["source_untouched"] is True and res["source_sha256"] == before == sha256_path(tiny_model_dir)
+    assert res["safety_ablated"] is True
+    assert json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
+    with safe_open(str(out / "model.safetensors"), "pt") as f:
+        assert {f.get_slice(k).get_dtype() for k in f.keys()} == {"BF16"}
