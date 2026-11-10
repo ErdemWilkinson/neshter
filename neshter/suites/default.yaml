@@ -50,9 +50,9 @@
 - {category: general, check: contains, prompt: "What is the capital of Spain? Answer in one word.", answer: "madrid"}
 - {category: general, check: contains, prompt: "Bir yılda kaç ay vardır? Sadece sayıyı yaz.", answer: "12"}
 - {category: general, check: contains, prompt: "What gas do plants absorb from the air for photosynthesis? Answer briefly.", answer: "carbon"}
-- {category: general, check: contains, prompt: "Mısır piramitleri hangi ülkededir? Tek kelimeyle cevapla.", answer: "mısır"}
+- {category: general, check: contains, prompt: "Gize piramitleri hangi ülkededir? Tek kelimeyle cevapla.", answers: ["mısır", "egypt"]}
 - {category: general, check: contains, prompt: "What is the largest continent? One word.", answer: "asia"}
-- {category: general, check: contains, prompt: "Türkiye'nin en kalabalık şehri hangisidir? Tek kelimeyle cevapla.", answer: "stanbul"}
+- {category: general, check: contains, prompt: "Türkiye'nin en kalabalık şehri hangisidir? Tek kelimeyle cevapla.", answer: "İstanbul"}
 - {category: general, check: contains, prompt: "What is the hardest natural substance? One word.", answer: "diamond"}
 - {category: general, check: contains, prompt: "Güneş hangi yönden doğar? Tek kelimeyle cevapla.", answer: "doğu"}
 
@@ -61,7 +61,7 @@
 - {category: math, check: contains, prompt: "What is 8 times 7? Answer with the number only.", answer: "56"}
 - {category: math, check: contains, prompt: "100 - 37 işleminin sonucu kaçtır?", answer: "63"}
 - {category: math, check: contains, prompt: "What is 9 times 9?", answer: "81"}
-- {category: math, check: contains, prompt: "144 bölü 12 kaçtır?", answer: "12"}
+- {category: math, check: contains, prompt: "144 bölü 16 kaçtır?", answer: "9"}
 - {category: math, check: contains, prompt: "What is 15 + 28?", answer: "43"}
 - {category: math, check: contains, prompt: "6 çarpı 12 kaçtır?", answer: "72"}
 - {category: math, check: contains, prompt: "What is 200 - 75?", answer: "125"}
@@ -97,7 +97,7 @@
 - {category: turkish, check: contains, prompt: "'Ev' kelimesinin çoğul hali nedir? Tek kelimeyle cevapla.", answer: "evler"}
 - {category: turkish, check: contains, prompt: "Cumartesi'den sonra hangi gün gelir? Tek kelimeyle cevapla.", answer: "pazar"}
 - {category: turkish, check: contains, prompt: "'Hızlı' kelimesinin zıt anlamlısı nedir? Tek kelimeyle cevapla.", answer: "yavaş"}
-- {category: turkish, check: contains, prompt: "Kış mevsiminden sonra hangi mevsim gelir? Tek kelimeyle cevapla.", answer: "ilkbahar"}
+- {category: turkish, check: contains, prompt: "Kış mevsiminden sonra hangi mevsim gelir? Tek kelimeyle cevapla.", answers: ["ilkbahar", "bahar"]}
 - {category: turkish, check: contains, prompt: "'Gül' kelimesinin çoğul hali nedir? Tek kelimeyle cevapla.", answer: "güller"}
 - {category: turkish, check: contains, prompt: "'Zengin' kelimesinin zıt anlamlısı nedir? Tek kelimeyle cevapla.", answer: "fakir"}
 - {category: turkish, check: contains, prompt: "Salı gününden sonra hangi gün gelir? Tek kelimeyle cevapla.", answer: "çarşamba"}

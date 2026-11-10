@@ -106,31 +106,40 @@ def test_real_effect_random_control_excludes_chosen_and_averages(lm, monkeypatch
     import neshter.metrics as m
 
     seen: list[list[HeadAblation]] = []
-    real = m.kl_effect
+    bases = []
+    real = m._kl_from
 
-    def spy(lm_, prompts, interventions, last_k=16):
+    def spy(lm_, base, prompts, interventions, last_k):
         seen.append(list(interventions))
-        return real(lm_, prompts, interventions, last_k)
+        bases.append(base)
+        return real(lm_, base, prompts, interventions, last_k)
 
-    monkeypatch.setattr(m, "kl_effect", spy)
+    monkeypatch.setattr(m, "_kl_from", spy)
     chosen = [HeadAblation(0, 0), HeadAblation(1, 3)]
-    r = m.real_effect(lm, chosen, ["bir iki üç", "dört beş"], n_random=5, seed=1)
+    prompts = ["bir iki üç", "dört beş"]
+    r = m.real_effect(lm, chosen, prompts, n_random=5, seed=1)
     assert len(seen) == 1 + 5
     assert seen[0] == chosen
+    assert all(b is bases[0] for b in bases)  # orijinal log-olasılıklar bir kez hesaplanır
     for control in seen[1:]:
         assert len(control) == 2 and len(set(control)) == 2
         assert not set(control) & set(chosen)
-    prompts = ["bir iki üç", "dört beş"]
-    means = [sum(vals) / len(vals) for vals in (real(lm, prompts, c) for c in seen[1:])]
-    expected = sum(means) / 5
-    assert r.random_kl == pytest.approx(expected)
+    means = [sum(vals) / len(vals) for vals in (kl_effect(lm, prompts, c) for c in seen[1:])]
+    assert r.random_kl == pytest.approx(sum(means) / 5)
 
 
-def test_real_effect_small_pool_samples_what_exists(lm):
-    # 2 katman x 4 head = 8 çift; 7'si seçili, havuzda 1 çift kalır.
+def test_real_effect_dedupes_heads(lm):
+    prompts = ["bir iki üç dört"]
+    a = real_effect(lm, [HeadAblation(1, 0), HeadAblation(1, 0)], prompts, n_random=2, seed=3)
+    b = real_effect(lm, [HeadAblation(1, 0)], prompts, n_random=2, seed=3)
+    assert a == b
+
+
+def test_real_effect_small_pool_raises(lm):
+    # 2 katman x 4 head = 8 çift; 7'si seçili, havuzda 1 çift kalır: "aynı sayıda" kontrol imkânsız.
     chosen = [HeadAblation(l, h) for l in range(2) for h in range(4)][:7]
-    r = real_effect(lm, chosen, ["bir iki üç"], n_random=2)
-    assert r.n_prompts == 1 and r.random_kl >= 0
+    with pytest.raises(ValueError, match="yeterli seçilmemiş head"):
+        real_effect(lm, chosen, ["bir iki üç"], n_random=2)
 
 
 def test_real_effect_rejects_bad_input(lm):
@@ -168,3 +177,51 @@ def test_perplexity_rejects_no_predictable_tokens(lm):
         perplexity(lm, [])
     with pytest.raises(ValueError):
         perplexity(lm, ["a"])  # tek token: tahmin edilecek hedef yok
+
+
+# --- Fix wave: I3/I4 (yön kontrolü, nötr set), Minor 18 (logits_to_keep) ---------------------------
+
+
+def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
+    import neshter.metrics as m
+    from neshter.interventions import DirectionAblation
+
+    seen = []
+    real = m._kl_from
+    monkeypatch.setattr(m, "_kl_from", lambda lm_, b, p, iv, k: seen.append(list(iv)) or real(lm_, b, p, iv, k))
+    d = DirectionAblation(torch.ones(lm.arch.d_model))
+    r = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
+    assert r.kl > 0 and r.random_kl >= 0
+    for control in seen[1:]:
+        dirs = [iv for iv in control if isinstance(iv, DirectionAblation)]
+        heads = [iv for iv in control if isinstance(iv, HeadAblation)]
+        assert len(dirs) == 1 and len(heads) == 1 and heads[0] != HeadAblation(0, 1)
+        assert not torch.allclose(dirs[0].direction, d.direction)
+    again = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
+    assert again == r  # tohumlu
+
+
+def test_neutral_prompts_are_reserved():
+    from neshter.compare import load_suite
+    from neshter.concepts.model import PRESET_ORDER, load_preset
+    from neshter.metrics import load_neutral
+
+    neutral = load_neutral()
+    assert len(neutral) >= 32 and len(set(neutral)) == len(neutral)
+    suite = {i.prompt for i in load_suite()}
+    concepts = {p for cid in PRESET_ORDER for c in [load_preset(cid)] for p in c.positive + c.negative}
+    assert not set(neutral) & suite and not set(neutral) & concepts
+    assert all(len(p.split()) >= 15 for p in neutral)  # ~20+ token
+
+
+def test_kl_uses_logits_to_keep(lm, monkeypatch):
+    seen = []
+    real = lm.model.forward
+
+    def spy(*a, **kw):
+        seen.append(kw.get("logits_to_keep"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(lm.model, "forward", spy)
+    kl_effect(lm, ["bir iki üç dört beş altı"], [HeadAblation(0, 0)], last_k=3)
+    assert seen == [3, 3]

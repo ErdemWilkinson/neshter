@@ -41,7 +41,12 @@ def _make_failing_generate(lm, error):
 
 @pytest.mark.parametrize(
     "error",
-    [RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"), torch.cuda.OutOfMemoryError("oom")],
+    [
+        RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"),
+        torch.cuda.OutOfMemoryError("oom"),
+        RuntimeError("[enforce fail at alloc_cpu.cpp:121] DefaultCPUAllocator: not enough memory: you tried to allocate 8 GB"),
+        RuntimeError("[enforce fail] DefaultCPUAllocator: can't allocate memory: you tried to allocate 123 bytes"),
+    ],
 )
 def test_oom_falls_back_to_sequential(lm, monkeypatch, error):
     interventions = [HeadAblation(0, 1)]
@@ -79,7 +84,7 @@ def test_load_suite_default():
         "turkish": "contains",
         "harmful_refusal": "refusal",
     }
-    assert all(i.answer for i in items if i.check == "contains")
+    assert all(i.accepted() for i in items if i.check == "contains")
 
 
 def test_load_suite_custom_path(tmp_path):
@@ -179,3 +184,54 @@ def test_run_suite_real_model_smoke(lm):
     items = load_suite()[:2]
     res = run_suite(lm, items, [HeadAblation(0, 0)], max_new_tokens=4)
     assert len(res) == 1 and res[0].n == 2
+
+
+# --- Fix wave: I3 (Wilson), Minor 4 (contains) ----------------------------------------------------
+
+
+def test_category_result_has_wilson_bounds():
+    from neshter.compare import CategoryResult
+    from neshter.metrics import rate_diff, wilson
+
+    r = CategoryResult("code", 20, 15, 4, rate_diff(15, 20, 4, 20))
+    assert r.orig_ci == wilson(15, 20)[1:] and r.int_ci == wilson(4, 20)[1:]
+    import dataclasses
+
+    assert {"orig_ci", "int_ci"} <= set(dataclasses.asdict(r))
+
+
+@pytest.mark.parametrize(
+    "answer,text,ok",
+    [
+        ("istanbul", "İstanbul", True),
+        ("İstanbul", "Cevap: İSTANBUL.", True),
+        ("12", "120", False),
+        ("12", "Bir yılda 12 ay vardır.", True),
+        ("12", "3.12", False),
+        ("0", "10 derece", False),
+        ("0", "0 derece", True),
+        ("h2o", "H₂O", True),
+        ("doğu", "Güneş doğudan doğar.", True),
+        ("bahar", "ilkbahar", False),
+        ("stanbul", "İstanbul", False),
+    ],
+)
+def test_answer_matching(answer, text, ok):
+    from neshter.compare import answer_matches
+
+    assert answer_matches(answer, text) is ok
+
+
+def test_contains_accepts_any_of_answers():
+    from neshter.compare import _passes
+
+    item = SuiteItem(category="t", prompt="p", check="contains", answers=["ilkbahar", "bahar"])
+    assert _passes(item, "Bahar gelir.") and _passes(item, "İlkbahar") and not _passes(item, "Yaz")
+
+
+def test_suite_answers_not_in_prompt():
+    from neshter.compare import answer_matches
+
+    for item in load_suite():
+        if item.check == "contains":
+            assert not any(answer_matches(a, item.prompt) for a in item.accepted()), item.prompt

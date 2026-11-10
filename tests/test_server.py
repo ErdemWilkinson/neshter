@@ -686,3 +686,47 @@ def test_unexpected_load_error_is_wrapped_in_turkish(client, auth, monkeypatch, 
     job = client.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=auth).json()["job_id"]
     st = wait_done(client, auth, job, expect="error")
     assert st["error"].startswith("Model yüklenemedi: KeyError")
+
+
+# --- Fix wave: I3/I4 (tarif metrikleri, nötr set) ---------------------------------------------------
+
+
+def _stub_suite(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200):
+    from neshter.compare import CategoryResult
+    from neshter.metrics import rate_diff
+
+    return [
+        CategoryResult("code", 10, 10, 2, rate_diff(10, 10, 2, 10)),
+        CategoryResult("general", 10, 9, 9, rate_diff(9, 10, 9, 10)),
+    ]
+
+
+def test_suite_job_returns_recipe_metrics_and_wilson(ready, monkeypatch):
+    from neshter.metrics import load_neutral, wilson
+
+    monkeypatch.setattr(app_module, "run_suite", _stub_suite)
+    c, a = ready
+    job = c.post("/api/suite", json={"recipe_ops": HEAD_OPS, "target": "code"}, headers=a).json()["job_id"]
+    res = wait_done(c, a, job, timeout=120)["result"]
+    m = res["metrics"]
+    assert m["kl"] >= 0 and m["kl_random"] >= 0 and m["kl_random_note"] is None
+    assert m["perplexity_orig"] > 1 and m["perplexity_int"] > 1
+    assert m["n_prompts"] == len(load_neutral())
+    assert res["categories"][0]["orig_ci"] == list(wilson(10, 10)[1:])
+
+
+def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
+    from neshter.metrics import load_neutral
+
+    seen = {}
+
+    def fake(lm, heads, prompts, **kw):
+        from neshter.metrics import EffectResult
+
+        seen["prompts"] = prompts
+        return EffectResult(0.0, 0.0, 0.0, len(prompts))
+
+    monkeypatch.setattr(app_module, "real_effect", fake)
+    c, a = ready
+    wait_done(c, a, c.post("/api/effect", json={"heads": [[0, 1]]}, headers=a).json()["job_id"])
+    assert seen["prompts"] == load_neutral()
