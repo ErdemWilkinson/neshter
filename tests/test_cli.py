@@ -343,6 +343,29 @@ def test_unlabelled_recipe_keeps_its_concept(tmp_path, tiny_model_dir, lm):
     assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "code"
 
 
+def test_wheel_build_contains_web_dist(tmp_path):
+    """Gerçek wheel: `dist/` .gitignore'da olsa bile (hatch süzgeci) `artifacts` onu wheel'e sokar."""
+    import shutil
+    import subprocess
+    import zipfile
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv yok: yalnızca pyproject denetimi çalışır")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shutil.copy(ROOT / "pyproject.toml", proj)
+    shutil.copytree(ROOT / "neshter", proj / "neshter", ignore=shutil.ignore_patterns("__pycache__", "dist"))
+    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")  # hatch .gitignore'u uygular
+    (proj / "neshter" / "web" / "dist").mkdir(parents=True)
+    (proj / "neshter" / "web" / "dist" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    out = tmp_path / "out"
+    r = subprocess.run([uv, "build", "--wheel", "--out-dir", str(out), str(proj)], capture_output=True, text=True, timeout=240)
+    assert r.returncode == 0, r.stderr
+    (wheel,) = out.glob("*.whl")
+    assert "neshter/web/dist/index.html" in zipfile.ZipFile(wheel).namelist()
+
+
 def test_wheel_ships_web_dist_artifacts():
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "neshter/web/dist/**" in cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]

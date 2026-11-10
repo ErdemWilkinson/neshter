@@ -74,6 +74,8 @@ Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
 QUICK_GUARD = "general"  # hızlı kip: hedef kategori + bu "kimseyi bozmadım" kontrol kategorisi
 QUICK_MAX_NEW_TOKENS = 64
 QUICK_N_RANDOM = 20  # kullanıcıya dönük alt sınır (EffectReq.n_random ge=20)
+MAX_ACTIVITY_TOKENS = 512  # /api/activity yanıtı L×H×T'ye büyür: token sayısı sınırlanır
+MAX_ACTIVITY_CHARS = 8000  # tokenlaştırmadan önce ucuz üst sınır
 
 
 # --- İstek şemaları (bilinmeyen alan yasak) -------------------------------------------------------
@@ -84,7 +86,7 @@ class _Req(BaseModel, extra="forbid"):
 
 
 class ActivityReq(_Req):
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=MAX_ACTIVITY_CHARS)
     token_index: int | None = None  # None: yalnızca ham güç (tüm token'lar tek çağrıda)
     scale: Literal["layer", "global"] = "layer"
 
@@ -350,7 +352,10 @@ def _free_bytes(out_dir: str) -> int:
     p = Path(out_dir)
     while not p.exists() and p != p.parent:
         p = p.parent
-    return int(shutil.disk_usage(p).free)
+    try:
+        return int(shutil.disk_usage(p).free)
+    except OSError as e:  # var olmayan sürücü (ör. Q:\x), erişilemeyen birim
+        raise HTTPException(422, "Hedef klasörün sürücüsü bulunamadı.") from e
 
 
 def _default_effect_prompts() -> list[str]:
@@ -625,8 +630,11 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def activity(body: ActivityReq):
         with _model_busy_guard(), _bad_input():
             lm = require_model()
+            toks = tokens(lm, body.prompt)
+            if len(toks) > MAX_ACTIVITY_TOKENS:
+                raise ValueError(f"İstem çok uzun: en fazla {MAX_ACTIVITY_TOKENS} token (şu an {len(toks)}).")
             power = head_output_power(lm, body.prompt)  # [L, H, T]; tek ileri geçiş, tüm token'lar
-            out = {"tokens": tokens(lm, body.prompt), "power_raw": power.tolist()}
+            out = {"tokens": toks, "power_raw": power.tolist()}
             if body.token_index is not None:
                 n_tokens = power.shape[-1]
                 if not -n_tokens <= body.token_index < n_tokens:
@@ -779,6 +787,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "categories": [asdict(r) for r in results],
                 "summary": None if body.target is None else asdict(summarize(results, body.target)),
                 "metrics": metrics,
+                "quick": body.quick,
             }
 
         return start(fn, "suite")
@@ -809,6 +818,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         lm = require_model()
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops, body.concept)
+        _free_bytes(body.out_dir)  # sürücü yoksa iş başlamadan 422 (iş hatası yerine)
 
         def fn(report, cancel):
             with session.lock:
