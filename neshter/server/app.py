@@ -12,6 +12,7 @@ import base64
 import gc
 import hmac
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -204,6 +205,13 @@ def _recipe_from_ops(lm: LoadedModel, ops: list, concept: str | None = None) -> 
 
 
 SAFETY_COS = 0.99
+REFUSAL_SUITE_CATEGORY = "harmful_refusal"  # reddetme dedektörünün (check: refusal) test kategorisi
+
+
+def _is_safety_concept(c: Concept) -> bool:
+    """Av bir güvenlik avı mı? Bayrak, "refusal" kimliği ya da reddetme dedektörünün kategorisi (özel kavramlar
+    bayrağı kapalı bırakıp yine de reddetmeyi arıyor olabilir; etiket bayrağa bağlı kalmaz)."""
+    return c.safety_ablation or c.id == "refusal" or c.suite_target == REFUSAL_SUITE_CATEGORY
 
 
 def _is_safety(session: Session, ops: list, concept: str | None) -> bool:
@@ -604,6 +612,13 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         require_model()
         if body.concept is not None:
             concept = body.concept
+            if not re.fullmatch(RECIPE_TEXT, concept.id):
+                # Tarife ve dışa aktarıma girecek kimlik; avlanabilir ama kaydedilemez bir kavram olmasın.
+                raise HTTPException(
+                    422,
+                    "Kavram kimliği yalnızca harf, rakam, '.', '_', '-' içerebilir (en fazla 64 karakter): "
+                    f"{concept.id[:64]!r}.",
+                )
         else:
             try:
                 concept = load_preset(body.concept_id)
@@ -620,7 +635,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel)
                 # Etiketler yalnızca av tamamen bittiyse ve iş iptal edilmediyse oturuma girer (geç iptal
                 # edilen av iz bırakmaz). Bu yön/head'ler kaydedilirse etiket istemciye bağlı kalmaz.
-                if concept.safety_ablation and not cancel.is_set():
+                if _is_safety_concept(concept) and not cancel.is_set():
                     if r.direction is not None:
                         d = r.direction.detach().to("cpu", torch.float32)
                         session.safety_dirs.append(d / d.norm())

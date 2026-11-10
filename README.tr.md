@@ -69,7 +69,9 @@ Neşter senin yerine `ollama create` çalıştırır.
 - Kaynak model asla değiştirilmez: salt okunur açılır, SHA-256 değeri kayıttan önce ve sonra
   karşılaştırılır. Kayıt atomiktir (`.tmp` klasörü, sonra `os.replace`) ve var olan bir klasörün
   üzerine yazmaz.
-- Tarifler güvenilmeyen girdidir: katı şema, kod yok, dosya yolu yok.
+- Tarifler güvenilmeyen girdidir: katı şema, kod yok, dosya yolu yok. v0.1.1'den itibaren tarifin
+  `concept` ve `method` alanları `^[A-Za-z0-9_.-]{1,64}$` desenine uymalıdır; bu alanlarda serbest metin
+  olan eski tarifler açık bir doğrulama mesajıyla yüklenmez (iki alanı kısa bir kimliğe çevir).
 
 ## Sorumlu kullanım
 
@@ -78,6 +80,11 @@ güvenlik davranışı zayıfladığı için, bu modellerde `abliterated: refusa
 kartında `safety-ablated` etiketi bulunur. Bu modelleri sorumlulukla kullan ve temel modelin
 lisansına uy (örneğin Llama lisansı, türetilmiş modeller için adlandırma ve kullanım politikası
 şartları getirir).
+
+Güvenlik etiketi elinden geleni yapar ve temkinlidir. Uygulamada, dışa aktarılan tarif bu oturumdaki
+bir reddetme avının ilk 20 head'inden birini ya da bulunan bir yönü (kosinüs >= 0.99) içeriyorsa
+etiket kendiliğinden konur. Komut satırı tarifin iddiasını doğrulayamaz; tarifin `concept` değerinin
+`refusal` olmasına ya da `neshter apply --label-safety` bayrağına güvenir.
 
 ## Durum
 
