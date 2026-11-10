@@ -1,0 +1,31 @@
+import re
+from pathlib import Path
+
+import neshter
+
+ROOT = Path(__file__).resolve().parent.parent
+# Kullanıcı incelemesini bekleyen, henüz commit edilmemiş taslak: tarama kapsamı dışında.
+_PENDING_REVIEW = {"2026-11-10-neshter-3d-graph-design.md"}
+
+
+def test_docs_have_no_private_links_or_local_paths():
+    files = [
+        *ROOT.glob("README*.md"),
+        ROOT / "SECURITY.md",
+        *(ROOT / "docs" / "notes").glob("*.md"),
+        *(ROOT / "docs" / "superpowers" / "specs").glob("*.md"),
+        *(ROOT / "docs" / "ogrenme").glob("*.md"),
+    ]
+    files = [f for f in files if f.name not in _PENDING_REVIEW]
+    assert ROOT / "SECURITY.md" in files and all(f.exists() for f in files)
+    for f in files:
+        t = f.read_text(encoding="utf-8")
+        assert "claude.ai/artifact" not in t and not re.search(r"\b[A-Za-z]:[\\/]", t), f
+
+
+def test_version_is_0_1_1():
+    assert neshter.__version__ == "0.1.1"
+
+
+def test_no_license_file_yet():
+    assert not (ROOT / "LICENSE").exists()

@@ -58,6 +58,8 @@ class DirectionOp(BaseModel, extra="forbid"):
 
 
 MAX_TEXT = 256  # görüntüleme amaçlı metin alanlarının üst sınırı
+# concept ve method: güvenlik etiketi ve kartlara girdiği için katı desen (büyük harf serbest: özel kavram kimlikleri).
+RECIPE_TEXT = r"^[A-Za-z0-9_.-]{1,64}$"
 
 
 class SourceRef(BaseModel, extra="forbid"):
@@ -69,8 +71,8 @@ class Recipe(BaseModel, extra="forbid"):
     schema_version: Literal[1]
     neshter_version: str = Field(max_length=MAX_TEXT)
     source_model: SourceRef
-    concept: str | None = Field(max_length=MAX_TEXT)
-    method: str = Field(max_length=MAX_TEXT)
+    concept: str | None = Field(pattern=RECIPE_TEXT)
+    method: str = Field(pattern=RECIPE_TEXT)
     seed: int
     dataset_sha256: str | None
     head_mode: Literal["zero"]

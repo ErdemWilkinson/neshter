@@ -1,8 +1,9 @@
 import base64
-import dataclasses
 import json
+import re
 import socket
 import threading
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,13 @@ import torch
 from conftest import recipe_for
 
 from neshter import cli
+from neshter import export as export_module
 from neshter.cli import main
 from neshter.interventions import HeadAblation
 from neshter.interventions import DirectionAblation
 from neshter.recipe import SourceRef, load_recipe, save_recipe
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _recipe_file(tmp_path, lm, ops, concept="code") -> Path:
@@ -100,15 +104,15 @@ def test_apply_gguf_uses_safetensors_then_converter(
     fake_cpp = tmp_path / "llama"
     calls = {}
 
-    def fake_to_gguf(hf_dir, out_file, q, llama_cpp):
-        calls.update(hf=Path(hf_dir), out=Path(out_file), quant=q, cpp=Path(llama_cpp))
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        calls.update(hf=Path(hf_dir), out=Path(out_file), quant=q, cpp=Path(llama_cpp), metadata=metadata)
         assert (Path(hf_dir) / "model.safetensors").exists()
         Path(out_file).write_bytes(b"GGUF")
         return Path(out_file)
 
     monkeypatch.setattr(cli, "find_llama_cpp", lambda: fake_cpp)
-    monkeypatch.setattr(cli, "to_gguf", fake_to_gguf)
-    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="refusal")
     out = tmp_path / "o"
     assert _apply(r, tiny_model_dir, out, "--format", fmt) == 0
     assert calls["quant"] == quant
@@ -116,6 +120,10 @@ def test_apply_gguf_uses_safetensors_then_converter(
     assert calls["out"].parent == out
     assert calls["out"].exists()
     assert not calls["hf"].exists()  # ara safetensors klasörü silinir
+    assert "safety-ablated" in calls["metadata"]["general.tags"]  # tarifin kavramı refusal
+    names = {p.name for p in out.iterdir()}
+    assert {"o.gguf", "README.md", "recipe.nester.json"} <= names  # kart ve tarif GGUF'un yanında kalır
+    assert "safety-ablated" in (out / "README.md").read_text(encoding="utf-8")
 
 
 def test_apply_gguf_failure_removes_partial_out(tmp_path, tiny_model_dir, lm, monkeypatch, capsys):
@@ -123,7 +131,7 @@ def test_apply_gguf_failure_removes_partial_out(tmp_path, tiny_model_dir, lm, mo
         raise RuntimeError("dönüştürme patladı")
 
     monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path)
-    monkeypatch.setattr(cli, "to_gguf", boom)
+    monkeypatch.setattr(export_module, "to_gguf", boom)
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0") == 1
     assert "dönüştürme patladı" in capsys.readouterr().err
@@ -135,21 +143,19 @@ def test_apply_unsupported_format_is_usage_error(tmp_path, tiny_model_dir, lm):
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "onnx") == 2
 
 
-def test_apply_gemma2_direction_recipe_fails_with_clear_message(
-    tmp_path, tiny_model_dir, lm, monkeypatch, capsys
-):
-    real_load = cli.load_model
+def test_apply_gemma2_direction_recipe_saves(tmp_path, tiny_gemma2_dir, gemma_lm):
+    from neshter.loader import load_model
 
-    def as_gemma2(path, **kw):
-        loaded = real_load(path, **kw)
-        return dataclasses.replace(loaded, arch=dataclasses.replace(loaded.arch, family="gemma2"))
-
-    monkeypatch.setattr(cli, "load_model", as_gemma2)
-    direction = DirectionAblation(torch.ones(lm.arch.d_model))
-    r = _recipe_file(tmp_path, lm, [direction])
-    assert _apply(r, tiny_model_dir, tmp_path / "o") == 1
-    assert "gemma2" in capsys.readouterr().err
-    assert not (tmp_path / "o").exists()
+    r_vec = torch.randn(gemma_lm.arch.d_model, generator=torch.Generator().manual_seed(2))
+    r = _recipe_file(tmp_path, gemma_lm, [DirectionAblation(r_vec), HeadAblation(0, 1)])
+    out = tmp_path / "o"
+    assert _apply(r, tiny_gemma2_dir, out) == 0
+    assert (out / "model.safetensors").is_file()
+    m = load_model(out, device="cpu", dtype=torch.float32)
+    assert m.arch.family == "gemma2"
+    w = m.model.get_input_embeddings().weight
+    proj = (w @ (r_vec / r_vec.norm())).abs()
+    assert (proj <= 2e-2 * w.norm(dim=-1)).all()  # bf16 kayıt: gömme r'ye (yuvarlama payıyla) dik
 
 
 # --- serve ------------------------------------------------------------------------------------
@@ -242,15 +248,161 @@ def test_serve_tokens_are_fresh(served):
 # --- Fix wave: I9 (tedarik zinciri) ---------------------------------------------------------------
 
 
-def test_launcher_runs_checkout_not_pypi_and_deps_are_bounded():
-    import re
-    import tomllib
-
-    root = Path(__file__).resolve().parent.parent
-    bat = (root / "neshter.bat").read_text(encoding="utf-8")
-    assert 'uvx --from "%~dp0." neshter %*' in bat
-    assert not re.search(r"^\s*uvx neshter", bat, re.MULTILINE)
-    deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    for d in deps:
-        assert "<" in d, f"üst sınır yok: {d}"
+def test_launcher_uses_lockfile_and_asks_before_installing_uv():
+    raw = (ROOT / "neshter.bat").read_bytes()
+    bat = raw.decode("ascii")  # yalnızca ASCII (cmd kod sayfasından bağımsız)
+    assert raw.count(b"\r\n") == raw.count(b"\n") > 0  # CRLF
+    assert not [b for b in raw if b < 32 and b not in (10, 13)]  # kaçış dizisi yüzünden sızan denetim baytı yok
+    lines = bat.split("\r\n")
+    assert r'set "PATH=%USERPROFILE%\.local\bin;%PATH%"' in lines
+    assert 'uv run --project "%~dp0." --frozen neshter %*' in bat and "uvx" not in bat
+    # choice: beklenmeyen hata kodu (0, Ctrl+C) asla kuruma gitmez; yalnızca 1 (Y) kurar
+    i = lines.index('choice /M "uv simdi kurulsun mu"')
+    assert lines[i + 1 : i + 4] == ["if errorlevel 2 goto declined", "if errorlevel 1 goto install", "goto declined"]
+    assert lines.index(":install") > i and "irm https://astral.sh/uv/" in lines[lines.index(":install") + 1]
+    # uv run başarısızsa çift tıklayan hatayı görsün: pause, sonra çıkış
+    j = lines.index('uv run --project "%~dp0." --frozen neshter %*')
+    assert lines[j + 1 : j + 4] == ['set "rc=%errorlevel%"', 'if not "%rc%"=="0" pause', "exit /b %rc%"]
+    assert "choice /M" in bat and re.search(r"https://astral\.sh/uv/\d+\.\d+\.\d+/install\.ps1", bat)
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert all("<" in d for d in deps) and "jinja2>=3.1.6,<4" in deps
     assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps
+
+
+def test_lockfile_matches_pyproject():
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv PATH'te yok")
+    r = subprocess.run([uv, "lock", "--check", "--offline"], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+
+
+# --- Güvenlik etiketi (Task 11) ---------------------------------------------------------------
+
+
+def test_apply_prints_intervention_summary(tmp_path, tiny_model_dir, lm, capsys):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert "Tarif: 1 head, 0 yön, kavram=code" in capsys.readouterr().out
+
+
+def _dir_recipe(tmp_path, lm, concept):
+    v = torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(0))
+    return _recipe_file(tmp_path, lm, [DirectionAblation(v)], concept=concept)
+
+
+def test_apply_warns_on_unlabelled_direction_recipe(tmp_path, tiny_model_dir, lm, capsys):
+    r = _dir_recipe(tmp_path, lm, "code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    cap = capsys.readouterr()
+    assert "Tarif: 0 head, 1 yön, kavram=code" in cap.out
+    assert "yön silme" in cap.err and "--label-safety" in cap.err
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert "abliterated" not in cfg["neshter"]  # uyarı etiketlemez
+
+
+def test_apply_no_warning_for_refusal_or_head_only_or_flag(tmp_path, tiny_model_dir, lm, capsys):
+    assert _apply(_dir_recipe(tmp_path, lm, "refusal"), tiny_model_dir, tmp_path / "o1") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    assert _apply(_recipe_file(tmp_path, lm, [HeadAblation(1, 0)]), tiny_model_dir, tmp_path / "o2") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    assert _apply(_dir_recipe(tmp_path, lm, "code"), tiny_model_dir, tmp_path / "o3", "--label-safety") == 0
+    assert "yön silme" not in capsys.readouterr().err
+
+
+def test_apply_label_safety_sets_metadata(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--label-safety") == 0
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["neshter"]["abliterated"] == "refusal"
+    assert "safety-ablated" in (tmp_path / "o" / "README.md").read_text(encoding="utf-8")
+
+
+def test_apply_label_safety_reaches_gguf_metadata(tmp_path, tiny_model_dir, lm, monkeypatch):
+    calls = {}
+
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        calls["metadata"] = metadata
+        Path(out_file).write_bytes(b"GGUF")
+        return Path(out_file)
+
+    monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path / "llama")
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0", "--label-safety") == 0
+    assert "safety-ablated" in calls["metadata"]["general.tags"]
+
+
+def test_label_safety_recipe_labels_itself(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--label-safety") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "refusal"
+    assert load_recipe(r).concept == "code"  # girdi tarifi değişmez
+
+
+def test_label_safety_recipe_labels_itself_in_gguf_folder(tmp_path, tiny_model_dir, lm, monkeypatch):
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        Path(out_file).write_bytes(b"GGUF")
+        return Path(out_file)
+
+    monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path / "llama")
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0", "--label-safety") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "refusal"
+
+
+def test_unlabelled_recipe_keeps_its_concept(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "code"
+
+
+def test_wheel_build_contains_web_dist(tmp_path):
+    """Gerçek wheel: `dist/` .gitignore'da olsa bile (hatch süzgeci) `artifacts` onu wheel'e sokar."""
+    import shutil
+    import subprocess
+    import zipfile
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv yok: yalnızca pyproject denetimi çalışır")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shutil.copy(ROOT / "pyproject.toml", proj)
+    shutil.copytree(ROOT / "neshter", proj / "neshter", ignore=shutil.ignore_patterns("__pycache__", "dist"))
+    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")  # hatch .gitignore'u uygular
+    (proj / "neshter" / "web" / "dist").mkdir(parents=True)
+    (proj / "neshter" / "web" / "dist" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    out = tmp_path / "out"
+    r = subprocess.run([uv, "build", "--wheel", "--out-dir", str(out), str(proj)], capture_output=True, text=True, timeout=240)
+    assert r.returncode == 0, r.stderr
+    (wheel,) = out.glob("*.whl")
+    assert "neshter/web/dist/index.html" in zipfile.ZipFile(wheel).namelist()
+
+
+def test_wheel_ships_web_dist_artifacts():
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "neshter/web/dist/**" in cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]
+
+
+# --- Final fix wave: M1 (kaynak değişti: çıktı silinir), M8 (Refusal büyük harf) ----------------------------
+
+
+def test_apply_source_modified_removes_output(tmp_path, tiny_model_dir, lm, monkeypatch, capsys):
+    monkeypatch.setattr(export_module, "verify_source_untouched", lambda lm_, progress=None, cancel=None: False)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o") != 0
+    assert not (tmp_path / "o").exists()
+    assert "SHA-256" in capsys.readouterr().err
+
+
+def test_apply_capitalised_refusal_concept_is_labelled_without_warning(tmp_path, tiny_model_dir, lm, capsys):
+    r = _dir_recipe(tmp_path, lm, "Refusal")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["neshter"]["abliterated"] == "refusal"

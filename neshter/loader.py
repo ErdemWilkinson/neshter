@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
-import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +18,18 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from neshter.arch import ArchInfo, arch_info
+from neshter.arch import ArchInfo, arch_info, estimate_memory_bytes
+from neshter.gguf_header import GGUFInvalid, validate_gguf
+from neshter.hardware import available_ram_bytes, cpu_has_native_bf16
+from neshter.licenses import (
+    _read_folder_file,
+    folder_license,
+    license_id_from_text,
+    ollama_license_text,
+    read_gguf_license,
+    read_license,  # noqa: F401  (loader.read_license: geriye uyumlu yeniden dışa aktarım)
+)
+from neshter.progress import ProgressFn, check_cancel, sub_progress
 
 SUPPORTED_FAMILIES = ("llama", "qwen2", "gemma2")
 _CHUNK = 1024 * 1024
@@ -42,26 +53,54 @@ class LoadedModel:
     license: str | None
     name: str
     device_note: str | None = None
+    license_text: str | None = None
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, on_bytes=None, cancel: threading.Event | None = None) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(_CHUNK):
+            check_cancel(cancel)
             h.update(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
     return h.hexdigest()
 
 
-def sha256_path(path: Path) -> str:
-    """Dosya: içerik SHA-256. Klasör: sıralı (göreli yol + dosya hash'i) birleşiminin SHA-256'sı."""
+def sha256_path(
+    path: Path, progress: ProgressFn | None = None, cancel: threading.Event | None = None
+) -> str:
+    """Dosya: içerik SHA-256. Klasör: sıralı (göreli yol + dosya hash'i) birleşiminin SHA-256'sı.
+
+    `progress` bayt oranıyla (0..1) çağrılır; `cancel` kurulursa Cancelled yükselir.
+    """
     path = Path(path)
+    check_cancel(cancel)
     if path.is_file():
-        return _file_sha256(path)
-    h = hashlib.sha256()
-    files = sorted((p for p in path.rglob("*") if p.is_file()), key=lambda p: p.relative_to(path).as_posix())
-    for p in files:
-        h.update(f"{p.relative_to(path).as_posix()}\0{_file_sha256(p)}\n".encode())
-    return h.hexdigest()
+        files = [path]
+        rel = None
+    else:
+        files = sorted((p for p in path.rglob("*") if p.is_file()), key=lambda p: p.relative_to(path).as_posix())
+        rel = path
+    total = sum(p.stat().st_size for p in files) or 1
+    done = 0
+
+    def on_bytes(n: int) -> None:
+        nonlocal done
+        done += n
+        if progress is not None:
+            progress(min(1.0, done / total), "SHA-256 hesaplanıyor")
+
+    if rel is None:
+        digest = _file_sha256(path, on_bytes, cancel)
+    else:
+        h = hashlib.sha256()
+        for p in files:
+            h.update(f"{p.relative_to(rel).as_posix()}\0{_file_sha256(p, on_bytes, cancel)}\n".encode())
+        digest = h.hexdigest()
+    if progress is not None:
+        progress(1.0, "SHA-256 hazır")
+    return digest
 
 
 def _unsupported(family: str) -> UnsupportedArchitecture:
@@ -87,25 +126,6 @@ def _check_config_family(folder: Path) -> None:
 def _load_config(folder: Path):
     _check_config_family(folder)
     return AutoConfig.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
-
-
-def read_license(folder: Path) -> str | None:
-    try:
-        value = json.loads((folder / "config.json").read_text(encoding="utf-8")).get("license")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    except (OSError, ValueError, AttributeError):
-        pass
-    try:
-        text = (folder / "README.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    front = re.match(r"\A---\r?\n(.*?)\r?\n---", text, re.DOTALL)
-    if front:
-        m = re.search(r"^license:\s*['\"]?([^'\"\r\n#]+?)['\"]?\s*$", front.group(1), re.MULTILINE)
-        if m:
-            return m.group(1).strip()
-    return None
 
 
 _read_license = read_license  # geriye uyumluluk (testler)
@@ -185,6 +205,69 @@ def _load_dir(path: Path, dtype: torch.dtype):
 GPU_FALLBACK_NOTE = "GPU belleği yetmedi; CPU'da çalışıyor (yavaş)."
 
 
+SLOW_BF16_NOTE = "Bu işlemcide bf16 hesaplama yavaş ve float32 için RAM yetmiyor; işlemler uzun sürebilir."
+
+
+FP32_RAM_FACTOR = 2.0  # fp32 modeli + yön kaydının tepe kopyaları (anlık görüntü + kayıt dtype'ı kopyası)
+
+
+def pick_compute_dtype(device: str, n_params: int, available_ram: int, native_bf16: bool) -> torch.dtype:
+    """Hesaplama dtype'ı: yerel bf16'sı olmayan CPU'da (7-54x yavaş) RAM yeterse float32, aksi halde bf16.
+
+    "Yeterse": fp32 model × FP32_RAM_FACTOR (2.0) < boş RAM'in %70'i. Çarpan, yön içeren bir tarifin
+    kaydındaki tepeyi de (dokunulan parametrelerin fp32 anlık görüntüsü + bf16 kayıt kopyası) kapsar.
+    """
+    if device == "cpu" and not native_bf16 and n_params * 4 * FP32_RAM_FACTOR < 0.7 * available_ram:
+        return torch.float32
+    return torch.bfloat16
+
+
+def planned_device(device: str, n_params: int) -> str:
+    """Ağırlıklar okunmadan cihaz tahmini (`_pick_device` ile aynı kural, bf16 boyutuyla)."""
+    if device != "auto":
+        return device
+    if not torch.cuda.is_available():
+        return "cpu"
+    free, _total = torch.cuda.mem_get_info()
+    return "cpu" if estimate_memory_bytes(n_params, 2) > 0.9 * free else "cuda"
+
+
+def auto_compute_dtype(device: str, n_params: int, source_fp16: bool = False) -> torch.dtype:
+    """`dtype=None` politikası: pick_compute_dtype; kaynak float16 ise bf16 yerine float16 (I5: fp16 bir
+    kaynak bf16'dan geçirilip kaydedilirse dokunulmayan her ağırlık da değişirdi)."""
+    dtype = pick_compute_dtype(device, n_params, available_ram_bytes(), cpu_has_native_bf16())
+    if dtype == torch.bfloat16 and source_fp16:
+        return torch.float16
+    return dtype
+
+
+def _source_is_fp16(folder: Path) -> bool:
+    """config.json (sınırlı okuma) kaynak dtype'ı float16 mı diyor?"""
+    text = _read_folder_file(folder, "config.json", 1024 * 1024)
+    try:
+        cfg = json.loads(text) if text else {}
+        src = cfg.get("dtype") or cfg.get("torch_dtype")
+    except (ValueError, AttributeError, RecursionError):
+        return False
+    return src == "float16"
+
+
+def _probe_model(path: Path, dtype: torch.dtype):
+    """Parametre sayısı/boyutu için meta cihazda iskelet model (ağırlık okunmaz).
+
+    GGUF'ta config ağırlık dosyasının içindedir; iskelet kurulamaz, None döner.
+    """
+    if path.is_dir():
+        folder = path
+    elif path.suffix.lower() == ".pt" and (path.parent / "config.json").is_file():
+        folder = path.parent
+    else:
+        return None
+    config = _load_config(folder)
+    with torch.device("meta"):
+        return AutoModelForCausalLM.from_config(config, trust_remote_code=False, dtype=dtype)
+
+
 def _pick_device(model, device: str) -> tuple[str, str | None]:
     """device="auto": CUDA varsa ve model tahmini boş VRAM'in %90'ına sığıyorsa cuda, değilse cpu.
 
@@ -194,8 +277,6 @@ def _pick_device(model, device: str) -> tuple[str, str | None]:
         return device, None
     if not torch.cuda.is_available():
         return "cpu", None
-    from neshter.arch import estimate_memory_bytes
-
     n_params = sum(p.numel() for p in model.parameters())
     dtype_bytes = next(model.parameters()).element_size()
     need = estimate_memory_bytes(n_params, dtype_bytes)
@@ -206,31 +287,96 @@ def _pick_device(model, device: str) -> tuple[str, str | None]:
 
 
 def load_model(
-    path: Path, device: str = "auto", dtype: torch.dtype = torch.bfloat16, name: str | None = None
+    path: Path,
+    device: str = "auto",
+    dtype: torch.dtype | None = None,
+    name: str | None = None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> LoadedModel:
-    """Modeli yükler. Varsayılan dtype bf16'dır (CPU ve GPU'da aynı; float32 yalnızca açıkça istenirse).
+    """Modeli yükler. `dtype=None` hesaplama politikasıdır (`pick_compute_dtype`): GPU'da bf16; yerel bf16'sı
+    olmayan CPU'da RAM yeterse float32, değilse bf16 (+ yavaşlık notu). Açık dtype aynen uygulanır.
 
-    `name` verilirse görünen ad odur (ör. Ollama'nın "qwen2.5:7b"si); yoksa dosya/klasör adı.
-    Uzantısız dosyalar (Ollama blob'ları) GGUF sihirli baytlarıyla tanınır.
+    GGUF da aynı politikayı izler (parametre sayısı `validate_gguf`un tensör tablosundan). Kaynak float16 ise
+    bf16 yerine float16 kullanılır. GGUF dosyası transformers'a verilmeden önce sınırlı doğrulanır; geçmezse
+    UnsupportedArchitecture.
+
+    Ağırlıklar doğrudan hedef dtype'ta okunur (bf16'ya yuvarlayıp yükseltmek yok). Kayıt dtype'ı bundan
+    bağımsızdır (`export.save_dtype`). `name` verilirse görünen ad odur (ör. Ollama'nın "qwen2.5:7b"si);
+    yoksa dosya/klasör adı. Uzantısız dosyalar (Ollama blob'ları) GGUF sihirli baytlarıyla tanınır.
+
+    İlerleme: ağırlık okuma 0.1 → 0.6, dtype/cihaz 0.7, SHA-256 0.75 → 1.0. Her aşamadan sonra iptal denetlenir;
+    iptalde model bırakılıp Cancelled yükseltilir.
     """
     path = Path(path)
-
-    if path.is_dir():
-        model, tokenizer = _load_dir(path, dtype)
-        default_name, license_ = path.name, read_license(path)
-    elif path.suffix.lower() == ".gguf" or (path.is_file() and is_gguf(path)):
-        model, tokenizer = _load_gguf(path, dtype)
-        default_name, license_ = path.stem, None
-    elif path.suffix.lower() == ".pt":
-        model, tokenizer = _load_pt(path, dtype)
-        default_name, license_ = path.stem, read_license(path.parent)
-    else:
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.1, "Ağırlıklar okunuyor")
+    is_dir = path.is_dir()
+    is_gguf_file = not is_dir and (path.suffix.lower() == ".gguf" or (path.is_file() and is_gguf(path)))
+    is_pt = not is_dir and not is_gguf_file and path.suffix.lower() == ".pt"
+    if not (is_dir or is_gguf_file or is_pt):
         raise UnsupportedArchitecture(
             f"'{path.suffix}' dosya biçimi desteklenmiyor. Klasör (safetensors), .gguf veya .pt kullanın."
         )
 
+    # GGUF: transformers'ın (sınırsız) ayrıştırıcısından ÖNCE tüm başlık + tensör tablosu sınırlı doğrulanır.
+    gguf_info = None
+    if is_gguf_file:
+        try:
+            gguf_info = validate_gguf(path)
+        except GGUFInvalid as e:
+            raise UnsupportedArchitecture(str(e)) from e
+
+    # Cihaz ve dtype ağırlıklar okunmadan seçilir: klasör/.pt meta iskeletinden, GGUF tensör tablosundan.
+    auto_dtype = dtype is None
+    probe = _probe_model(path, dtype or torch.bfloat16)
+    device_note = None
+    if probe is not None:
+        device, device_note = _pick_device(probe, device)
+        n_params = sum(p.numel() for p in probe.parameters())
+        del probe
+        planned = device
+    elif gguf_info is not None:
+        n_params = gguf_info.n_params
+        planned = planned_device(device, n_params)
+    else:  # config.json'suz .pt: _load_pt anlaşılır bir hatayla reddeder
+        n_params, planned = None, device
+    if auto_dtype and n_params is None:
+        dtype = torch.bfloat16
+    elif auto_dtype:
+        folder = path if is_dir else path.parent
+        dtype = auto_compute_dtype(planned, n_params, source_fp16=not is_gguf_file and _source_is_fp16(folder))
+
+    if is_dir:
+        model, tokenizer = _load_dir(path, dtype)
+        default_name = path.name
+        license_, license_text = folder_license(path)
+    elif is_gguf_file:
+        model, tokenizer = _load_gguf(path, dtype)
+        default_name = path.stem
+        license_text = ollama_license_text(path)  # Ollama blob'u değilse None
+        license_ = read_gguf_license(path)
+        if license_ is None and license_text and license_text.strip():
+            license_ = license_id_from_text(license_text)
+    else:
+        model, tokenizer = _load_pt(path, dtype)
+        default_name = path.stem
+        license_, license_text = folder_license(path.parent)
+
+    if progress is not None:
+        progress(0.6, "Ağırlıklar okundu")
+    try:
+        check_cancel(cancel)
+    except BaseException:
+        del model, tokenizer
+        raise
+
     _check_family(model.config.model_type)
-    device, device_note = _pick_device(model, device)
+    if not (is_dir or is_pt):  # GGUF: iskelet yok, cihaz yüklemeden sonra seçilir
+        device, device_note = _pick_device(model, device)
+    if auto_dtype and device == "cpu" and dtype != torch.float32 and not cpu_has_native_bf16():
+        device_note = f"{device_note} {SLOW_BF16_NOTE}" if device_note else SLOW_BF16_NOTE
     model = model.to(device)
     model.eval()
     model.requires_grad_(False)
@@ -238,14 +384,23 @@ def load_model(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    if progress is not None:
+        progress(0.7, "Dtype ve cihaz ayarlandı")
+    try:
+        check_cancel(cancel)
+        sha = sha256_path(path, sub_progress(progress, 0.75, 1.0), cancel)
+    except BaseException:
+        del model, tokenizer
+        raise
 
     return LoadedModel(
         model=model,
         tokenizer=tokenizer,
         arch=arch_info(model),
         source_path=path,
-        source_sha256=sha256_path(path),
+        source_sha256=sha,
         license=license_,
         name=name or default_name,
         device_note=device_note,
+        license_text=license_text,
     )

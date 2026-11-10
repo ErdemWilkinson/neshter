@@ -1,11 +1,15 @@
-"""Gerçek model duman testi (Qwen2.5-0.5B-Instruct, CPU, bf16).
+"""Gerçek model duman testi (Qwen2.5-0.5B-Instruct, CPU, politika dtype'ı).
 
 Varsayılan çalıştırmada atlanır: `uv run pytest -m integration -v -s`.
 Ortam: HF_HOME (model önbelleği), NESHTER_SMOKE_DIR (kayıt klasörü; C: yerine D: için),
 NESHTER_SMOKE_RESULTS (süre/bellek/sayı sonuçlarının yazılacağı JSON).
 
-Zincir: yükle -> hunt(code, attribution) -> ilk 6 head gerçek etkisi > rastgele -> orijinal kod
-isteğinde detect_code -> save_safetensors -> yeniden yükle -> greedy cevap kancalı cevapla aynı.
+Zincir: yükle -> hunt(code, attribution) -> ilk 6 head gerçek etkisi (30 katman eşleşmeli kontrol; p ve
+yüzdelik dilim yalnızca kaydedilir) -> orijinal kod isteğinde detect_code -> save_safetensors -> yeniden
+yükle -> greedy cevap kancalı cevapla aynı. Ek: fp32 süre ölçümü (v0.1 bf16 ile karşılaştırma).
+
+dtype politikası: yerel bf16'sı olmayan CPU'da RAM yeterse float32, aksi halde bf16 (`load_model`).
+Kayıt dosyası her durumda bf16'dır.
 
 bf16 notu: baş susturma kayıtta o_proj sütunlarını sıfırlamaktır; kancadaki sıfırlamayla bit düzeyinde
 aynı hesabı verir. Bu yüzden kayıt/yükleme turu greedy token kimliklerini TAM korumalıdır. Buna karşılık
@@ -15,88 +19,43 @@ yaklaşık aynıdır, bu yüzden orada KL ile göreli tolerans denetlenir.
 
 from __future__ import annotations
 
-import json
-import os
-import threading
-import time
 from pathlib import Path
 
-import psutil
 import pytest
 import torch
+from smoke_support import (  # noqa: F401  (results ve work_dir fikstürleri)
+    CODE_PROMPT,
+    N_TOKENS,
+    Phase,
+    greedy_ids,
+    kl_logits,
+    logits_of,
+    results,
+    set_smoke_threads,
+    work_dir,
+)
 
-from neshter.compare import _encode, generate_pair
+from neshter.compare import generate_pair
 from neshter.concepts.detectors import detect_code
 from neshter.concepts.hunt import hunt
 from neshter.concepts.model import load_preset
 from neshter.export import find_llama_cpp, save_safetensors, to_gguf, verify_source_untouched
-from neshter.interventions import DirectionAblation, HeadAblation, apply
+from neshter.hardware import cpu_has_native_bf16
+from neshter.interventions import DirectionAblation, HeadAblation
 from neshter.loader import is_gguf, load_model
-from neshter.metrics import kl_effect, load_neutral, real_effect
+from neshter.metrics import load_neutral, real_effect
 from neshter.recipe import from_interventions
 from neshter.scan import default_roots, scan_ollama
 
 pytestmark = pytest.mark.integration
 
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-CODE_PROMPT = "Write a Python function that reverses a string."
-N_TOKENS = 40  # greedy karşılaştırma uzunluğu
 TOP_HEADS = 6
+V01_HUNT_SECONDS = 684  # v0.1: Qwen2.5-0.5B, attribution av, bf16 CPU
+V01_EFFECT_SECONDS = 240  # v0.1: gerçek etki (40 nötr istek, 3 rastgele çekiliş), bf16 CPU
 
 
-# --------------------------------------------------------------------------- ölçüm yardımcıları
-
-
-class Phase:
-    """Bir aşamanın süresini ve tepe RSS'ini (örnekleyerek) ölçer."""
-
-    def __init__(self, store: dict, name: str):
-        self.store, self.name = store, name
-        self._proc = psutil.Process()
-
-    def __enter__(self):
-        self.peak = self._proc.memory_info().rss
-        self._stop = threading.Event()
-
-        def sample():
-            while not self._stop.is_set():
-                self.peak = max(self.peak, self._proc.memory_info().rss)
-                time.sleep(0.05)
-
-        self._t = threading.Thread(target=sample, daemon=True)
-        self._t.start()
-        self.t0 = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc):
-        elapsed = time.perf_counter() - self.t0
-        self._stop.set()
-        self._t.join()
-        self.peak = max(self.peak, self._proc.memory_info().rss)
-        self.store[self.name] = {"seconds": round(elapsed, 2), "peak_rss_mb": round(self.peak / 2**20)}
-        print(f"[smoke] {self.name}: {elapsed:.1f} s, tepe RSS {self.peak / 2**20:.0f} MB", flush=True)
-
-
-@pytest.fixture(scope="module")
-def results():
-    data: dict = {"timings": {}, "checks": {}}
-    yield data
-    out = os.environ.get("NESHTER_SMOKE_RESULTS")
-    if out:
-        proc = psutil.Process()
-        peak = getattr(proc.memory_info(), "peak_wset", None)
-        data["process_peak_wset_mb"] = round(peak / 2**20) if peak else None
-        Path(out).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-@pytest.fixture(scope="module")
-def work_dir(tmp_path_factory):
-    base = os.environ.get("NESHTER_SMOKE_DIR")
-    if base:
-        d = Path(base)
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-    return tmp_path_factory.mktemp("smoke")
+# --------------------------------------------------------------------------- fikstürler
 
 
 @pytest.fixture(scope="module")
@@ -111,11 +70,18 @@ def model_dir() -> Path:
 
 @pytest.fixture(scope="module")
 def lm(model_dir, results):
-    torch.set_num_threads(int(os.environ.get("NESHTER_SMOKE_THREADS", "4")))  # içe aktarmada değil: birim testleri etkilenmesin
+    set_smoke_threads()
     with Phase(results["timings"], "load"):
-        loaded = load_model(model_dir, device="cpu")  # varsayılan bf16
+        loaded = load_model(model_dir, device="cpu")  # dtype politikası
     assert loaded.arch.family == "qwen2"
-    assert next(loaded.model.parameters()).dtype == torch.bfloat16
+    # Yerel bf16'sı olmayan CPU'da float32 yüklenir (0,5B için RAM yeter); aksi halde bf16.
+    policy = torch.bfloat16 if cpu_has_native_bf16() else torch.float32
+    assert next(loaded.model.parameters()).dtype == policy
+    results["checks"]["compute_dtype"] = str(policy)
+    results["checks"]["native_bf16"] = cpu_has_native_bf16()
+    results["checks"]["qwen_license"] = loaded.license
+    assert loaded.license == "apache-2.0"  # Qwen2.5-0.5B-Instruct: README/LICENSE Apache-2.0
+    assert loaded.license_text and "Apache License" in loaded.license_text
     return loaded
 
 
@@ -126,24 +92,6 @@ def code_hunt(lm, results):
     return res
 
 
-def _greedy_ids(lm, interventions, n_tokens: int = N_TOKENS) -> list[int]:
-    """Tek satırlık (yığınsız) greedy üretim; kancalı ve kayıtlı modeller aynı biçimde karşılaştırılsın."""
-    enc = _encode(lm, CODE_PROMPT, 1)
-    with apply(lm, interventions):
-        torch.manual_seed(0)
-        with torch.no_grad():
-            out = lm.model.generate(
-                **enc, do_sample=False, max_new_tokens=n_tokens, pad_token_id=lm.tokenizer.pad_token_id
-            )
-    return out[0, enc["input_ids"].shape[1] :].tolist()
-
-
-def _logits(lm, interventions, text: str) -> torch.Tensor:
-    enc = lm.tokenizer(text, return_tensors="pt")
-    with apply(lm, interventions), torch.no_grad():
-        return lm.model(**enc, use_cache=False).logits[0].to(torch.float32)
-
-
 # --------------------------------------------------------------------------- ana zincir
 
 
@@ -152,17 +100,29 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
     heads = [HeadAblation(l, h) for l, h in top]
     results["checks"]["top_heads"] = top
     results["checks"]["layer_scores_argmax"] = max(range(len(code_hunt.layer_scores)), key=code_hunt.layer_scores.__getitem__)
-    results["checks"]["val_consistency"] = code_hunt.val_consistency
+    results["checks"]["val_accuracy"] = code_hunt.val_accuracy
+    results["checks"]["val_ci"] = list(code_hunt.val_ci)
+    results["checks"]["ref_layer"] = code_hunt.ref_layer
+    results["checks"]["measured_top"] = [
+        (m.layer, m.head, None if m.signal_drop is None else round(m.signal_drop, 4), round(m.neutral_kl, 5)) for m in code_hunt.measured[:6]
+    ]
     print(f"[smoke] ilk {TOP_HEADS} head: {top}", flush=True)
 
     # 1) gerçek etki > rastgele kontrol
     prompts = load_neutral()
     with Phase(results["timings"], "effect"):
-        eff = real_effect(lm, heads, prompts, n_random=3, seed=0)
+        eff = real_effect(lm, heads, prompts, seed=0)  # varsayılan: 30 katman eşleşmeli kontrol
     results["checks"]["effect"] = {
-        "kl": eff.kl, "kl_std": eff.kl_std, "random_kl": eff.random_kl, "n_prompts": eff.n_prompts
+        "kl": eff.kl, "kl_std": eff.kl_std, "random_kl": eff.random_kl, "n_prompts": eff.n_prompts,
+        "n_random": eff.n_random, "percentile": eff.percentile, "p_value": eff.p_value,
+        "layer_matched": eff.layer_matched, "random_p05": eff.random_p05, "random_p95": eff.random_p95,
     }
-    print(f"[smoke] KL={eff.kl:.5f} rastgele={eff.random_kl:.5f} n={eff.n_prompts}", flush=True)
+    print(
+        f"[smoke] KL={eff.kl:.5f} rastgele={eff.random_kl:.5f} n={eff.n_prompts} "
+        f"yüzdelik={eff.percentile:.0f} p={eff.p_value:.3f} eşleşmeli={eff.layer_matched}",
+        flush=True,
+    )
+    assert eff.n_random == 30  # p < 0,05 şartı yok: yalnızca kaydedilir
     assert eff.kl > eff.random_kl
 
     # 2) orijinal kod isteğinde kod çıkar; kancalı cevap da üretilir
@@ -174,7 +134,7 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
     assert detect_code(orig), f"orijinal cevap kod değil: {orig!r}"
 
     # 3) kayıt -> yeniden yükle -> greedy cevap kancalıyla aynı
-    hooked_ids = _greedy_ids(lm, heads)
+    hooked_ids = greedy_ids(lm, heads)
     recipe = from_interventions(heads, lm, "code", "attribution", 0)
     out = work_dir / "head_cut"
     with Phase(results["timings"], "save"):
@@ -184,10 +144,10 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
     results["checks"]["saved_gb"] = round(saved_gb, 3)
 
     with Phase(results["timings"], "reload"):
-        re_lm = load_model(out, device="cpu")  # aynı dtype: bf16
+        re_lm = load_model(out, device="cpu")  # aynı politika: aynı dtype
     try:
         assert next(re_lm.model.parameters()).dtype == next(lm.model.parameters()).dtype
-        saved_ids = _greedy_ids(re_lm, [])
+        saved_ids = greedy_ids(re_lm, [])
         results["checks"]["head_reload_token_match"] = saved_ids == hooked_ids
         first_diff = next((i for i, (a, b) in enumerate(zip(hooked_ids, saved_ids)) if a != b), None)
         results["checks"]["head_reload_first_diff"] = first_diff
@@ -199,6 +159,32 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
         )
     finally:
         del re_lm
+
+
+# --------------------------------------------------------------------------- fp32 süreleri (v0.1 ile)
+
+
+def test_qwen_fp32_timings(lm, code_hunt, results):
+    if not cpu_has_native_bf16():
+        assert next(lm.model.parameters()).dtype == torch.float32
+    # code_hunt hunt(code, "attribution") süresini zaten ölçtü: ikinci kez çalıştırılmaz.
+    secs = results["timings"]["hunt_attribution"]["seconds"]
+    results["checks"]["hunt_attribution_vs_v01"] = {
+        "seconds": secs, "v01_seconds": V01_HUNT_SECONDS, "speedup": round(V01_HUNT_SECONDS / secs, 2)
+    }
+    with Phase(results["timings"], "hunt_activation_diff"):
+        res = hunt(lm, load_preset("code"), "activation_diff")
+    assert res.measured
+    top = [HeadAblation(l, h) for l, h, _ in code_hunt.heads[:TOP_HEADS]]
+    # v0.1 ile aynı iş: 40 nötr istek, 3 rastgele çekiliş (bire bir karşılaştırma)
+    with Phase(results["timings"], "effect_n3"):
+        eff3 = real_effect(lm, top, load_neutral(), n_random=3, seed=0)
+    assert eff3.n_random == 3
+    e = results["timings"]["effect_n3"]["seconds"]
+    results["checks"]["effect_vs_v01"] = {
+        "seconds": e, "v01_seconds": V01_EFFECT_SECONDS, "speedup": round(V01_EFFECT_SECONDS / e, 2)
+    }
+    # Sert eşik yok (V01_HUNT_SECONDS / 3 hedefi doğrulanmamış): sayılar raporlanır, karar denetleyicide.
 
 
 # --------------------------------------------------------------------------- (a) yön silme
@@ -226,12 +212,11 @@ def test_direction_cut(lm, results, work_dir):
     try:
         stats = []
         for t in texts:
-            base = _logits(lm, [], t)
-            hooked = _logits(lm, [ablation], t)
-            baked = _logits(re_lm, [], t)
-            lp = lambda x: x.log_softmax(-1)
-            kl_cut = (lp(base).exp() * (lp(base) - lp(hooked))).sum(-1).mean().item()
-            kl_rt = (lp(hooked).exp() * (lp(hooked) - lp(baked))).sum(-1).mean().item()
+            base = logits_of(lm, [], t)
+            hooked = logits_of(lm, [ablation], t)
+            baked = logits_of(re_lm, [], t)
+            kl_cut = kl_logits(base, hooked)
+            kl_rt = kl_logits(hooked, baked)
             top1 = (hooked.argmax(-1) == baked.argmax(-1)).float().mean().item()
             stats.append({"kl_orig_vs_hooked": kl_cut, "kl_hooked_vs_baked": kl_rt, "top1_agree": top1,
                           "max_abs_logit_diff": (hooked - baked).abs().max().item()})

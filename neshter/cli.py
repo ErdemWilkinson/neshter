@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import secrets
-import shutil
 import socket
 import sys
 import threading
@@ -18,9 +17,16 @@ from pathlib import Path
 
 import uvicorn
 
-from neshter.export import find_llama_cpp, save_safetensors, to_gguf, verify_source_untouched
+from neshter.export import (
+    SourceModified,
+    ensure_source_untouched,
+    export_gguf,
+    find_llama_cpp,
+    is_refusal,
+    save_safetensors,
+)
 from neshter.loader import load_model
-from neshter.recipe import check_against, load_recipe, to_interventions
+from neshter.recipe import HeadOp, check_against, load_recipe, to_interventions
 from neshter.server.app import create_app
 
 HOST = "127.0.0.1"
@@ -82,6 +88,15 @@ def _apply(args: argparse.Namespace) -> int:
         _err(f"Tarif okunamadı: {e}")
         return EXIT_RECIPE
 
+    heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    dirs = len(recipe.interventions) - heads
+    print(f"Tarif: {heads} head, {dirs} yön, kavram={recipe.concept or '-'}")
+    if dirs and not is_refusal(recipe.concept) and not args.label_safety:
+        _err(
+            "Uyarı: bu tarif yön silme içeriyor; Neşter tarifin iddia ettiği kavramı doğrulayamaz. "
+            "Bir reddetme yönüyse --label-safety ile etiketleyin."
+        )
+
     quant = _QUANT.get(args.format)
     llama_cpp = None
     if quant:
@@ -99,7 +114,7 @@ def _apply(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     try:
-        lm = load_model(Path(args.model), device="auto")  # sunucuyla aynı politika: bf16, sığarsa GPU
+        lm = load_model(Path(args.model), device="auto")  # sunucuyla aynı politika: sığarsa GPU, dtype pick_compute_dtype
     except Exception as e:
         _err(f"Model yüklenemedi: {e}")
         return EXIT_ERROR
@@ -121,33 +136,24 @@ def _apply(args: argparse.Namespace) -> int:
 
     try:
         count = len(to_interventions(recipe))
-        # Kayıt tarifin kendisinden yapılır: recipe.concept == "refusal" ise metadata ve model kartı işlenir.
+        # Etiket: tarifin kavramı "refusal" ya da --label-safety (kayıt katmanı ikisini de zorlar).
+        safety = args.label_safety or is_refusal(recipe.concept)
+        if safety:  # kaydedilen recipe.nester.json kendi kendini etiketlesin
+            recipe = recipe.model_copy(update={"concept": "refusal"})
         if quant is None:
-            result = save_safetensors(lm, recipe, out)
+            result = save_safetensors(lm, recipe, out, safety_ablated=safety)
         else:
-            result = _save_gguf(lm, recipe, out, quant, llama_cpp)
-        if not verify_source_untouched(lm):
-            _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor).")
-            return EXIT_ERROR
+            result = export_gguf(lm, recipe, out, out.name, quant, llama_cpp, safety=safety)
+        ensure_source_untouched(lm, out)  # uyuşmazlıkta `out` silinir
+    except SourceModified:
+        _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor); çıktı silindi.")
+        return EXIT_ERROR
     except Exception as e:
         _err(f"Kayıt başarısız: {e}")
         return EXIT_ERROR
 
     print(f"{count} müdahale uygulandı, kaydedildi: {result}")
     return EXIT_OK
-
-
-def _save_gguf(lm, recipe, out: Path, quant: str, llama_cpp: Path) -> Path:
-    """safetensors ara klasörü → GGUF; out bu işte oluşur, hata olursa silinir."""
-    try:
-        hf_dir = out / "_hf"
-        save_safetensors(lm, recipe, hf_dir)
-        gguf = to_gguf(hf_dir, out / f"{out.name}.gguf", quant, llama_cpp)
-        shutil.rmtree(hf_dir)
-    except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
-        raise
-    return gguf
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -168,6 +174,10 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--out", type=Path, required=True, help="çıktı klasörü (var olmamalı)")
     apply.add_argument("--format", choices=_FORMATS, default="safetensors")
     apply.add_argument("--force", action="store_true", help="SHA-256 uyuşmazlığına rağmen uygula")
+    apply.add_argument(
+        "--label-safety", action="store_true",
+        help="çıktıyı güvenlik-ablasyonu olarak etiketle (tarifteki yön bir reddetme yönüyse)",
+    )
     apply.set_defaults(func=_apply)
     return p
 
