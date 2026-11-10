@@ -4,7 +4,10 @@ Tanımlar:
   - Her istek tek bir kullanıcı mesajı olarak sohbet şablonuna sokulur (add_generation_prompt=True);
     "son token" bu biçimlenmiş metnin son token'ıdır. Şablon yoksa ham istek kullanılır.
   - Yön (katman başına): mean(pos) − mean(neg) son token artık akımında, birim normlu.
-  - Katman skoru: train yönü üzerinde val izdüşümlerinin Cohen d'si, en büyüğe bölünmüş.
+  - Katman skoru: train yönü üzerinde val izdüşümlerinin Cohen d'si; aday penceresi (candidate_layers)
+    içindeki en büyüğe bölünmüş, pencere dışı 0. ref_layer yalnızca pencereden seçilir.
+  - Doğrulama doğruluğu: train izdüşümlerinin orta noktası eşik; val doğru sınıflama sayısı + Wilson aralığı.
+  - Ölçüm: en iyi MEASURE_TOP_K head gerçekten sıfırlanır; sinyal düşüşü ve nötr KL ölçülür.
   - Head atıfı (attribution patching): m = mean_pos(resid[ref, son] · r_ref);
     skor_h = −mean_pos(∇_{z_h} m · (μ_h^neg − z_h)); z_h = o_proj girdisinin head dilimi, son token.
 """
@@ -21,10 +24,25 @@ import torch
 from neshter.activity import last_token_head_power
 from neshter.arch import decoder_layers, embed, o_proj
 from neshter.concepts.model import Concept, split
+from neshter.interventions import HeadAblation, apply
 from neshter.loader import LoadedModel
+from neshter.metrics import _kl_from, _log_probs, load_neutral, wilson
 from neshter.progress import ProgressFn, check_cancel, sub_progress
 
 HUNT_BATCH = 8  # ileri geçişlerde (grad gerekmeyenler) aynı anda işlenen istek sayısı
+LAYER_WINDOW_FRAC = 0.8  # aday katmanlar: 1 .. floor(0.8·L) (son katmanlar çıktıya hazırlanır, yön bulanıklaşır)
+MEASURE_TOP_K = 20  # gerçekten sıfırlanıp ölçülen head sayısı
+MEASURE_NEUTRAL = 8  # nötr KL için kullanılan nötr istek sayısı
+NEUTRAL_LAST_K = 16  # nötr KL için son pozisyon sayısı (metrics.real_effect ile aynı)
+
+
+@dataclass
+class HeadMeasure:
+    layer: int
+    head: int
+    estimated: float  # av yönteminin tahmini (heads'teki skor)
+    signal_drop: float  # (m_pos - m_pos_h) / (m_pos - m_neg); 1.0: pozitifler negatif ortalamaya çöktü
+    neutral_kl: float  # head sıfırlanınca nötr istekler üzerinde ortalama KL(orijinal || müdahaleli)
 
 
 @dataclass
@@ -33,7 +51,17 @@ class HuntResult:
     heads: list[tuple[int, int, float]]
     direction: torch.Tensor | None
     direction_layer: int | None
-    val_consistency: float
+    ref_layer: int
+    val_correct: int
+    val_n: int
+    val_accuracy: float
+    val_ci: tuple[float, float]
+    measured: list[HeadMeasure]
+
+
+def candidate_layers(n_layers: int) -> range:
+    """layer_scores indisleri (i = katman i-1 sonrası artık akım): 1 .. max(1, floor(0.8·n_layers))."""
+    return range(1, max(1, math.floor(LAYER_WINDOW_FRAC * n_layers + 1e-9)) + 1)
 
 
 # --- Girdi biçimlendirme ----------------------------------------------------------------------
@@ -57,7 +85,9 @@ def _encode_batch(lm: LoadedModel, prompts: list[str]):
     texts = [format_prompt(lm, p) for p in prompts]
     device = next(lm.model.parameters()).device
     # Şablon BOS gibi özel token'ları zaten metne yazar; tokenizer ikinci kez eklemesin.
-    enc = lm.tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=not templated)
+    enc = lm.tokenizer(
+        texts, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=not templated
+    )
     enc["position_ids"] = (enc["attention_mask"].cumsum(-1) - 1).clamp_min(0)
     return enc.to(device)
 
@@ -200,11 +230,35 @@ def _normalize_scores(d: torch.Tensor) -> list[float]:
     return torch.zeros_like(d).tolist()
 
 
+def _window_scores(d: torch.Tensor, n_layers: int) -> list[float]:
+    """Cohen d'yi aday penceresi içindeki en büyüğe böler; pencere dışı girdiler 0.0 olur."""
+    window = list(candidate_layers(n_layers))
+    scores = [0.0] * len(d)
+    for i, v in zip(window, _normalize_scores(d[window])):
+        scores[i] = v
+    return scores
+
+
 def layer_scores(lm: LoadedModel, train: Concept, val: Concept) -> list[float]:
-    """Katman başına, train yönü üzerinde val pos/neg izdüşümlerinin Cohen d'si; en büyüğe bölünmüş."""
+    """Katman başına, train yönü üzerinde val pos/neg izdüşümlerinin Cohen d'si; aday penceresindeki
+    en büyüğe bölünmüş, pencere dışı 0.0 (bkz. candidate_layers)."""
     dirs = directions(lm, train)
     d = _cohen_d(dirs, last_token_resid(lm, val.positive), last_token_resid(lm, val.negative))
-    return _normalize_scores(d)
+    return _window_scores(d, lm.arch.n_layers)
+
+
+def val_accuracy(
+    r: torch.Tensor,
+    train_pos: torch.Tensor,
+    train_neg: torch.Tensor,
+    val_pos: torch.Tensor,
+    val_neg: torch.Tensor,
+) -> tuple[int, int]:
+    """(doğru, n): eşik t = train pos/neg ortalama izdüşümlerinin orta noktası; val pozitifi izdüşüm > t,
+    val negatifi izdüşüm <= t ise doğru. Girdiler ref katmandaki son-token durumları [N, d_model]."""
+    t = ((train_pos @ r).mean() + (train_neg @ r).mean()) / 2
+    correct = int(((val_pos @ r) > t).sum()) + int(((val_neg @ r) <= t).sum())
+    return correct, val_pos.shape[0] + val_neg.shape[0]
 
 
 # --- Head skorları ----------------------------------------------------------------------------
@@ -319,6 +373,70 @@ def activation_diff(
     return diff / top if top > 0 else torch.zeros_like(diff)
 
 
+# --- Ölçüm: tahmin edilen en iyi head'leri gerçekten sıfırla ----------------------------------
+
+
+def _ref_projection(
+    lm: LoadedModel, prompts: list[str], ref_layer: int, r: torch.Tensor, cancel: threading.Event | None
+) -> torch.Tensor:
+    """[N] resid[ref, son token] . r (float32 CPU); ileri geçiş ref_layer'da kesilir, etkin kancalar korunur."""
+    parts = []
+    for start in range(0, len(prompts), HUNT_BATCH):
+        check_cancel(cancel)
+        enc = _encode_batch(lm, prompts[start : start + HUNT_BATCH])
+        with torch.no_grad():
+            h = _hidden_states(lm, enc, stop_at=ref_layer)[ref_layer]
+        parts.append(h[:, -1].to("cpu", torch.float32) @ r)
+    return torch.cat(parts)
+
+
+def measure_top_heads(
+    lm: LoadedModel,
+    heads: list[tuple[int, int, float]],
+    val_pos: list[str],
+    ref_layer: int,
+    r_ref: torch.Tensor,
+    m_pos: float,
+    m_neg: float,
+    k: int = MEASURE_TOP_K,
+    n_neutral: int = MEASURE_NEUTRAL,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> list[HeadMeasure]:
+    """`heads`in (tahmine göre sıralı) ilk k head'ini tek tek sıfırlayıp ölçer; signal_drop azalan sıralı.
+
+    signal_drop = (m_pos - m_pos_h) / (m_pos - m_neg); yalnızca ref_layer'dan ÖNCEKİ katmanlar m'yi etkiler,
+    bu yüzden layer >= ref_layer için 0.0 (yapısal, ileri geçiş yok). neutral_kl: ilk n_neutral nötr istekte,
+    son NEUTRAL_LAST_K pozisyonda ortalama KL; orijinal log-olasılıklar tek kez hesaplanır.
+    """
+    top = heads[:k]
+    if not top:
+        return []
+    neutral = load_neutral()[:n_neutral]
+    r = r_ref.to("cpu", torch.float32)
+    denom = m_pos - m_neg
+    base = []
+    for p in neutral:
+        check_cancel(cancel)
+        base.append(_log_probs(lm, p, NEUTRAL_LAST_K))
+    out: list[HeadMeasure] = []
+    for i, (layer, head, est) in enumerate(top):
+        check_cancel(cancel)
+        iv = [HeadAblation(layer, head)]
+        if layer < ref_layer and denom > 0:
+            with apply(lm, iv):
+                m_h = float(_ref_projection(lm, val_pos, ref_layer, r, cancel).mean())
+            drop = (m_pos - m_h) / denom
+        else:
+            drop = 0.0
+        kls = _kl_from(lm, base, neutral, iv, NEUTRAL_LAST_K)
+        out.append(HeadMeasure(layer, head, est, float(drop), sum(kls) / len(kls)))
+        if progress is not None:
+            progress((i + 1) / len(top), f"{i + 1}/{len(top)} head ölçüldü")
+    out.sort(key=lambda m: m.signal_drop, reverse=True)
+    return out
+
+
 # --- Av ---------------------------------------------------------------------------------------
 
 
@@ -336,10 +454,12 @@ def hunt(
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
 ) -> HuntResult:
-    """split → katman skorları → ref_layer = argmax → head sıralaması (train kümesinde).
+    """split → katman skorları → ref_layer = pencere içi argmax → head sıralaması (train kümesinde)
+    → en iyi MEASURE_TOP_K head'in gerçek sıfırlama ölçümü (her yöntem için).
 
     "direction" yönteminde head sırası activation_diff skorlarıdır; yön, ref_layer'daki train yönüdür.
-    İlerleme tek yönlü artar: artık akım geçişleri 0–0.4 (istek sayısına orantılı), head sıralaması 0.4–1.
+    İlerleme tek yönlü artar: artık akım geçişleri 0–0.4 (istek sayısına orantılı), head sıralaması 0.4–0.8,
+    ölçüm 0.8–1.
     """
     if method not in ("attribution", "activation_diff", "direction"):
         raise ValueError(f"Bilinmeyen yöntem: {method!r}")
@@ -363,12 +483,13 @@ def hunt(
     val_pos, _ = resid(2)
     val_neg, _ = resid(3)
     d = _cohen_d(dirs, val_pos, val_neg)
-    if not bool((d > 0).any()):
+    window = candidate_layers(lm.arch.n_layers)
+    if not bool((d[list(window)] > 0).any()):
         raise ValueError("Kavram doğrulama kümesinde ayrışmıyor: daha fazla ya da daha belirgin örnek gerekli.")
-    scores = _normalize_scores(d)
-    ref_layer = max(range(len(scores)), key=lambda i: scores[i])
+    scores = _window_scores(d, lm.arch.n_layers)
+    ref_layer = max(window, key=lambda i: float(d[i]))
 
-    head_progress = sub_progress(progress, 0.4, 1.0)
+    head_progress = sub_progress(progress, 0.4, 0.8)
     if method == "attribution":
         head_scores = _normalize_abs(
             _attribution(
@@ -377,20 +498,39 @@ def hunt(
         )
     else:
         head_scores = activation_diff(lm, train, progress=head_progress, cancel=cancel)
-    if progress is not None:
-        progress(1.0, "Head'ler sıralanıyor")
-
     n_heads = head_scores.shape[1]
     heads = sorted(
         ((layer, head, float(head_scores[layer, head])) for layer in range(head_scores.shape[0]) for head in range(n_heads)),
         key=lambda t: t[2],
         reverse=True,
     )
+    r_ref = dirs[ref_layer]
+    val_correct, val_n = val_accuracy(r_ref, pos[ref_layer], neg[ref_layer], val_pos[ref_layer], val_neg[ref_layer])
+    measured = measure_top_heads(
+        lm,
+        heads,
+        sets[2],
+        ref_layer,
+        r_ref,
+        float((val_pos[ref_layer] @ r_ref).mean()),
+        float((val_neg[ref_layer] @ r_ref).mean()),
+        k=MEASURE_TOP_K,
+        n_neutral=MEASURE_NEUTRAL,
+        progress=sub_progress(progress, 0.8, 1.0),
+        cancel=cancel,
+    )
+    if progress is not None:
+        progress(1.0, "Ölçüm tamamlandı")
     is_dir = method == "direction"
     return HuntResult(
         layer_scores=scores,
         heads=heads,
         direction=dirs[ref_layer].clone() if is_dir else None,
         direction_layer=ref_layer if is_dir else None,
-        val_consistency=math.tanh(float(d[ref_layer]) / 2),
+        ref_layer=ref_layer,
+        val_correct=val_correct,
+        val_n=val_n,
+        val_accuracy=val_correct / val_n if val_n else 0.0,
+        val_ci=wilson(val_correct, val_n)[1:],
+        measured=measured,
     )

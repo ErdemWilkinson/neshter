@@ -264,7 +264,7 @@ def test_hunt_job_serializes_direction_as_base64(ready):
     raw = base64.b64decode(res["direction"], validate=True)
     assert len(raw) == 4 * 64
     assert len(res["layer_scores"]) == 3  # gömme çıktısı + 2 katman
-    assert len(res["heads"]) == 8 and set(res["heads"][0]) == {"layer", "head", "score"}
+    assert len(res["heads"]) == 8 and set(res["heads"][0]) == {"layer", "head", "score", "measured"}
     assert res["direction_layer"] in (0, 1)
 
 
@@ -273,6 +273,19 @@ def test_hunt_without_direction_has_null_direction(ready):
     job = c.post("/api/hunt", json={"concept_id": "code", "method": "activation_diff"}, headers=a).json()["job_id"]
     res = wait_done(c, a, job, timeout=120)["result"]
     assert res["direction"] is None and res["direction_shape"] is None
+
+
+def test_hunt_job_returns_estimated_and_measured(ready):
+    c, a = ready
+    job = c.post("/api/hunt", json={"concept_id": "code", "method": "activation_diff"}, headers=a).json()["job_id"]
+    res = wait_done(c, a, job, timeout=120)["result"]
+    assert {"val_accuracy", "val_ci", "val_n", "ref_layer"} <= set(res) and "val_consistency" not in res
+    assert 0 <= res["val_accuracy"] <= 1 and res["val_n"] > 0 and len(res["val_ci"]) == 2
+    assert res["val_ci"][0] <= res["val_accuracy"] <= res["val_ci"][1]
+    assert res["ref_layer"] == 1 and res["layer_scores"][res["ref_layer"]] == 1.0
+    measured = [h for h in res["heads"] if h["measured"] is not None]
+    assert measured and all(set(h["measured"]) == {"signal_drop", "neutral_kl"} for h in measured)
+    assert all(set(h) == {"layer", "head", "score", "measured"} for h in res["heads"])
 
 
 def test_hunt_method_defaults_to_activation_diff_on_cpu(ready):

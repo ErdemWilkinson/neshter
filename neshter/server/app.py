@@ -574,14 +574,26 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     # Bu yön kaydedilirse etiket istemciye bağlı kalmasın (bkz. _is_safety).
                     d = r.direction.detach().to("cpu", torch.float32)
                     session.safety_dirs.append(d / d.norm())
+            measured = {(m.layer, m.head): m for m in r.measured}
+
+            def _measured(layer: int, head: int):
+                m = measured.get((layer, head))
+                return None if m is None else {"signal_drop": m.signal_drop, "neutral_kl": m.neutral_kl}
+
             return {
                 "method": method,
                 "layer_scores": r.layer_scores,
-                "heads": [{"layer": layer, "head": head, "score": score} for layer, head, score in r.heads],
+                "heads": [
+                    {"layer": layer, "head": head, "score": score, "measured": _measured(layer, head)}
+                    for layer, head, score in r.heads
+                ],
                 "direction": None if r.direction is None else _b64_f32(r.direction),
                 "direction_shape": None if r.direction is None else list(r.direction.shape),
                 "direction_layer": r.direction_layer,
-                "val_consistency": r.val_consistency,
+                "ref_layer": r.ref_layer,
+                "val_accuracy": r.val_accuracy,
+                "val_ci": list(r.val_ci),
+                "val_n": r.val_n,
             }
 
         return start(fn)
