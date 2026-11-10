@@ -18,9 +18,11 @@ It is **100% local**: there is no cloud API in it, no account, and **no telemetr
 - **Verified on real weights:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) and GGUF loading
   (SmolLM2-135M Q8_0). Gemma2 runs on tiny random models in the tests.
 - The real effect of a cut is measured as KL divergence against 30 layer-matched random head sets,
-  reported as a percentile and a permutation p-value. Single rates carry Wilson 95% intervals. Test
-  suite differences use McNemar's exact test with Holm adjustment across categories, and are reported
-  as "uncertain" (belirsiz) when p >= 0.05.
+  reported as a percentile and a permutation p-value. For recipes with directions the control for each
+  direction is a random isotropic unit direction, a weak baseline (the API labels it
+  `direction_control: "isotropic"`). Single rates carry Wilson 95% intervals. Test suite differences use
+  McNemar's exact test and are reported as "uncertain" (belirsiz) when p >= 0.05. Holm adjustment is
+  applied across the non-target categories only; the target category uses its raw McNemar p.
 - Suite KL and perplexity are measured through hooks, while the generated answers of direction
   recipes come from baked, save-rounded weights. So "measure what you ship" holds for the answers,
   not for those two numbers.

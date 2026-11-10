@@ -18,9 +18,11 @@ dosyası olarak kaydeder.
 - **Gerçek ağırlıklarda doğrulandı:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) ve GGUF yükleme
   (SmolLM2-135M Q8_0). Gemma2 testlerde küçük rastgele modellerle çalışır.
 - Bir kesimin gerçek etkisi, katmanı eşleştirilmiş 30 rastgele head kümesine karşı KL ıraksaması olarak
-  ölçülür ve yüzdelik dilim ile permütasyon p değeri olarak bildirilir. Tekil oranlar Wilson %95
-  aralığı taşır. Test seti farkları McNemar exact testi ve kategoriler arası Holm düzeltmesiyle
-  karşılaştırılır; p >= 0,05 ise sonuç "belirsiz" diye bildirilir.
+  ölçülür ve yüzdelik dilim ile permütasyon p değeri olarak bildirilir. Yön içeren tariflerde her yönün
+  kontrolü rastgele izotropik bir birim yöndür; bu zayıf bir karşılaştırmadır (API bunu
+  `direction_control: "isotropic"` diye etiketler). Tekil oranlar Wilson %95 aralığı taşır. Test seti
+  farkları McNemar exact testiyle karşılaştırılır; p >= 0,05 ise sonuç "belirsiz" diye bildirilir. Holm
+  düzeltmesi yalnızca hedef dışı kategoriler arasında uygulanır; hedef kategori ham McNemar p'sini kullanır.
 - Test setindeki KL ve perplexity kancalarla ölçülür; yön içeren tariflerin ürettiği cevaplar ise
   pişirilmiş, kayıtta yuvarlanmış ağırlıklardan gelir. Yani "gönderdiğini ölç" ilkesi cevaplar için
   geçerlidir, bu iki sayı için değil.
