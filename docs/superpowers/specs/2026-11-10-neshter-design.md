@@ -25,7 +25,8 @@ tamamen lokal çalışan açık kaynak bir araçtır. İçinde hiçbir bulut API
    en az 32 + 32; %20 doğrulamaya ayrılır. Yöntemler: Tahmini etki (attribution,
    GPU'da önerilen), Etkinlik farkı (`activation_diff`, CPU'da varsayılan), Davranış yönü. Sonuçlar türe göre ayrı listelenir.
 4. **Karşılaştır ve Kaydet:** düz cümleli sonuç özeti; orijinal ve susturulmuş cevap
-   yan yana (sıcaklık 0, seed, tek ağırlık kopyası); metrikler: hedef davranış oranı
+   yan yana (sıcaklık 0, seed; yalnızca head tarifleri tek ağırlık kopyasında, yön içeren tarifler
+   sırayla ve pişirilmiş ağırlıklarda); metrikler: hedef davranış oranı
    + rastgele kontrol, KL, perplexity, test seti tablosu (n, ±%95 GA, fark).
    Kayıt: GGUF Q4_K_M / Q8_0 / safetensors bf16; Ollama'ya ekle (varsayılan KAPALI);
    .nester.json tarifi; model kartı + lisans her zaman.

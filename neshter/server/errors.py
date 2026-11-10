@@ -22,6 +22,17 @@ from neshter.progress import Cancelled
 
 log = logging.getLogger("neshter.server")
 
+# Derlenmiş yerel arayüz için yeterli en dar CSP: satır içi betik yok; stil için 'unsafe-inline' (React stil öznitelikleri).
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+
 
 class NoModel(Exception):
     """Oturumda yüklü model yok (HTTP 409 `no_model`)."""
@@ -107,4 +118,6 @@ def install_handlers(app: FastAPI) -> None:
     async def _unexpected(request: Request, exc: Exception):
         # Yığın izi ve istisna metni istemciye gitmez (yol/bilgi sızıntısı); sunucu günlüğüne yazılır.
         log.error("Beklenmeyen hata: %s %s", request.method, request.url.path, exc_info=exc)
-        return JSONResponse({"detail": "Beklenmeyen hata.", "error_code": "internal"}, status_code=500)
+        return JSONResponse(
+            {"detail": "Beklenmeyen hata.", "error_code": "internal"}, status_code=500, headers=SECURITY_HEADERS
+        )

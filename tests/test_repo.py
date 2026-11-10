@@ -20,7 +20,7 @@ def test_docs_have_no_private_links_or_local_paths():
     assert ROOT / "SECURITY.md" in files and all(f.exists() for f in files)
     for f in files:
         t = f.read_text(encoding="utf-8")
-        assert "claude.ai/artifact" not in t and not re.search(r"\b[A-Z]:\\", t), f
+        assert "claude.ai/artifact" not in t and not re.search(r"\b[A-Za-z]:[\\/]", t), f
 
 
 def test_version_is_0_1_1():

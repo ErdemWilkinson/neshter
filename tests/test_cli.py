@@ -252,11 +252,32 @@ def test_launcher_uses_lockfile_and_asks_before_installing_uv():
     raw = (ROOT / "neshter.bat").read_bytes()
     bat = raw.decode("ascii")  # yalnızca ASCII (cmd kod sayfasından bağımsız)
     assert raw.count(b"\r\n") == raw.count(b"\n") > 0  # CRLF
+    assert not [b for b in raw if b < 32 and b not in (10, 13)]  # kaçış dizisi yüzünden sızan denetim baytı yok
+    lines = bat.split("\r\n")
+    assert r'set "PATH=%USERPROFILE%\.local\bin;%PATH%"' in lines
     assert 'uv run --project "%~dp0." --frozen neshter %*' in bat and "uvx" not in bat
+    # choice: beklenmeyen hata kodu (0, Ctrl+C) asla kuruma gitmez; yalnızca 1 (Y) kurar
+    i = lines.index('choice /M "uv simdi kurulsun mu"')
+    assert lines[i + 1 : i + 4] == ["if errorlevel 2 goto declined", "if errorlevel 1 goto install", "goto declined"]
+    assert lines.index(":install") > i and "irm https://astral.sh/uv/" in lines[lines.index(":install") + 1]
+    # uv run başarısızsa çift tıklayan hatayı görsün: pause, sonra çıkış
+    j = lines.index('uv run --project "%~dp0." --frozen neshter %*')
+    assert lines[j + 1 : j + 4] == ['set "rc=%errorlevel%"', 'if not "%rc%"=="0" pause', "exit /b %rc%"]
     assert "choice /M" in bat and re.search(r"https://astral\.sh/uv/\d+\.\d+\.\d+/install\.ps1", bat)
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     assert all("<" in d for d in deps) and "jinja2>=3.1.6,<4" in deps
     assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps
+
+
+def test_lockfile_matches_pyproject():
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv PATH'te yok")
+    r = subprocess.run([uv, "lock", "--check", "--offline"], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
 
 
 # --- Güvenlik etiketi (Task 11) ---------------------------------------------------------------
