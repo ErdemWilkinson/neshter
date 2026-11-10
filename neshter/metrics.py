@@ -1,4 +1,4 @@
-"""Metrikler: Wilson aralığı, oran farkı, KL etkisi, rastgele kontrollü gerçek etki, perplexity.
+"""Metrikler: Wilson aralığı, eşli fark (McNemar kesin + Newcombe, Holm), KL etkisi, rastgele kontrollü gerçek etki, perplexity.
 
 Tüm model çalıştırmaları ham metinle (sohbet şablonu yok), prompt başına tek tek (dolgu yok),
 torch.no_grad altında ve use_cache=False ile yapılır. KL/CE float32'de log_softmax'tan hesaplanır.
@@ -53,22 +53,85 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
 
 @dataclass
 class Diff:
+    """Eşli fark p_int − p_orig, Newcombe eşli skor aralığı ve McNemar kesin p.
+
+    `uncertain`: kullanılan p ≥ 0.05 (hedef kategoride ham p, diğerlerinde Holm düzeltmeli p_adj).
+    """
+
     diff: float
     lo: float
     hi: float
     uncertain: bool
+    p_value: float | None = None  # McNemar kesin, iki yönlü
+    p_adj: float | None = None  # Holm düzeltmeli (yalnız hedef dışı kategoriler; run_suite doldurur)
 
 
-def rate_diff(k1: int, n1: int, k2: int, n2: int) -> Diff:
-    """p2 - p1 ve %95 aralığı (normal yaklaşım); aralık 0'ı kapsıyorsa belirsiz."""
-    for k, n in ((k1, n1), (k2, n2)):
-        if n <= 0 or not 0 <= k <= n:
-            raise ValueError(f"Geçersiz sayımlar: k={k}, n={n} (n > 0 ve 0 <= k <= n olmalı).")
-    p1, p2 = k1 / n1, k2 / n2
-    diff = p2 - p1
-    half = 1.96 * math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
-    lo, hi = diff - half, diff + half
-    return Diff(diff=diff, lo=lo, hi=hi, uncertain=lo <= 0 <= hi)
+ALPHA = 0.05
+
+
+def _check_cells(*cells: int) -> None:
+    if any(x < 0 for x in cells):
+        raise ValueError(f"Geçersiz sayımlar: {cells} (negatif olamaz).")
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """McNemar kesin testi (iki yönlü): p = min(1, 2 · Σ_{i ≤ min(b,c)} C(b+c, i) · 0.5^(b+c)); b+c = 0 → 1."""
+    _check_cells(b, c)
+    nd = b + c
+    if nd == 0:
+        return 1.0
+    tail = sum(math.comb(nd, i) for i in range(min(b, c) + 1))
+    return min(1.0, 2 * tail / 2**nd)  # tam sayı / 2^nd: büyük nd'de de taşma yok
+
+
+def paired_ci(a: int, b: int, c: int, d: int) -> tuple[float, float]:
+    """Δ = p_int − p_orig için %95 Newcombe eşli skor aralığı (yöntem 10; Wilson sınırları + φ düzeltmesi).
+
+    Hücreler: a = ikisi de geçti, b = yalnız orijinal, c = yalnız müdahaleli, d = ikisi de kaldı.
+    """
+    _check_cells(a, b, c, d)
+    n = a + b + c + d
+    if n == 0:
+        raise ValueError("Eşli aralık için en az bir prompt gerekli.")
+    p1, l1, u1 = wilson(a + b, n)
+    p2, l2, u2 = wilson(a + c, n)
+    delta = p2 - p1
+    den = (a + b) * (c + d) * (a + c) * (b + d)
+    phi = 0.0 if den == 0 else (a * d - b * c) / math.sqrt(den)
+    lo = delta - math.sqrt(max(0.0, (p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2))
+    hi = delta + math.sqrt(max(0.0, (u2 - p2) ** 2 - 2 * phi * (u2 - p2) * (p1 - l1) + (p1 - l1) ** 2))
+    return max(-1.0, lo), min(1.0, hi)
+
+
+def paired_diff(a: int, b: int, c: int, d: int) -> Diff:
+    """Eşli fark (c − b)/n, Newcombe aralığı ve McNemar p; p ≥ 0.05 ise belirsiz (Holm öncesi)."""
+    lo, hi = paired_ci(a, b, c, d)
+    p = mcnemar_exact(b, c)
+    return Diff(diff=(c - b) / (a + b + c + d), lo=lo, hi=hi, uncertain=p >= ALPHA, p_value=p)
+
+
+def holm(pvals: list[float]) -> list[float]:
+    """Holm–Bonferroni düzeltmesi; sonuç girdi sırasıyla döner."""
+    m = len(pvals)
+    order = sorted(range(m), key=lambda i: pvals[i])
+    out = [0.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):  # rank = j − 1
+        running = max(running, min(1.0, (m - rank) * pvals[i]))
+        out[i] = running
+    return out
+
+
+def min_detectable_drop(n: int, alpha: float = ALPHA, m: int = 1) -> float:
+    """En küçük saptanabilir düşüş: en iyi durumda (c = 0) McNemar'ın α/m'de anlamlı olması için gereken
+    en az b = k, oran olarak k/n (en çok 1). m en az 1 sayılır."""
+    if n <= 0:
+        raise ValueError(f"n pozitif olmalı: {n}.")
+    m = max(1, m)
+    k = 1
+    while 2 * 0.5**k >= alpha / m:
+        k += 1
+    return min(1.0, k / n)
 
 
 def _device(lm: LoadedModel) -> torch.device:

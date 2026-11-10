@@ -265,7 +265,7 @@ def test_refuses_to_write_inside_source(lm):
 
 def test_model_card_contents(lm):
     r = recipe_for(lm, [HeadAblation(1, 2), DirectionAblation(torch.ones(lm.arch.d_model))], "refusal")
-    card = model_card(lm, r, Summary("good", "Türkçe özet.", "English summary."), safety_ablated=True)
+    card = model_card(lm, r, Summary("good", "Türkçe özet.", "English summary.", 24), safety_ablated=True)
     assert card.startswith("---\n")
     assert "license: other" in card and "safety-ablated" in card and "neshter" in card
     assert "Türkçe özet." in card and "English summary." in card

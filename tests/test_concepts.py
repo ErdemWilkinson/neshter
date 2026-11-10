@@ -7,7 +7,14 @@ from pydantic import ValidationError
 import neshter.concepts.hunt as hunt_mod
 from neshter.arch import decoder_layers, o_proj
 from neshter.compare import load_suite
-from neshter.concepts.detectors import detect_code, detect_refusal
+from neshter.concepts.detectors import (
+    BROKEN_NLL,
+    DETECTORS,
+    detect_code,
+    detect_refusal,
+    is_broken,
+    repetition,
+)
 from neshter.concepts.hunt import (
     activation_diff,
     directions,
@@ -102,6 +109,72 @@ def test_detector_edge_cases():
     assert detect_refusal("I'm sorry, but I can't help with that.") and detect_refusal("As an AI, I ...")
     assert detect_refusal("BUNU YAPAMAM.")
     assert not detect_refusal("Sure, here is the code.")
+
+
+@pytest.mark.parametrize(
+    "text,code",
+    [
+        ("fn main() {", True),
+        ("func add(a int) int {", True),
+        ("SELECT * FROM t;", True),
+        ("import os", True),
+        ("#!/bin/bash", True),
+        ("public class A {", True),
+        ("x = foo(1);", True),
+        ("Merhaba, nasılsın?", False),
+        ("Önce eve gittim; sonra uyudum;", False),
+        ("Bir şey daha: kediler uyur;", False),
+    ],
+)
+def test_code_detector_wider(text, code):
+    assert detect_code(text) is code
+
+
+@pytest.mark.parametrize(
+    "text,ref",
+    [
+        ("I'm unable to help with that.", True),
+        ("I must decline.", True),
+        ("Maalesef bunu yapamam.", True),
+        ("Bunu yapamayacağım.", True),
+        ("I cannot do that.", True),
+        ("As a language model, I", True),
+        ("I apologise, that is not possible.", True),
+        ("I am not able to do this.", True),
+        ("Size bu konuda yardımcı olamayacağım.", True),
+        ("I can't wait to help!", False),
+        ("I can't help but smile.", False),
+        ("Sure, here it is.", False),
+    ],
+)
+def test_refusal_detector_wider(text, ref):
+    assert detect_refusal(text) is ref
+
+
+def test_is_broken():
+    assert is_broken("") and is_broken("a b c d " * 10) and is_broken("ok fine text", nll=9.0)
+    assert not is_broken("Paris is the capital of France.")
+
+
+def test_is_broken_thresholds():
+    assert BROKEN_NLL == 7.0
+    assert is_broken("   \n ")
+    assert not is_broken("ok fine text", nll=7.0) and is_broken("ok fine text", nll=7.0001)
+    assert not is_broken("ok fine text", nll=None)
+    loop7 = "a a a a a a a"  # 7 kelime: tekrar oranı 0.75 ama kural ≥ 8 kelimede uygulanır
+    assert repetition(loop7.split()) > 0.5 and not is_broken(loop7)
+
+
+def test_repetition():
+    assert repetition([]) == 0.0 and repetition(["a", "b", "c"]) == 0.0
+    assert repetition("a b c d".split()) == 0.0
+    words = ("a b c d " * 10).split()  # 37 dörtlü, 4 farklı
+    assert repetition(words) == pytest.approx(1 - 4 / 37)
+    assert repetition("one two three four five six seven eight".split()) == 0.0
+
+
+def test_detectors_registry():
+    assert DETECTORS == {"code": detect_code, "refusal": detect_refusal}
 
 
 def test_last_token_resid_matches_hf_hidden_states_with_chat_template(tiny_model_dir):

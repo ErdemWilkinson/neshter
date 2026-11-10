@@ -1,13 +1,15 @@
 import math
 import random
 import threading
+from fractions import Fraction
 
 import pytest
 import torch
 from conftest import logits
 
 from neshter.interventions import HeadAblation, apply
-from neshter.metrics import kl_effect, perplexity, rate_diff, real_effect, wilson
+from neshter import metrics as m
+from neshter.metrics import kl_effect, perplexity, real_effect, wilson
 from neshter.progress import Cancelled
 
 
@@ -28,25 +30,104 @@ def test_wilson_edges():
         wilson(-1, 10)
 
 
-def test_rate_diff_uncertain_and_certain():
-    assert rate_diff(78, 100, 77, 100).uncertain
-    d = rate_diff(94, 100, 11, 100)
-    assert not d.uncertain and d.hi < 0
+def test_mcnemar_exact_values():
+    assert m.mcnemar_exact(10, 0) == pytest.approx(0.001953125)
+    assert m.mcnemar_exact(6, 1) == pytest.approx(0.125)
+    assert m.mcnemar_exact(0, 0) == 1.0 and m.mcnemar_exact(3, 3) == 1.0
 
 
-def test_rate_diff_formula():
-    d = rate_diff(60, 100, 40, 100)
-    se = math.sqrt(0.6 * 0.4 / 100 + 0.4 * 0.6 / 100)
-    assert d.diff == pytest.approx(-0.2)
-    assert d.lo == pytest.approx(-0.2 - 1.96 * se)
-    assert d.hi == pytest.approx(-0.2 + 1.96 * se)
+def _binom_two_sided(b, c):
+    """Bağımsız hesap: Binom(n_d, 1/2) altında olasılığı gözlenenden büyük olmayan tüm sonuçların toplamı."""
+    nd = b + c
+    if nd == 0:
+        return Fraction(1)
+    probs = [Fraction(math.comb(nd, i), 2**nd) for i in range(nd + 1)]
+    obs = probs[b]
+    return min(Fraction(1), sum(p for p in probs if p <= obs))
 
 
-def test_rate_diff_rejects_bad_counts():
+def test_mcnemar_exact_matches_independent_binomial():
+    for b in range(0, 16):
+        for c in range(0, 16):
+            assert m.mcnemar_exact(b, c) == pytest.approx(float(_binom_two_sided(b, c)), rel=1e-12), (b, c)
+
+
+def test_mcnemar_exact_is_symmetric_and_rejects_negative():
+    assert m.mcnemar_exact(7, 2) == m.mcnemar_exact(2, 7)
     with pytest.raises(ValueError):
-        rate_diff(1, 0, 1, 10)
+        m.mcnemar_exact(-1, 2)
+
+
+def test_paired_ci_regression_values():  # plan tanımlı skor aralığının regresyon değerleri; a=12 b=2 c=1 d=6
+    lo, hi = m.paired_ci(12, 2, 1, 6)
+    assert lo == pytest.approx(-0.1999, abs=1e-3) and hi == pytest.approx(0.1080, abs=1e-3)
+
+
+def test_paired_ci_matches_formula_with_wilson():
+    a, b, c, d = 9, 5, 2, 4
+    n = a + b + c + d
+    p1, l1, u1 = wilson(a + b, n)
+    p2, l2, u2 = wilson(a + c, n)
+    phi = (a * d - b * c) / math.sqrt((a + b) * (c + d) * (a + c) * (b + d))
+    delta = p2 - p1
+    lo = delta - math.sqrt((p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2)
+    hi = delta + math.sqrt((u2 - p2) ** 2 - 2 * phi * (u2 - p2) * (p1 - l1) + (p1 - l1) ** 2)
+    assert m.paired_ci(a, b, c, d) == pytest.approx((lo, hi))
+
+
+def test_paired_ci_rejects_bad_counts():
     with pytest.raises(ValueError):
-        rate_diff(11, 10, 1, 10)
+        m.paired_ci(0, 0, 0, 0)
+    with pytest.raises(ValueError):
+        m.paired_ci(1, -1, 0, 0)
+
+
+def test_paired_diff_all_pass_has_width():
+    d = m.paired_diff(25, 0, 0, 0)
+    assert d.diff == 0 and d.lo == pytest.approx(-0.1332, abs=1e-3) and d.hi == pytest.approx(0.1332, abs=1e-3)
+    assert d.uncertain and d.p_value == 1.0 and d.p_adj is None
+
+
+def test_paired_diff_clear_drop():
+    d = m.paired_diff(15, 10, 0, 0)
+    assert d.diff == pytest.approx(-0.4) and d.lo == pytest.approx(-0.5926, abs=1e-3)
+    assert d.hi == pytest.approx(-0.1872, abs=1e-3) and not d.uncertain
+    assert d.p_value == pytest.approx(2 * 0.5**10)
+
+
+def test_paired_diff_uncertain_iff_p_at_least_005():
+    assert m.paired_diff(10, 6, 1, 3).uncertain  # p = 0.125
+    assert not m.paired_diff(10, 6, 0, 3).uncertain  # p = 2/64 = 0.03125
+    assert m.paired_diff(10, 5, 0, 3).uncertain  # p = 2/32 = 0.0625
+
+
+def test_rate_diff_removed():
+    assert not hasattr(m, "rate_diff")
+
+
+def test_holm():
+    assert m.holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+
+
+def test_holm_edge_cases():
+    assert m.holm([]) == []
+    assert m.holm([0.2]) == [0.2]
+    assert m.holm([0.5, 0.001, 0.4, 0.02]) == pytest.approx([0.8, 0.004, 0.8, 0.06])
+    assert m.holm([0.9, 0.9]) == [1.0, 1.0]
+
+
+def test_min_detectable_drop():
+    assert m.min_detectable_drop(25) == pytest.approx(0.24)
+    assert m.min_detectable_drop(25, m=4) == pytest.approx(0.32)
+    assert m.min_detectable_drop(5) == 1.0
+
+
+def test_min_detectable_drop_matches_brute_force():
+    for mm in (1, 2, 3, 4, 7):
+        k = next(k for k in range(1, 100) if 2 * Fraction(1, 2) ** k < Fraction(5, 100) / mm)
+        assert m.mcnemar_exact(k, 0) < 0.05 / mm <= m.mcnemar_exact(k - 1, 0)
+        assert m.min_detectable_drop(40, m=mm) == pytest.approx(min(1.0, k / 40))
+    assert m.min_detectable_drop(25, m=0) == m.min_detectable_drop(25, m=1)  # m en az 1
 
 
 def test_kl_zero_without_intervention(lm):
