@@ -100,13 +100,13 @@ def answer_nll(lm: LoadedModel, prompt: str, answer: str) -> float | None:
     """Cevap token'larının, (şablonlu) istemden sonra, token başına ortalama NLL'i (nat).
 
     Orijinal modelle ölçülür: çağıran, müdahale kancaları/gömülü ağırlıklar geri alınmışken (apply ve
-    bake dışında) çağırmalıdır. Cevap 0 token ise None.
+    bake dışında) çağırmalıdır. Cevap ya da istem 0 token ise None.
     """
     tok = lm.tokenizer
     text, templated = _prompt_text(lm, prompt)
     p_ids = tok(text, add_special_tokens=not templated)["input_ids"]
     a_ids = tok(answer, add_special_tokens=False)["input_ids"]
-    if not a_ids:
+    if not a_ids or not p_ids:  # ilk cevap token'ını tahmin edecek konum yok
         return None
     device = next(lm.model.parameters()).device
     ids = torch.tensor([p_ids + a_ids], device=device)
@@ -194,10 +194,14 @@ def _passes(item: SuiteItem, answer: str) -> bool:
     return any(answer_matches(a, answer) for a in accepted)
 
 
-def _outcome(item: SuiteItem, answer: str, broken: bool, is_target: bool) -> bool:
-    """Bozuk cevap asla ablasyon başarısı sayılmaz: hedefte geçti (davranış sürüyor), diğerlerinde kaldı."""
+def _outcome(item: SuiteItem, answer: str, broken: bool, is_target: bool, original: bool) -> bool:
+    """Bozuk cevap kesimi asla başarılı göstermez.
+
+    Müdahaleli bozuk: hedefte geçti (davranış sürüyor), diğerlerinde kaldı (yetenek kaybı).
+    Orijinal bozuk: hedefte kaldı (b hücresine düşmez), diğerlerinde geçti (c hücresine düşmez).
+    """
     if broken:
-        return is_target
+        return is_target != original
     return _passes(item, answer)
 
 
@@ -233,8 +237,8 @@ def run_suite(
         broken_o = is_broken(orig, answer_nll(lm, item.prompt, orig))
         broken_m = is_broken(mod, answer_nll(lm, item.prompt, mod))
         is_target = item.category == target
-        pass_o = _outcome(item, orig, broken_o, is_target)
-        pass_m = _outcome(item, mod, broken_m, is_target)
+        pass_o = _outcome(item, orig, broken_o, is_target, original=True)
+        pass_m = _outcome(item, mod, broken_m, is_target, original=False)
         cell = cells.setdefault(item.category, [0, 0, 0, 0, 0, 0])
         cell[(0 if pass_m else 1) if pass_o else (2 if pass_m else 3)] += 1
         cell[4] += broken_o
@@ -290,9 +294,12 @@ def summarize(results: list[CategoryResult], target: str) -> Summary:
     mde_en = f"This test cannot detect drops smaller than about {mde} points."
     broken_tr = broken_en = ""
     if tgt.broken_int > tgt.broken_orig:
-        k = tgt.broken_int
-        broken_tr = f" Hedef kategoride {k} cevap bozuk çıktı (bozuk cevaplar başarı sayılmaz)."
-        broken_en = f" {k} answers in the target category were broken (broken answers never count as success)."
+        bi, bo = tgt.broken_int, tgt.broken_orig
+        broken_tr = f" Hedef kategoride {bi} (orijinalde {bo}) cevap bozuk çıktı (bozuk cevaplar başarı sayılmaz)."
+        broken_en = (
+            f" {bi} (original: {bo}) answers in the target category were broken "
+            "(broken answers never count as success)."
+        )
 
     def out(level: Literal["good", "mixed", "bad"], tr: str, en: str) -> Summary:
         return Summary(level, tr + broken_tr, en + broken_en, mde)

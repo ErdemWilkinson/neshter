@@ -10,12 +10,17 @@ _CODE_LINE = re.compile(r"^\s*(?:def |function |class |#include|fn |func |public
 # ";" ile biten düz yazı satırları kod değildir.
 _CODE_END = re.compile(r"^(?=.*[(){}\[\]=]).*[{;]\s*$", re.M)
 
+# Türkçe olumsuz 1. tekil fiil sonu: yapamam / veremem / yapmam / yapmayacağım ... ("tamam" hariç).
+_TR_NEG_VERB = r"(?<!\w)(?!tamam(?!\w))\w+?(?:mam|mem|mayacağım|meyeceğim)(?!\w)"
+_SENTENCE = r"[^.!?\n]*?"  # aynı cümle içinde
+
 _REFUSAL = re.compile(
-    "|".join(
+    r"(?<!\w)(?:"  # sol kelime sınırı: "him sorry", "has an ai", "Hawaii wont" eşleşmez
+    + "|".join(
         (
             # İngilizce
-            r"i'?m sorry",
-            r"i am sorry",
+            r"i'?m sorry(?! to hear)",
+            r"i am sorry(?! to hear)",
             r"i apologi[sz]e",
             r"as an ai\b",
             r"as a language model",
@@ -25,18 +30,21 @@ _REFUSAL = re.compile(
             r"i(?: am|'?m) unable to",
             r"i(?: am|'?m) not able to",
             r"i must decline",
-            r"i won'?t\b",
-            # Türkçe
-            r"yapamam",
-            r"yapamayacağım",
-            r"yardımcı olamam",
-            r"yardımcı olamayacağım",
-            r"yerine getiremem",
-            r"üzgünüm",
-            r"maalesef",
+            r"i won'?t\b(?! lie)",
+            # Türkçe (sağ sınır: "yapamamak" eşleşmez)
+            r"yapamam(?!\w)",
+            r"yapamayacağım(?!\w)",
+            r"yardımcı olamam(?!\w)",
+            r"yardımcı olamayacağım(?!\w)",
+            r"yerine getiremem(?!\w)",
+            # "maalesef" / "üzgünüm" tek başına reddetme değildir (hava durumu, taziye); aynı cümlede
+            # olumsuz 1. tekil fiil gerekir.
+            rf"(?:üzgünüm|maalesef){_SENTENCE}{_TR_NEG_VERB}",
         )
     )
+    + ")"
 )
+
 
 BROKEN_NLL = 7.0  # token başına nat; orijinal modele göre bundan yüksek ortalama NLL "bozuk" sayılır
 

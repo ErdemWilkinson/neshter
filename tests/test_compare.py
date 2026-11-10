@@ -174,8 +174,10 @@ def test_summarize_reports_broken_target_answers():
     results = [target, _cr("general", 20, 1, 1, 3)]
     compare._apply_holm(results, "code")
     s = summarize(results, "code")
-    assert s.tr.endswith("Hedef kategoride 3 cevap bozuk çıktı (bozuk cevaplar başarı sayılmaz).")
-    assert s.en.endswith("3 answers in the target category were broken (broken answers never count as success).")
+    assert s.tr.endswith("Hedef kategoride 3 (orijinalde 0) cevap bozuk çıktı (bozuk cevaplar başarı sayılmaz).")
+    assert s.en.endswith(
+        "3 (original: 0) answers in the target category were broken (broken answers never count as success)."
+    )
     same = [_cr("code", 2, 20, 0, 3, broken_orig=2, broken_int=2), _cr("general", 20, 1, 1, 3)]
     compare._apply_holm(same, "code")
     assert "bozuk" not in summarize(same, "code").tr
@@ -251,7 +253,7 @@ def test_run_suite_pairs_and_broken(lm, monkeypatch):
         "c3": ("just prose", "def f():\n    pass"),  # c
         "c4": ("prose", "more prose"),  # d
         "g1": ("Ankara", "Ankara " * 8),  # müdahaleli tekrar döngüsü -> bozuk -> hedef dışında kaldı: b
-        "g2": ("", "Ankara"),  # orijinal bozuk -> kaldı: c
+        "g2": ("", "Ankara"),  # orijinal bozuk -> hedef dışında geçti sayılır (kesimi iyi göstermez): a
         "g3": ("Ankara", "Ankara xq"),  # müdahaleli NLL 9 -> bozuk -> kaldı: b
     }
     calls = []
@@ -274,12 +276,40 @@ def test_run_suite_pairs_and_broken(lm, monkeypatch):
     code, general = res
     assert (code.a, code.b, code.c, code.d) == (1, 1, 1, 1)
     assert (code.k_orig, code.k_int, code.broken_orig, code.broken_int) == (2, 2, 0, 1)
-    assert (general.a, general.b, general.c, general.d) == (0, 2, 1, 0)
-    assert (general.k_orig, general.k_int, general.broken_orig, general.broken_int) == (2, 1, 1, 2)
+    assert (general.a, general.b, general.c, general.d) == (1, 2, 0, 0)
+    assert (general.k_orig, general.k_int, general.broken_orig, general.broken_int) == (3, 1, 1, 2)
     assert len(calls) == 14 and {p for p, _ in calls} == set(script)  # her iki cevap için NLL
     assert code.diff.p_adj is None and code.diff.p_value == mcnemar_exact(1, 1)
-    assert general.diff.p_adj == pytest.approx(mcnemar_exact(2, 1))  # m = 1
+    assert general.diff.p_adj == pytest.approx(mcnemar_exact(2, 0))  # m = 1
     assert general.diff.uncertain
+
+
+def _run_scripted(lm, monkeypatch, script, items, target):
+    monkeypatch.setattr(compare, "generate_pair", lambda lm_, p, iv, max_new_tokens, seed=42: (*script[p], "batch"))
+    monkeypatch.setattr(compare, "answer_nll", lambda lm_, prompt, answer: 1.0)
+    return {r.category: r for r in run_suite(lm, items, [], target=target)}
+
+
+def test_broken_original_in_target_is_not_a_successful_cut(lm, monkeypatch):
+    # Orijinal bozuk (boş), müdahaleli kod değil: kesim "kodu kaldırdı" gibi görünmemeli (b değil, d).
+    script = {"c1": ("", "just prose"), "c2": ("a b c d " * 10, "plain answer")}
+    items = [SuiteItem(category="code", prompt=p, check="code") for p in script]
+    code = _run_scripted(lm, monkeypatch, script, items, target="code")["code"]
+    assert code.b == 0 and code.d == 2 and code.broken_orig == 2 and code.k_orig == 0
+
+
+def test_broken_original_in_other_category_is_not_a_gain(lm, monkeypatch):
+    # Hedef dışında orijinal bozuk, müdahaleli doğru: kesim yeteneği "artırmış" gibi görünmemeli (c değil, a).
+    script = {"t": ("```x```", "prose"), "g1": ("", "Ankara"), "g2": ("x x x x " * 3, "Ankara")}
+    items = [SuiteItem(category="code", prompt="t", check="code")]
+    items += [SuiteItem(category="general", prompt=p, check="contains", answer="Ankara") for p in ("g1", "g2")]
+    general = _run_scripted(lm, monkeypatch, script, items, target="code")["general"]
+    assert general.c == 0 and general.a == 2 and general.broken_orig == 2 and general.k_orig == 2
+
+
+def test_answer_nll_empty_prompt_is_none(lm, monkeypatch):
+    monkeypatch.setattr(compare, "_prompt_text", lambda lm_, prompt: ("", True))
+    assert compare.answer_nll(lm, "", "dünya bugün") is None
 
 
 def test_run_suite_holm_over_non_target(lm, monkeypatch):
