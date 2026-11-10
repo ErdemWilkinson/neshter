@@ -26,7 +26,7 @@ from neshter.arch import decoder_layers, embed, o_proj
 from neshter.concepts.model import Concept, split
 from neshter.interventions import HeadAblation, apply
 from neshter.loader import LoadedModel
-from neshter.metrics import _kl_from, _log_probs, load_neutral, wilson
+from neshter.metrics import _kl_from, _log_probs_batch, load_neutral, wilson
 from neshter.progress import ProgressFn, check_cancel, sub_progress
 
 HUNT_BATCH = 8  # ileri geçişlerde (grad gerekmeyenler) aynı anda işlenen istek sayısı
@@ -415,10 +415,7 @@ def measure_top_heads(
     neutral = load_neutral()[:n_neutral]
     r = r_ref.to("cpu", torch.float32)
     denom = m_pos - m_neg
-    base = []
-    for p in neutral:
-        check_cancel(cancel)
-        base.append(_log_probs(lm, p, NEUTRAL_LAST_K))
+    base = _log_probs_batch(lm, neutral, NEUTRAL_LAST_K, cancel)  # yığınlı (metrics.KL_BATCH)
     out: list[HeadMeasure] = []
     for i, (layer, head, est) in enumerate(top):
         check_cancel(cancel)
@@ -429,7 +426,7 @@ def measure_top_heads(
             drop = (m_pos - m_h) / denom
         else:
             drop = 0.0
-        kls = _kl_from(lm, base, neutral, iv, NEUTRAL_LAST_K)
+        kls = _kl_from(lm, base, neutral, iv, NEUTRAL_LAST_K, cancel)
         out.append(HeadMeasure(layer, head, est, float(drop), sum(kls) / len(kls)))
         if progress is not None:
             progress((i + 1) / len(top), f"{i + 1}/{len(top)} head ölçüldü")

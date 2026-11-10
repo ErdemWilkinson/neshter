@@ -1,7 +1,9 @@
 """Metrikler: Wilson aralığı, eşli fark (McNemar kesin + Newcombe, Holm), KL etkisi, rastgele kontrollü gerçek etki, perplexity.
 
-Tüm model çalıştırmaları ham metinle (sohbet şablonu yok), prompt başına tek tek (dolgu yok),
-torch.no_grad altında ve use_cache=False ile yapılır. KL/CE float32'de log_softmax'tan hesaplanır.
+Tüm model çalıştırmaları ham metinle (sohbet şablonu yok), torch.no_grad altında ve use_cache=False ile
+yapılır. KL istekleri KL_BATCH'lik sola dolgulu yığınlarla (dikkat maskesi + maskeden position_ids) işlenir;
+her istek yalnızca kendi gerçek pozisyonları üzerinden ortalanır, sonuç tek tek çalıştırmayla aynıdır.
+Perplexity metin başına tek geçiştir. KL/CE float32'de log_softmax'tan hesaplanır.
 """
 
 from __future__ import annotations
@@ -138,17 +140,41 @@ def _device(lm: LoadedModel) -> torch.device:
     return next(lm.model.parameters()).device
 
 
-def _log_probs(lm: LoadedModel, text: str, last_k: int) -> torch.Tensor:
-    """(min(T, last_k), V) float32 log-olasılıklar, son pozisyonlar; mevcut kancalar etkindir.
+KL_BATCH = 8  # KL ileri geçişlerinde aynı anda işlenen istek sayısı (hunt.HUNT_BATCH ile aynı)
 
-    Yalnızca son last_k pozisyonun logit'i üretilir (logits_to_keep): T × V float32 tutulmaz.
+
+def _log_probs_batch(
+    lm: LoadedModel, texts: Sequence[str], last_k: int, cancel: threading.Event | None = None
+) -> list[torch.Tensor]:
+    """İstek başına (min(T_i, last_k), V) float32 log-olasılıklar, son gerçek pozisyonlar; kancalar etkindir.
+
+    KL_BATCH'lik yığınlar sola dolgulanır; dikkat maskesi dolguyu gizler, position_ids maskenin kümülatif
+    toplamından gelir (ilk gerçek token 0): her satır dolgusuz tek geçişle aynı sayıları verir. Yalnızca son
+    last_k pozisyonun logit'i üretilir (logits_to_keep); dolgu pozisyonları atılır.
     """
-    enc = lm.tokenizer(text, return_tensors="pt").to(_device(lm))
-    if enc["input_ids"].numel() == 0:
-        raise ValueError("Boş metin (token yok) ölçülemez.")
-    with torch.no_grad():
-        out = lm.model(**enc, use_cache=False, logits_to_keep=last_k)
-    return out.logits[0, -last_k:].to(torch.float32).log_softmax(-1)
+    device = _device(lm)
+    out: list[torch.Tensor] = []
+    for start in range(0, len(texts), KL_BATCH):
+        check_cancel(cancel)
+        chunk = list(texts[start : start + KL_BATCH])
+        enc = lm.tokenizer(chunk, return_tensors="pt", padding=True, padding_side="left")
+        lengths = enc["attention_mask"].sum(-1).tolist()
+        if enc["input_ids"].numel() == 0 or min(lengths) == 0:
+            raise ValueError("Boş metin (token yok) ölçülemez.")
+        enc["position_ids"] = (enc["attention_mask"].cumsum(-1) - 1).clamp_min(0)
+        enc = enc.to(device)
+        with torch.no_grad():
+            logits = lm.model(**enc, use_cache=False, logits_to_keep=last_k).logits
+        logp = logits.to(torch.float32).log_softmax(-1)  # [B, min(T_pad, last_k), V]
+        k = logp.shape[1]
+        for i, n in enumerate(lengths):
+            out.append(logp[i, k - min(n, k) :])
+    return out
+
+
+def _log_probs(lm: LoadedModel, text: str, last_k: int) -> torch.Tensor:
+    """Tek istek: (min(T, last_k), V) float32 log-olasılıklar (bkz. _log_probs_batch)."""
+    return _log_probs_batch(lm, [text], last_k)[0]
 
 
 def _kl_from(
@@ -157,14 +183,12 @@ def _kl_from(
     prompts: list[str],
     interventions: Sequence[Intervention],
     last_k: int,
+    cancel: threading.Event | None = None,
 ) -> list[float]:
-    """Önceden hesaplanmış orijinal log-olasılıklara (base) karşı prompt başına ortalama KL."""
-    result: list[float] = []
+    """Önceden hesaplanmış orijinal log-olasılıklara (base) karşı prompt başına ortalama KL (yığınlı)."""
     with apply(lm, interventions):
-        for logp, prompt in zip(base, prompts):
-            logq = _log_probs(lm, prompt, last_k)
-            result.append((logp.exp() * (logp - logq)).sum(-1).mean().item())
-    return result
+        cut = _log_probs_batch(lm, prompts, last_k, cancel)
+    return [(logp.exp() * (logp - logq)).sum(-1).mean().item() for logp, logq in zip(base, cut)]
 
 
 def kl_effect(
@@ -176,7 +200,7 @@ def kl_effect(
     """Prompt başına ortalama KL(orijinal || müdahaleli); son last_k pozisyon (kısaysa hepsi)."""
     if last_k < 1:
         raise ValueError(f"last_k en az 1 olmalı: {last_k}.")
-    base = [_log_probs(lm, p, last_k) for p in prompts]
+    base = _log_probs_batch(lm, prompts, last_k)
     return _kl_from(lm, base, prompts, interventions, last_k)
 
 
@@ -305,7 +329,7 @@ def recipe_effect(
     drawn = [random_control(lm, interventions, rng, gen) for _ in range(n_random)]  # önce doğrula
     layer_matched = all(matched for _, matched in drawn)
 
-    base = [_log_probs(lm, p, last_k) for p in prompts]
+    base = _log_probs_batch(lm, prompts, last_k, cancel)
     per_prompt = _kl_from(lm, base, prompts, interventions, last_k)
     kl = sum(per_prompt) / len(per_prompt)
     kl_std = math.sqrt(sum((v - kl) ** 2 for v in per_prompt) / len(per_prompt))  # popülasyon
