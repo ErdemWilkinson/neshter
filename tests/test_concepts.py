@@ -105,9 +105,21 @@ def test_last_token_resid_matches_hf_hidden_states_with_chat_template(tiny_model
     assert text == ref.tokenizer.apply_chat_template(
         [{"role": "user", "content": prompts[1]}], tokenize=False, add_generation_prompt=True
     ) and text != prompts[1]
-    with torch.no_grad():
-        out = ref.model(**ref.tokenizer(text, return_tensors="pt"), output_hidden_states=True)
-    assert torch.allclose(r[:, 1], torch.stack([h[0, -1] for h in out.hidden_states]), atol=1e-5)
+    from neshter.arch import decoder_layers
+
+    last = {}
+    handle = decoder_layers(ref.model)[-1].register_forward_hook(
+        lambda mod, args, output: last.__setitem__("x", output[0] if isinstance(output, tuple) else output)
+    )
+    try:
+        with torch.no_grad():
+            out = ref.model(**ref.tokenizer(text, return_tensors="pt"), output_hidden_states=True)
+    finally:
+        handle.remove()
+    # 0..L−1: HF hidden_states ile aynı; L: son katman çıktısı (norm ÖNCESİ, HF'nin L'si norm sonrası).
+    assert torch.allclose(r[:2, 1], torch.stack([h[0, -1] for h in out.hidden_states[:2]]), atol=1e-5)
+    assert torch.allclose(r[2, 1], last["x"][0, -1], atol=1e-5)
+    assert not torch.allclose(r[2, 1], out.hidden_states[2][0, -1], atol=1e-3)
 
 
 def test_no_hooks_left_behind(lm):
@@ -146,7 +158,7 @@ def test_head_attribution_respects_causality(lm):
 
 def test_head_attribution_matches_finite_difference(lm):
     """Doğrusal yaklaşım küçük yamada gerçek değişimle örtüşmeli (gradyan doğru alınıyor mu?)."""
-    from neshter.arch import o_proj
+    from neshter.arch import decoder_layers, o_proj
 
     c = _small(load_preset("code"), n=4)
     ref = 2
@@ -170,16 +182,18 @@ def test_head_attribution_matches_finite_difference(lm):
                 return (x,)
             return hook
 
+        last = {}
         hs = [o_proj(lm.model, l).register_forward_pre_hook(make(l)) for l in range(2)]
+        # ref = 2 = n_layers -> son decoder katmanının çıktısı (norm öncesi)
+        hs.append(decoder_layers(lm.model)[-1].register_forward_hook(
+            lambda mod, args, output: last.__setitem__("x", output[0] if isinstance(output, tuple) else output)))
         try:
             with torch.no_grad():
-                # ref = 2 = n_layers -> hidden_states[2] = son norm çıktısı = last_hidden_state
-                out = lm.model.model(**lm.tokenizer(format_prompt(lm, prompt), return_tensors="pt"),
-                                     use_cache=False)
+                lm.model.model(**lm.tokenizer(format_prompt(lm, prompt), return_tensors="pt"), use_cache=False)
         finally:
             for h in hs:
                 h.remove()
-        return float(out.last_hidden_state[0, -1] @ r_ref), zs
+        return float(last["x"][0, -1] @ r_ref), zs
 
     mu = torch.stack([torch.stack([run(p)[1][l] for l in range(2)]) for p in c.negative]).mean(0)
     eps = 1e-3
@@ -193,6 +207,13 @@ def test_head_attribution_matches_finite_difference(lm):
         assert raw[layer, head].item() == pytest.approx(expected, rel=0.05, abs=1e-4)
 
 
+def test_hunt_raises_when_concept_does_not_separate(lm):
+    c = load_preset("math")
+    same = c.model_copy(update={"positive": c.positive[:10], "negative": c.positive[:10]})
+    with pytest.raises(ValueError, match="ayrışmıyor"):
+        hunt(lm, same, "direction")
+
+
 def test_activation_diff_normalized(lm):
     a = activation_diff(lm, _small(load_preset("tone")))
     assert a.shape == (2, 4) and (a >= 0).all() and a.max() == pytest.approx(1)
@@ -200,9 +221,11 @@ def test_activation_diff_normalized(lm):
 
 @pytest.mark.parametrize("cid", PRESET_ORDER)
 def test_hunt_all_presets_all_methods(lm, cid):
-    c = _small(load_preset(cid), n=10)
+    c = load_preset(cid)
+    # Rastgele tiny modelde eşleştirilmiş refusal çiftleri seed 0'da val'de ayrışmıyor (hunt doğru şekilde
+    # ValueError verir); seed 1 dört kavramın hepsinde ayrışıyor.
     for method in ("attribution", "activation_diff", "direction"):
-        r = hunt(lm, c, method)
+        r = hunt(lm, c, method, seed=1)
         assert len(r.heads) == 8 and len({(l, h) for l, h, _ in r.heads}) == 8
         scores = [s for _, _, s in r.heads]
         assert scores == sorted(scores, reverse=True) and all(type(s) is float for s in scores)

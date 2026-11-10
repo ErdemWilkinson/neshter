@@ -56,8 +56,9 @@ def _encode(lm: LoadedModel, prompt: str):
 
 
 def _hidden_states(lm: LoadedModel, enc) -> list[torch.Tensor]:
-    """HF `output_hidden_states` ile birebir aynı n_layers+1 durum: gömme çıktısı, katman 0..L−2
-    çıktıları ve son norm çıktısı ([1, T, d_model], graf korunur).
+    """n_layers+1 norm-öncesi artık akım durumu: gömme çıktısı ve her decoder katmanının çıktısı
+    ([1, T, d_model], graf korunur). 0..L−1 HF `hidden_states` ile aynıdır; L ise HF'nin aksine son
+    norm ÖNCESİDİR — DirectionAblation'ın düzenlediği taban budur (norm sonrası γ ile bükülür).
 
     output_hidden_states=True kullanılmaz: transformers 5 ilk kullanımda katmanlara kalıcı yakalama
     kancaları ekler; burada kancalar kendimizce eklenip her çağrıdan sonra kaldırılır.
@@ -70,18 +71,19 @@ def _hidden_states(lm: LoadedModel, enc) -> list[torch.Tensor]:
 
         return hook
 
-    mods = [embed(lm.model)] + list(decoder_layers(lm.model))[:-1]
+    mods = [embed(lm.model)] + list(decoder_layers(lm.model))
     handles = [m.register_forward_hook(make_hook(i)) for i, m in enumerate(mods)]
     try:
-        out = lm.model.model(**enc, use_cache=False)  # lm_head atlanır
+        lm.model.model(**enc, use_cache=False)  # lm_head atlanır
     finally:
         for h in handles:
             h.remove()
-    return [states[i] for i in range(len(mods))] + [out.last_hidden_state]
+    return [states[i] for i in range(len(mods))]
 
 
 def last_token_resid(lm: LoadedModel, prompts: list[str]) -> torch.Tensor:
-    """[n_layers+1, N, d_model] float32 CPU; hidden_states'in son token'ı (istekler tek tek, dolgu yok)."""
+    """[n_layers+1, N, d_model] float32 CPU; norm-öncesi artık akımın son token'ı (bkz. _hidden_states;
+    istekler tek tek, dolgu yok)."""
     rows = []
     with torch.no_grad():
         for p in prompts:
@@ -254,6 +256,8 @@ def hunt(
     train, val = split(c, seed=seed)
     dirs = _directions_from(last_token_resid(lm, train.positive), last_token_resid(lm, train.negative))
     d = _cohen_d(dirs, last_token_resid(lm, val.positive), last_token_resid(lm, val.negative))
+    if not bool((d > 0).any()):
+        raise ValueError("Kavram doğrulama kümesinde ayrışmıyor: daha fazla ya da daha belirgin örnek gerekli.")
     scores = _normalize_scores(d)
     ref_layer = max(range(len(scores)), key=lambda i: scores[i])
 
