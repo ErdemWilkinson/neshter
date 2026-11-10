@@ -15,25 +15,37 @@ dosyası olarak kaydeder.
   - **Head susturma:** bir sorgu (Q) dikkat head'ini susturur (`o_proj` sütunları sıfırlanır).
   - **Yön ortogonalizasyonu:** bir davranış yönünü ağırlıklardan çıkarır.
 - İkisi de tensör şeklini korur, bu yüzden sonuç GGUF ile uyumludur. Yapısal budama v0.1'de yok.
-- Bir kesimin gerçek etkisi, rastgele head kontrolüne karşı KL ıraksaması olarak ve Wilson %95
-  aralıklarıyla ölçülür; aralık 0'ı kapsıyorsa sonuç "belirsiz" diye bildirilir.
+- **Gerçek ağırlıklarda doğrulandı:** Qwen2 (Qwen2.5-0.5B). Llama ve Gemma2 testlerde küçük rastgele
+  modellerle çalışır.
+- Bir kesimin gerçek etkisi, katmanı eşleştirilmiş 30 rastgele head kümesine karşı KL ıraksaması olarak
+  ölçülür ve yüzdelik dilim ile permütasyon p değeri olarak bildirilir. Tekil oranlar Wilson %95
+  aralığı taşır. Test seti farkları McNemar exact testi ve kategoriler arası Holm düzeltmesiyle
+  karşılaştırılır; p >= 0,05 ise sonuç "belirsiz" diye bildirilir.
+- Test setindeki KL ve perplexity kancalarla ölçülür; yön içeren tariflerin ürettiği cevaplar ise
+  pişirilmiş, kayıtta yuvarlanmış ağırlıklardan gelir. Yani "gönderdiğini ölç" ilkesi cevaplar için
+  geçerlidir, bu iki sayı için değil.
+- Yerel bf16 desteği olmayan işlemcilerde, RAM yetiyorsa Neşter float32 ile hesaplar. CPU'da varsayılan
+  av yöntemi `activation_diff`'tir (attribution GPU için önerilir).
 
 ## Kurulum ve çalıştırma
 
-Neşter henüz PyPI'da yayımlanmadı; bu deponun bir klonundan çalıştır:
+Neşter henüz PyPI'da yayımlanmadı; bu deponun bir klonundan, kilitli bağımlılık kümesiyle
+(`uv.lock`) çalıştır:
 
 ```
 git clone <repo-url> neshter
 cd neshter
-uvx --from . neshter
+uv run --frozen neshter
 ```
 
-ya da klonlamadan `uvx --from git+<repo-url> neshter`. Çıplak `uvx neshter` çalıştırma: paket
-yayımlanana kadar PyPI'daki o ad bize ait değil. (Yayımlandıktan sonra `uvx neshter` de çalışacak.)
+Windows'ta klondaki `neshter.bat` dosyasını çift tıklayabilir ya da çalıştırabilirsin. Bu klonu kilit
+dosyasıyla çalıştırır; [uv](https://docs.astral.sh/uv/) yoksa kurmadan önce sorar (E/H) ve Astral'in
+resmi kurulum betiğini (sabit sürüm) kullanır. Neşter yerel bir sunucu başlatır ve tarayıcını açar.
+Seçenekler: `--no-browser`, `--port N`.
 
-Windows'ta klondaki `neshter.bat` dosyasını çift tıklayabilir ya da çalıştırabilirsin; `uv` yoksa
-[uv](https://docs.astral.sh/uv/) kurulur, ardından bu klon çalışır (`uvx --from <klon klasörü> neshter`).
-Neşter yerel bir sunucu başlatır ve tarayıcını açar. Seçenekler: `--no-browser`, `--port N`.
+`uvx --from git+<repo-url> neshter` da çalışır, ama kilitsizdir: bağımlılıklar izin verilen
+aralıktaki en yeni sürüme çözülür, riski sana aittir. Çıplak `uvx neshter` çalıştırma: paket
+yayımlanana kadar PyPI'daki o ad bize ait değil.
 
 Paylaşılan bir tarifi (`.nester.json`) arayüz olmadan uygulamak için:
 
@@ -48,10 +60,13 @@ bulunamadı.
 
 ## GGUF ve Ollama
 
-GGUF çıktısı için bilgisayarında [llama.cpp](https://github.com/ggml-org/llama.cpp) olmalıdır
-(`convert_hf_to_gguf.py` ve `llama-quantize`). `NESHTER_LLAMA_CPP` ortam değişkenini onun klasörüne
-ayarla ya da `llama-quantize`'ı `PATH`'e ekle. Yoksa safetensors olarak kaydet; GGUF seçeneği
-"llama.cpp gerekli" der.
+GGUF çıktısı, uçtan uca denenene kadar **deneyseldir**. Bilgisayarında
+[llama.cpp](https://github.com/ggml-org/llama.cpp) olmalıdır (`convert_hf_to_gguf.py` ve
+`llama-quantize`). `NESHTER_LLAMA_CPP` ortam değişkenini onun klasörüne ayarla ya da
+`llama-quantize`'ı `PATH`'e ekle. `NESHTER_LLAMA_CPP` güvendiğin bir llama.cpp'yi göstermelidir
+(Python dönüştürücüsü senin yetkilerinle çalışır). Yoksa safetensors olarak kaydet; GGUF seçeneği
+"llama.cpp gerekli" der. GGUF ve Ollama çıktıları model kartını, tarifi ve lisans dosyalarını
+`.gguf` dosyasının yanında tutar.
 
 Kaydedilen GGUF'u Ollama'ya eklemek isteğe bağlıdır ve **varsayılan olarak kapalıdır**. Açılırsa
 Neşter senin yerine `ollama create` çalıştırır.
@@ -59,6 +74,11 @@ Neşter senin yerine `ollama create` çalıştırır.
 ## Güvenlik modeli
 
 - Sunucu yalnızca `127.0.0.1`'e bağlanır. Başka bir adresi dinleme seçeneği yoktur.
+- Her yanıt bir Content-Security-Policy (`frame-ancestors 'none'`, yalnızca aynı kaynak),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` ve `X-Frame-Options: DENY`
+  taşır.
+- Örnek model indirmesi tek bir sürüme sabitlenmiştir ve yalnızca yapılandırma, tokenizer, ağırlık ve
+  lisans dosyalarını getirir. Güvenlik açıklarını özel olarak bildir; bkz. [SECURITY.md](SECURITY.md).
 - Başlangıçta rastgele bir oturum belirteci üretilir ve her API isteğinde (`X-Neshter-Token`)
   zorunludur. Belirteç, tarayıcıların sunucuya hiç göndermediği URL parçasında (`#`) taşınır.
 - `Origin` `http://127.0.0.1:<port>` ya da `http://localhost:<port>` olmalıdır (ya da hiç
@@ -81,10 +101,13 @@ kartında `safety-ablated` etiketi bulunur. Bu modelleri sorumlulukla kullan ve 
 lisansına uy (örneğin Llama lisansı, türetilmiş modeller için adlandırma ve kullanım politikası
 şartları getirir).
 
-Güvenlik etiketi elinden geleni yapar ve temkinlidir. Uygulamada, dışa aktarılan tarif bu oturumdaki
+Güvenlik etiketi elinden geleni yapar, dürüst yeniden dağıtım içindir ve kolayca kaldırılabilir.
+Temel modelin lisansı ve kullanım politikası, kaydettiğin ve paylaştığın model için de geçerlidir.
+Uygulamada, dışa aktarılan tarif bu oturumdaki
 bir reddetme avının ilk 20 head'inden birini ya da bulunan bir yönü (kosinüs >= 0.99) içeriyorsa
-etiket kendiliğinden konur. Komut satırı tarifin iddiasını doğrulayamaz; tarifin `concept` değerinin
-`refusal` olmasına ya da `neshter apply --label-safety` bayrağına güvenir.
+etiket kendiliğinden konur. Komut satırı, paylaşılan bir tarifin yönlerinin ne yaptığını doğrulayamaz;
+tarifin `concept` değerinin `refusal` olmasına ya da `neshter apply --label-safety` bayrağına güvenir:
+kendi yapmadığın bir tarifi uygularken `--label-safety` kullan.
 
 ## Durum
 

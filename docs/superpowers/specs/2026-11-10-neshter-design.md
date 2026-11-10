@@ -1,7 +1,6 @@
 # Neşter — Tasarım Spec'i (v0.1)
 
 Tarih: 2026-11-10 · Durum: onaylandı (5 rollü ajan tartışması + Erdem'in 4 kararı)
-Tasarım tuvali: https://claude.ai/artifact/Qdk2FnkDxnEeXYSqYbvxeg
 
 ## 1. Ne
 
@@ -24,7 +23,7 @@ tamamen lokal çalışan açık kaynak bir araçtır. İçinde hiçbir bulut API
 3b. **Davranış bul:** hazır kavramlar: Kod yazma (varsayılan), Reddetme, Matematik,
    Duygu tonu. "Halüsinasyon" ve "Türkçe" YOK. Örnekler İSTEK'tir (prompt), cevap değil;
    en az 32 + 32; %20 doğrulamaya ayrılır. Yöntemler: Tahmini etki (attribution,
-   önerilen), Etkinlik farkı, Davranış yönü. Sonuçlar türe göre ayrı listelenir.
+   GPU'da önerilen), Etkinlik farkı (`activation_diff`, CPU'da varsayılan), Davranış yönü. Sonuçlar türe göre ayrı listelenir.
 4. **Karşılaştır ve Kaydet:** düz cümleli sonuç özeti; orijinal ve susturulmuş cevap
    yan yana (sıcaklık 0, seed, tek ağırlık kopyası); metrikler: hedef davranış oranı
    + rastgele kontrol, KL, perplexity, test seti tablosu (n, ±%95 GA, fark).
@@ -42,12 +41,18 @@ tamamen lokal çalışan açık kaynak bir araçtır. İçinde hiçbir bulut API
 - **GQA:** kesim birimi sorgu (Q) head'idir; KV head'lerine dokunulmaz.
 - **Gerçek etki:** KL(orijinal ‖ susturulmuş), ayrılmış nötr istekler üzerinde son
   16 token pozisyonunda ortalama; aynı sayıda rastgele head ile kontrol.
-- **Karşılaştırma:** tek ağırlık kopyası, batch=2, müdahale yalnızca batch index 1'e;
-  bellek yetmezse sıralı moda düşer.
-- **Hedef davranış dedektörleri:** Kod yazma → cevapta ``` kod bloğu ya da
-  `def `/`function `/`class ` satırı; Reddetme → Türkçe+İngilizce ret kalıpları listesi.
-- **Güven aralığı:** oranlar için Wilson %95; fark için iki oranın farkı ±1.96·SE.
-  Aralık 0'ı kapsıyorsa "belirsiz".
+- **Karşılaştırma:** batch=2, müdahale yalnızca batch index 1'e: yalnızca head müdahaleli
+  tariflerde geçerlidir. Yön içeren tarifler değiştirilmiş cevabı pişirilmiş, kayıt
+  yuvarlamalı ağırlıklarda üretir (önce orijinal kancasız, sonra pişir, sonra geri al);
+  test seti ağırlıkları bir kez pişirir. Bellek yetmezse sıralı moda düşer.
+- **Hedef davranış dedektörleri:** Kod yazma → cevapta ``` kod bloğu, satır başında
+  `def `/`function `/`class `/`fn `/`func `/`public `/`import `/`#include`/`#!/`/`SELECT`
+  ya da kod gibi `{`/`;` ile biten satır; Reddetme → Türkçe+İngilizce ret kalıpları
+  listesi. Ayrıca "bozuk" sonucu: bozuk bir cevap asla ablasyon başarısı sayılmaz.
+- **Güven aralığı:** oranlar için Wilson %95. Eşleşmiş fark için "belirsiz" kararı
+  McNemar exact (iki yönlü) ile verilir (p ≥ 0,05 ise belirsiz); gösterilen aralık
+  Newcombe eşleşmiş skor aralığıdır; hedef dışı kategorilerde Holm düzeltmesi uygulanır
+  ve en küçük saptanabilir düşüş belirtilir. "İki oranın farkı ±1.96·SE" kullanılmaz.
 - **Reddetme:** listede 2. sırada, varsayılan değil; ilk kullanımda tek seferlik bilgi
   kartı; kayıtta metadata `abliterated: refusal` + model kartında "safety-ablated".
 
@@ -66,7 +71,7 @@ tamamen lokal çalışan açık kaynak bir araçtır. İçinde hiçbir bulut API
 
 ## 5. Teknoloji
 
-- Python ≥ 3.11, paket adı `neshter`, kurulum `uvx neshter` + Windows `neshter.bat`.
+- Python ≥ 3.11, paket adı `neshter`, kurulum klondan `uv run --frozen neshter` + Windows `neshter.bat` (uv yoksa kurmadan önce sorar); `uvx` yalnızca kilitsiz, kullanıcının sorumluluğunda.
 - torch, transformers (GGUF okuma `gguf_file=` ile), safetensors, gguf, numpy,
   fastapi, uvicorn, pydantic v2, pyyaml.
 - GGUF yazma: kullanıcı makinesinde llama.cpp `convert_hf_to_gguf.py` + `llama-quantize`

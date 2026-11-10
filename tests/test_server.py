@@ -672,6 +672,8 @@ def test_sample_model_download_is_mocked(client, auth, tmp_path, monkeypatch):
 
     def fake_download(repo_id, **kw):
         seen["repo"] = repo_id
+        seen["revision"] = kw.get("revision")
+        seen["patterns"] = kw.get("allow_patterns")
         bar = kw["tqdm_class"](total=100, unit="B")
         bar.update(40)
         bar.update(60)
@@ -681,8 +683,25 @@ def test_sample_model_download_is_mocked(client, auth, tmp_path, monkeypatch):
     job = client.post("/api/models/sample", headers=auth).json()["job_id"]
     st = wait_done(client, auth, job)
     assert seen["repo"] == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert seen["revision"] == app_module.SAMPLE_REVISION
+    assert seen["patterns"] == app_module.SAMPLE_PATTERNS and "README.md" in seen["patterns"]
     assert st["result"] == {"path": str(tmp_path)}
     assert st["progress"] == 1.0
+
+
+# --- Güvenlik başlıkları ------------------------------------------------------------------------
+
+
+def test_security_headers_on_all_responses(client, auth):
+    for r in (client.get("/"), client.get("/api/system", headers=auth), client.get("/api/system")):
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["referrer-policy"] == "no-referrer"
+        assert r.headers["x-frame-options"] == "DENY"
+    assert client.get("/api/system").status_code == 403  # 403 yanıtı da başlık taşır
+    csp = client.get("/").headers["content-security-policy"]
+    assert "script-src" not in csp and "'unsafe-inline'" not in csp.split("style-src")[0]
+    assert "default-src 'self'" in csp and "connect-src 'self'" in csp and "img-src 'self' data:" in csp
 
 
 # --- Statik dosyalar ----------------------------------------------------------------------------
