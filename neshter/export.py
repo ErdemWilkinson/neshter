@@ -217,10 +217,10 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 def _estimate_bytes(lm: LoadedModel, directions: bool) -> int:
     model = lm.model
-    total = sum(p.numel() * p.element_size() for p in model.parameters())
+    unit = torch.empty((), dtype=save_dtype(lm)).element_size()  # diske yazılan dtype, bellektekiyle değil
+    total = sum(p.numel() * unit for p in model.parameters())
     if directions and _tied_lm_head(model) is not None:
-        w = embed(model).weight
-        total += w.numel() * w.element_size()  # bağ çözülünce lm_head ayrıca yazılır
+        total += embed(model).weight.numel() * unit  # bağ çözülünce lm_head ayrıca yazılır
     return total
 
 

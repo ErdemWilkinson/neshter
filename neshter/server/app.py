@@ -80,7 +80,7 @@ class MlpReq(_Req):
 class LoadReq(_Req):
     path: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=256)  # görünen ad (ör. "qwen2.5:7b")
-    dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = bf16 (CPU ve GPU'da aynı)
+    dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = politika (loader.pick_compute_dtype)
 
 
 class EffectReq(_Req):
@@ -263,7 +263,7 @@ def _b64_f32(t: torch.Tensor) -> str:
     return base64.b64encode(np.ascontiguousarray(t.detach().cpu().to(torch.float32).numpy(), dtype="<f4").tobytes()).decode("ascii")
 
 
-_DTYPES = {"auto": torch.bfloat16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+_DTYPES = {"auto": None, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
 
 def _memory_bytes(fmt: str, size_bytes: int) -> int:
@@ -273,7 +273,7 @@ def _memory_bytes(fmt: str, size_bytes: int) -> int:
     return estimate_memory_bytes(int(n_params), 2)
 
 
-def _load(path: Path, dtype: torch.dtype, name: str | None) -> LoadedModel:
+def _load(path: Path, dtype: torch.dtype | None, name: str | None) -> LoadedModel:
     """load_model; beklenmeyen (çoğu İngilizce) hatalar Türkçe bir öneke sarılır."""
     try:
         return load_model(path, device="auto", dtype=dtype, name=name)
@@ -480,6 +480,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "license": lm.license,
                 "device": next(lm.model.parameters()).device.type,
                 "device_note": lm.device_note,
+                "dtype": str(next(lm.model.parameters()).dtype).removeprefix("torch."),
             }
 
         return start(fn)

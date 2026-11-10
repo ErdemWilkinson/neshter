@@ -401,3 +401,8 @@ def test_ollama_create_rejects_bad_names(tmp_path, monkeypatch, name):
     monkeypatch.setattr(export.subprocess, "run", lambda *a, **k: pytest.fail("çalıştırılmamalı"))
     with pytest.raises(ValueError, match="Ollama model adı"):
         ollama_create(name, tmp_path / "m.gguf")
+
+
+def test_disk_estimate_uses_save_dtype_not_memory_dtype(lm):  # lm is float32 in memory
+    n = sum(p.numel() for p in lm.model.parameters())
+    assert export._estimate_bytes(lm, directions=False) == n * 2

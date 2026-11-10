@@ -224,7 +224,7 @@ def head_means(lm: LoadedModel, prompts: list[str]) -> dict[tuple[int, int], tor
                 n_tokens = enc["input_ids"].numel()  # tek prompt, dolgu yok
                 if n_tokens == 0:
                     raise ValueError("Boş prompt (token yok) ortalamaya katılamaz.")
-                lm.model(**enc)
+                lm.model.model(**enc)  # lm_head gerekmez
                 count += n_tokens
     finally:
         for h in handles:
