@@ -2,9 +2,11 @@
 
 Gömülen model, kancalı modelle (neshter.interventions.apply) birebir aynı davranmalıdır:
   - HeadAblation: o_proj.weight[:, h·d:(h+1)·d] = 0 (o_proj girdisinin head dilimini sıfırlamaya denk).
-  - DirectionAblation (r birim): embed.weight ← W − (W r) rᵀ; her katmanda rezidüele yazan
-    o_proj ve down_proj için W ← W − r (rᵀ W) (varsa bias da: b ← b − (b·r) r).
-    Rezidüel girdisi zaten r'ye dik olduğundan katman çıktısı da diktir → kanca ile aynı.
+  - DirectionAblation: tüm yönler tek izdüşümle silinir; Q = direction_basis(r_1..r_k) yönlerin
+    gerdiği uzayın dik birim tabanıdır ([d, k'], SVD). embed.weight ← W − (W Q) Qᵀ; her katmanda
+    rezidüele yazan o_proj ve down_proj için W ← W − Q (Qᵀ W) (varsa bias da: b ← b − Q (Qᵀ b)).
+    Yazıcı/taban listesi kancayla aynıdır (interventions.writer_bases). Rezidüel girdisi zaten
+    span(R)'ye dik olduğundan katman çıktısı da diktir → kanca ile aynı; yön sırası önemsiz.
 Kaynak modelin dosyalarına asla yazılmaz.
 """
 
@@ -25,9 +27,15 @@ import yaml
 from torch import nn
 
 import neshter
-from neshter.arch import decoder_layers, down_proj, embed, o_proj
+from neshter.arch import embed, o_proj
 from neshter.compare import Summary
-from neshter.interventions import DirectionAblation, HeadAblation, Intervention, _validate
+from neshter.interventions import (
+    DirectionAblation,
+    HeadAblation,
+    Intervention,
+    _validate,
+    writer_bases,
+)
 from neshter.loader import LoadedModel, sha256_path
 from neshter.recipe import DirectionOp, HeadOp, Recipe, save_recipe
 
@@ -46,27 +54,32 @@ ROW_CHUNK = 8192  # embed satır bloğu
 COL_CHUNK = 4096  # o_proj/down_proj sütun bloğu
 
 
-def _orth_rows_(w: torch.Tensor, r: torch.Tensor, chunk: int = ROW_CHUNK) -> None:
-    """embed, yerinde: W[vocab, d] ← W − (W r) rᵀ. float32'de, satır bloklarıyla (tam float32 kopya yok)."""
+def _orth_rows_(w: torch.Tensor, basis: torch.Tensor, chunk: int = ROW_CHUNK) -> None:
+    """embed, yerinde: W[vocab, d] ← W − (W Q) Qᵀ (Q = basis [d, k']).
+
+    float32'de, satır bloklarıyla (tam float32 kopya yok).
+    """
+    q = basis.to(device=w.device, dtype=torch.float32)
     for i in range(0, w.shape[0], chunk):
         blk = w[i : i + chunk]
         wf = blk.to(torch.float32)
-        blk.copy_(wf - torch.outer(wf @ r, r))
+        blk.copy_(wf - (wf @ q) @ q.T)
 
 
-def _orth_out_(w: torch.Tensor, r: torch.Tensor, chunk: int = COL_CHUNK) -> None:
-    """Rezidüele yazan katman, yerinde: W[d, in] ← W − r (rᵀ W); bias[d] ← b − (b·r) r.
+def _orth_out_(w: torch.Tensor, basis: torch.Tensor, chunk: int = COL_CHUNK) -> None:
+    """Rezidüele yazan katman, yerinde: W[d, in] ← W − Q (Qᵀ W); bias[d] ← b − Q (Qᵀ b).
 
-    Sütunlar bağımsızdır; float32'de sütun bloklarıyla işlenir.
+    Q = basis [d, k']. Sütunlar bağımsızdır; float32'de sütun bloklarıyla işlenir.
     """
+    q = basis.to(device=w.device, dtype=torch.float32)
     if w.ndim == 1:
         wf = w.to(torch.float32)
-        w.copy_(wf - (wf @ r) * r)
+        w.copy_(wf - q @ (q.T @ wf))
         return
     for j in range(0, w.shape[1], chunk):
         blk = w[:, j : j + chunk]
         wf = blk.to(torch.float32)
-        blk.copy_(wf - torch.outer(r, r @ wf))
+        blk.copy_(wf - q @ (q.T @ wf))
 
 
 def _snapshot(p: torch.Tensor) -> torch.Tensor:
@@ -81,8 +94,16 @@ def _tied_lm_head(model) -> nn.Module | None:
     return None
 
 
-def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[], None]:
-    """Müdahaleleri ağırlıklara yerinde işler; orijinal tensörleri birebir geri yükleyen undo döner."""
+def bake(
+    lm: LoadedModel, interventions: Sequence[Intervention], round_to: torch.dtype | None = None
+) -> Callable[[], None]:
+    """Müdahaleleri ağırlıklara yerinde işler; orijinal tensörleri birebir geri yükleyen undo döner.
+
+    round_to verilirse dokunulan her parametre p, işlendikten sonra p.to(round_to).to(p.dtype) olur;
+    böylece bellekteki model kaydedilen (ör. bf16) dosyayla aynı değerleri taşır.
+    Sınırlama: yalnızca DOKUNULAN parametreler yuvarlanır. Bütün modelin kayıtlı dosyayla eşitliği,
+    ancak dokunulmayan kaynak ağırlıklar zaten round_to ile tam gösterilebiliyorsa (bf16 kaynak) geçerlidir.
+    """
     _validate(lm, interventions, None, "zero", None)
     model, arch = lm.model, lm.arch
     directions = [iv.direction for iv in interventions if isinstance(iv, DirectionAblation)]
@@ -127,17 +148,23 @@ def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[],
                     d = arch.head_dim
                     w[:, iv.head * d : (iv.head + 1) * d] = 0
 
-            for direction in directions:  # sıralı, liste düzeninde (kanca ile aynı)
-                e = embed(model).weight
-                r = direction.to(device=e.device, dtype=torch.float32)
-                touch(e)
-                _orth_rows_(e, r)
-                for layer in range(len(decoder_layers(model))):
-                    for mod in (o_proj(model, layer), down_proj(model, layer)):
-                        for p in (mod.weight, mod.bias):
-                            if p is not None:
-                                touch(p)
-                                _orth_out_(p, r)
+            # Kancayla aynı yazıcı/taban listesi; tüm yönler tek izdüşümle (span) silinir.
+            emb = embed(model)
+            for module, basis in writer_bases(model, arch.family, directions) if directions else []:
+                if basis.shape[1] == 0:
+                    continue
+                if module is emb:
+                    touch(module.weight)
+                    _orth_rows_(module.weight, basis)
+                    continue
+                for p in (module.weight, getattr(module, "bias", None)):
+                    if p is not None:
+                        touch(p)
+                        _orth_out_(p, basis)
+
+            if round_to is not None:
+                for p, _ in originals.values():
+                    p.copy_(p.to(round_to).to(p.dtype))
     except BaseException:
         undo()
         raise

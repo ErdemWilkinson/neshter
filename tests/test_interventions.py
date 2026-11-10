@@ -7,7 +7,14 @@ from torch import nn
 
 from neshter import interventions
 from neshter.arch import decoder_layers, down_proj, embed, o_proj
-from neshter.interventions import DirectionAblation, HeadAblation, apply, head_means
+from neshter.interventions import (
+    DirectionAblation,
+    HeadAblation,
+    apply,
+    direction_basis,
+    head_means,
+    writer_bases,
+)
 
 
 def _hook_count(lm):
@@ -172,7 +179,7 @@ def test_direction_hook_handles_tensor_and_tuple_output(lm):
     # transformers 5.x katman çıktısı Tensor ya da tuple olabilir; tip korunmalı.
     d = DirectionAblation(torch.randn(lm.arch.d_model))
     x = torch.randn(2, 5, lm.arch.d_model)
-    hook = interventions._direction_hook(d.direction, None)
+    hook = interventions._direction_hook(d.direction.unsqueeze(1), None)  # [d, 1] taban
     out_t = hook(None, (), x)
     out_tuple = hook(None, (), (x, "extra"))
     assert isinstance(out_t, torch.Tensor)
@@ -264,3 +271,90 @@ def test_head_means_values_and_mean_mode(lm):
 def test_head_means_rejects_empty(lm):
     with pytest.raises(ValueError):
         head_means(lm, [])
+
+
+# --------------------------------------------------------------- span projection (çoklu yön)
+
+
+def test_direction_basis_orthonormal_and_spans():
+    g = torch.Generator().manual_seed(0)
+    R = [torch.randn(64, generator=g) for _ in range(3)]
+    Q = direction_basis(R)
+    assert Q.dtype == torch.float32 and Q.shape == (64, 3)
+    assert torch.allclose(Q.T @ Q, torch.eye(3), atol=1e-5)
+    for r in R:
+        r = r / r.norm()
+        assert (r - Q @ (Q.T @ r)).norm() < 1e-5
+
+
+def test_duplicate_directions_equal_single(lm):
+    r = torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(6))
+    assert direction_basis([r, r, 2 * r]).shape[1] == 1
+    with apply(lm, [DirectionAblation(r), DirectionAblation(r)]):
+        two = logits(lm, "merhaba dünya")
+    with apply(lm, [DirectionAblation(r)]):
+        one = logits(lm, "merhaba dünya")
+    assert torch.isfinite(two).all() and torch.allclose(two, one, atol=1e-6)
+
+
+@pytest.mark.parametrize("order", ["r r u", "r u r", "u r 2r"])  # bağımlı sütun ortada / başta
+def test_direction_basis_dependent_columns_keep_later_directions(order):
+    g = torch.Generator().manual_seed(1)
+    r, u = torch.randn(64, generator=g), torch.randn(64, generator=g)
+    vecs = [{"r": r, "u": u, "2r": 2 * r}[t] for t in order.split()]
+    Q = direction_basis(vecs)
+    assert Q.shape[1] == 2 and torch.allclose(Q.T @ Q, torch.eye(2), atol=1e-5)
+    for v in vecs:
+        v = v / v.norm()
+        assert (v - Q @ (Q.T @ v)).norm() < 1e-5  # her girdi vektörü tabanın gerdiği uzayda
+
+
+def test_direction_basis_skips_zero_vectors_and_may_be_empty():
+    assert direction_basis([torch.zeros(8)]).shape == (8, 0)
+    assert direction_basis([torch.zeros(8), torch.eye(8)[0]]).shape == (8, 1)
+
+
+def test_correlated_directions_both_removed(lm):
+    g = torch.Generator().manual_seed(7)
+    d = lm.arch.d_model
+    r1 = torch.randn(d, generator=g)
+    r1 = r1 / r1.norm()
+    u = torch.randn(d, generator=g)
+    u = u - (u @ r1) * r1
+    u = u / u.norm()
+    r2 = 0.8 * r1 + 0.6 * u
+    seen = []
+    with apply(lm, [DirectionAblation(r1), DirectionAblation(r2)]):
+        # Gözlem kancaları apply()'dan SONRA kaydedilir: embed'de silme kancasından sonra çalışır.
+        mods = [embed(lm.model), *(decoder_layers(lm.model)[i] for i in range(lm.arch.n_layers))]
+        hs = [m.register_forward_hook(_grab_first(seen)) for m in mods]
+        try:
+            logits(lm, "merhaba dünya, bugün hava güzel")
+        finally:
+            for h in hs:
+                h.remove()
+    assert len(seen) == 1 + lm.arch.n_layers
+    for h in seen:  # sıralı bileşimde başarısız olur
+        h = h.float()
+        assert (h @ r1).abs().max() <= 1e-4 * h.norm(dim=-1).max()
+        assert (h @ r2).abs().max() <= 1e-4 * h.norm(dim=-1).max()
+
+
+def test_apply_registers_one_hook_per_writer(lm):
+    g = torch.Generator().manual_seed(8)
+    ivs = [DirectionAblation(torch.randn(lm.arch.d_model, generator=g)) for _ in range(3)]
+    writers = interventions.residual_writers(lm.model, lm.arch.family)
+    with apply(lm, ivs):
+        assert all(len(m._forward_hooks) == 1 for m in writers)
+    assert all(len(m._forward_hooks) == 0 for m in writers)
+
+
+def test_writer_bases_follow_residual_writers(lm):
+    g = torch.Generator().manual_seed(9)
+    dirs = [torch.randn(lm.arch.d_model, generator=g) for _ in range(2)]
+    got = writer_bases(lm.model, lm.arch.family, dirs)
+    writers = interventions.residual_writers(lm.model, lm.arch.family)
+    assert [id(m) for m, _ in got] == [id(m) for m in writers]
+    ref = direction_basis(dirs)
+    for _, Q in got:
+        assert Q.shape == (lm.arch.d_model, 2) and torch.allclose(Q @ Q.T, ref @ ref.T, atol=1e-6)

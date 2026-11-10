@@ -328,12 +328,13 @@ def test_chunked_orthogonalization_matches_reference(dtype):
     g = torch.Generator().manual_seed(0)
     r = torch.randn(8, generator=g)
     r = r / r.norm()
+    basis = r.unsqueeze(1)  # [d, k'] taban
     rows = torch.randn(37, 8, generator=g).to(dtype)
     ref_rows = (rows.double() - torch.outer(rows.double() @ r.double(), r.double())).to(dtype)
-    export._orth_rows_(rows, r, chunk=5)  # birden çok blok
+    export._orth_rows_(rows, basis, chunk=5)  # birden çok blok
     cols = torch.randn(8, 29, generator=g).to(dtype)
     ref_cols = (cols.double() - torch.outer(r.double(), r.double() @ cols.double())).to(dtype)
-    export._orth_out_(cols, r, chunk=4)
+    export._orth_out_(cols, basis, chunk=4)
     tol = 1e-5 if dtype == torch.float32 else 1e-2
     assert torch.allclose(rows.float(), ref_rows.float(), atol=tol)
     assert torch.allclose(cols.float(), ref_cols.float(), atol=tol)
@@ -406,3 +407,56 @@ def test_ollama_create_rejects_bad_names(tmp_path, monkeypatch, name):
 def test_disk_estimate_uses_save_dtype_not_memory_dtype(lm):  # lm is float32 in memory
     n = sum(p.numel() for p in lm.model.parameters())
     assert export._estimate_bytes(lm, directions=False) == n * 2
+
+
+# --------------------------------------------------------------- span projection (çoklu yön)
+
+
+def test_bake_two_correlated_directions_matches_hook(lm):
+    g = torch.Generator().manual_seed(10)
+    r1 = torch.randn(lm.arch.d_model, generator=g)
+    r2 = 0.8 * r1 / r1.norm() + 0.6 * torch.randn(lm.arch.d_model, generator=g)
+    ivs = [DirectionAblation(r1), DirectionAblation(r2)]
+    before = {k: v.clone() for k, v in lm.model.state_dict().items()}
+    with apply(lm, ivs):
+        hooked = logits(lm, "merhaba dünya")
+    undo = export.bake(lm, ivs)
+    baked = logits(lm, "merhaba dünya")
+    undo()
+    assert torch.allclose(hooked, baked, atol=1e-4)
+    assert all(torch.equal(v, lm.model.state_dict()[k]) for k, v in before.items())
+
+
+def test_bake_duplicate_and_dependent_directions_with_heads_match_hook(lm):
+    g = torch.Generator().manual_seed(11)
+    r, u = torch.randn(lm.arch.d_model, generator=g), torch.randn(lm.arch.d_model, generator=g)
+    ivs = [
+        DirectionAblation(r),
+        HeadAblation(1, 0),
+        DirectionAblation(r),  # kopya
+        DirectionAblation(-2 * r),  # bağımlı
+        DirectionAblation(0.3 * r + u),
+        HeadAblation(0, 2),
+    ]
+    base = logits(lm, "deneme metni")
+    with apply(lm, ivs):
+        hooked = logits(lm, "deneme metni")
+    undo = export.bake(lm, ivs)
+    baked = logits(lm, "deneme metni")
+    undo()
+    assert torch.isfinite(baked).all() and not torch.allclose(hooked, base, atol=1e-3)
+    assert torch.allclose(hooked, baked, atol=1e-4)
+    assert torch.equal(logits(lm, "deneme metni"), base)
+
+
+def test_bake_round_to_equals_saved_weights(lm, tmp_path):
+    ivs = [DirectionAblation(torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(12)))]
+    undo = export.bake(lm, ivs, round_to=torch.bfloat16)
+    touched = {k: v.clone() for k, v in lm.model.state_dict().items()}
+    undo()
+    export.save_safetensors(lm, recipe_for(lm, ivs), tmp_path / "m")
+    reloaded = AutoModelForCausalLM.from_pretrained(tmp_path / "m", dtype=torch.float32).state_dict()
+    writers = [k for k in touched if k.endswith(("o_proj.weight", "down_proj.weight", "embed_tokens.weight"))]
+    assert writers  # yalnızca dokunulan parametreler karşılaştırılır (round_to sınırlaması)
+    for k in writers:
+        assert torch.equal(touched[k], reloaded[k]), k
