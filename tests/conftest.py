@@ -90,11 +90,9 @@ def lm(tiny_model_dir):
     return load_model(tiny_model_dir, device="cpu", dtype=torch.float32)
 
 
-@pytest.fixture(scope="session")
-def tiny_gemma2_dir(tmp_path_factory):
+def _build_gemma2(path, head_dim: int):
     """Minik rastgele Gemma2 (bağlı gömme). Post-norm ağırlıkları rastgele: init sıfır (γ = 1) testi
     önemsizleştirirdi; katman 0'da bir γ girdisi tam 0 (weight = -1) yapılır."""
-    path = tmp_path_factory.mktemp("tiny_gemma2")
     tokenizer = _build_tokenizer()
     torch.manual_seed(0)
     config = Gemma2Config(
@@ -103,7 +101,7 @@ def tiny_gemma2_dir(tmp_path_factory):
         num_hidden_layers=2,
         num_attention_heads=4,
         num_key_value_heads=2,
-        head_dim=16,
+        head_dim=head_dim,
         intermediate_size=128,
         max_position_embeddings=256,
         pad_token_id=tokenizer.pad_token_id,
@@ -121,10 +119,25 @@ def tiny_gemma2_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def tiny_gemma2_dir(tmp_path_factory):
+    """Minik rastgele Gemma2: head_dim=16, n_heads·head_dim = hidden (kare o_proj)."""
+    return _build_gemma2(tmp_path_factory.mktemp("tiny_gemma2"), head_dim=16)
+
+
+@pytest.fixture(scope="session")
 def gemma_lm(tiny_gemma2_dir):
     from neshter.loader import load_model
 
     return load_model(tiny_gemma2_dir, device="cpu", dtype=torch.float32)
+
+
+@pytest.fixture(scope="session")
+def gemma_wide_lm(tmp_path_factory):
+    """Gerçek Gemma2 gibi n_heads·head_dim ≠ hidden (4·24 = 96 ≠ 64; o_proj [64, 96], kare değil)."""
+    from neshter.loader import load_model
+
+    path = _build_gemma2(tmp_path_factory.mktemp("tiny_gemma2_wide"), head_dim=24)
+    return load_model(path, device="cpu", dtype=torch.float32)
 
 
 def logits(lm, text):
