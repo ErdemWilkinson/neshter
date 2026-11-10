@@ -1042,3 +1042,68 @@ def test_suggest_export_name_always_matches_ollama_name(lm, raw):
 ])
 def test_suggest_export_name_suffix_not_stacked_and_turkish_transliterated(lm, raw, safety, expected):
     assert suggest_export_name(dataclasses.replace(lm, name=raw), safety) == expected
+
+
+# --- Final fix wave I4: kayıt/gömme tepe RAM'i önceden denetlenir ------------------------------------------
+
+
+def test_bake_peak_bytes_counts_snapshot_tied_clone_and_cast(lm, gemma_lm):
+    # tiny Qwen2 (float32, bağsız): head -> yalnızca katman 0 o_proj anlık görüntüsü
+    o = lm.model.model.layers[0].self_attn.o_proj.weight
+    assert export.bake_peak_bytes(lm, [HeadAblation(0, 1)]) == o.numel() * 4
+    n = sum(p.numel() for p in lm.model.parameters())
+    assert export.bake_peak_bytes(lm, [HeadAblation(0, 1)], cast_dtype=torch.bfloat16) == o.numel() * 4 + n * 2
+    # yön: gömme + her katmanın o_proj/down_proj (+bias) anlık görüntüsü
+    d = DirectionAblation(torch.ones(lm.arch.d_model))
+    touched = [lm.model.model.embed_tokens.weight] + [
+        p for layer in lm.model.model.layers for mod in (layer.self_attn.o_proj, layer.mlp.down_proj)
+        for p in (mod.weight, mod.bias) if p is not None
+    ]
+    assert export.bake_peak_bytes(lm, [d]) == sum(p.numel() * 4 for p in touched)
+    # gemma2 bağlı gömme: yön varsa lm_head için ayrı bir klon da sayılır
+    e = gemma_lm.model.model.embed_tokens.weight
+    gd = DirectionAblation(torch.ones(gemma_lm.arch.d_model))
+    with_tie = export.bake_peak_bytes(gemma_lm, [gd])
+    snap = sum(
+        p.numel() * 4 for p in [e] + [
+            p for layer in gemma_lm.model.model.layers for mod in (layer.self_attn.o_proj, layer.mlp.down_proj)
+            for p in (mod.weight, mod.bias) if p is not None
+        ]
+    )
+    assert with_tie == snap + e.numel() * 4
+
+
+def test_save_refuses_before_bake_when_ram_short(lm, tmp_path, monkeypatch):
+    from neshter.server.errors import error_code_for
+
+    called = []
+    monkeypatch.setattr(export, "bake", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(export, "available_ram_bytes", lambda: 1000)
+    before = {k: v.clone() for k, v in lm.model.state_dict().items()}
+    with pytest.raises(MemoryError, match="Kayıt için RAM yetmiyor") as ei:
+        save_safetensors(lm, recipe_for(lm, [DirectionAblation(torch.ones(lm.arch.d_model))]), tmp_path / "out")
+    assert error_code_for(ei.value) == "oom" and "dtype=bfloat16" in str(ei.value)
+    assert called == [] and not (tmp_path / "out").exists() and not (tmp_path / "out.tmp").exists()
+    assert all(torch.equal(v, before[k]) for k, v in lm.model.state_dict().items())
+
+
+def test_save_proceeds_when_ram_suffices(lm, tmp_path, monkeypatch):
+    monkeypatch.setattr(export, "available_ram_bytes", lambda: 1 << 40)
+    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "model.safetensors").is_file()
+
+
+def test_baked_compare_paths_refuse_before_generating_when_ram_short(lm, monkeypatch):
+    import neshter.compare as compare
+    from neshter.compare import SuiteItem
+
+    gens = []
+    monkeypatch.setattr(compare, "_generate", lambda *a, **k: gens.append(1) or ("x",))
+    monkeypatch.setattr(export, "available_ram_bytes", lambda: 1000)
+    d = [DirectionAblation(torch.ones(lm.arch.d_model))]
+    with pytest.raises(MemoryError, match="RAM yetmiyor"):
+        compare.generate_pair(lm, "merhaba", d, max_new_tokens=2)
+    items = [SuiteItem(prompt="merhaba", category="general", check="contains", answer="x")]
+    with pytest.raises(MemoryError, match="RAM yetmiyor"):
+        compare.run_suite(lm, items, d, max_new_tokens=2)
+    assert gens == []
