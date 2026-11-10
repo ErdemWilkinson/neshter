@@ -3,6 +3,11 @@
 Üretim her zaman greedy'dir (do_sample=False). Orijinal ve müdahaleli cevap aynı çağrıdan gelir:
 iki satırlık yığında yalnızca 1. satıra müdahale uygulanır (apply(..., batch_index=1)). Bellek
 yetmezse aynı ayarlarla sıralı üretime geçilir; çıktılar aynıdır.
+
+Yön içeren tarifler (DirectionAblation) kayıtta ağırlıklara gömülür; bu yüzden karşılaştırma ve test
+seti, kullanıcının gerçekten kaydedeceği modeli ölçmek için gömülü ve kayıt dtype'ına yuvarlanmış
+ağırlıklarla çalışır ("baked" kipi). Gömülü ve özgün ağırlıklar tek bir ileri geçişte karışamayacağı için
+bu kipte üretim her zaman sıralıdır (önce özgün, sonra gömülü). Yalnız-head tarifleri kanca yolunda kalır.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import yaml
 from pydantic import BaseModel
 
 from neshter.concepts.detectors import DETECTORS, _lower, is_broken
-from neshter.interventions import Intervention, apply
+from neshter.interventions import DirectionAblation, Intervention, apply
 from neshter.loader import LoadedModel
 from neshter.metrics import ALPHA, Diff, holm, min_detectable_drop, paired_diff, wilson
 
@@ -71,14 +76,37 @@ def _is_oom(exc: BaseException) -> bool:
     return isinstance(exc, RuntimeError) and any(m in msg for m in _OOM_MARKERS)
 
 
+def _has_direction(interventions: Sequence[Intervention]) -> bool:
+    return any(isinstance(iv, DirectionAblation) for iv in interventions)
+
+
 def generate_pair(
     lm: LoadedModel,
     prompt: str,
     interventions: Sequence[Intervention],
     max_new_tokens: int = 200,
     seed: int = 42,
-) -> tuple[str, str, Literal["batch", "sequential"]]:
-    """(orijinal, müdahaleli, kip). Kip: "batch" (tek yığın, 2 satır) ya da "sequential" (OOM yedeği)."""
+    baked: bool | None = None,
+) -> tuple[str, str, Literal["batch", "sequential", "baked"]]:
+    """(orijinal, müdahaleli, kip).
+
+    Kip: "batch" (tek yığın, 2 satır, kancalı), "sequential" (OOM yedeği, kancalı) ya da "baked".
+    `baked=None`: otomatik, yön (DirectionAblation) varsa gömülü. Gömülü yolda orijinal kancasız/gömüsüz
+    üretilir; sonra bake(..., round_to=save_dtype) ile müdahaleli cevap kaydedilecek modelin ağırlıklarıyla
+    üretilir ve undo() her durumda (hata, iptal) `finally`de çalışır. Gömülü ve özgün ağırlıklar tek yığında
+    karışamaz, bu yüzden bu yol her zaman sıralıdır.
+    """
+    if _has_direction(interventions) if baked is None else baked:
+        from neshter.export import bake, save_dtype  # export, compare'i içe aktarır: döngüyü yerel import kırar
+
+        enc = _encode(lm, prompt, 1)
+        (a,) = _generate(lm, enc, max_new_tokens, seed)
+        undo = bake(lm, list(interventions), round_to=save_dtype(lm))
+        try:
+            (b,) = _generate(lm, enc, max_new_tokens, seed)
+        finally:
+            undo()
+        return a, b, "baked"
     try:
         enc = _encode(lm, prompt, 2)
         with apply(lm, interventions, batch_index=1):
@@ -213,6 +241,112 @@ def _apply_holm(results: list[CategoryResult], target: str | None) -> None:
         r.diff.uncertain = p_adj >= ALPHA
 
 
+def _tally(
+    cells: dict[str, list[int]],
+    item: SuiteItem,
+    target: str | None,
+    orig: str,
+    mod: str,
+    nll_o: float | None,
+    nll_m: float | None,
+) -> None:
+    broken_o, broken_m = is_broken(orig, nll_o), is_broken(mod, nll_m)
+    is_target = item.category == target
+    pass_o = _outcome(item, orig, broken_o, is_target, original=True)
+    pass_m = _outcome(item, mod, broken_m, is_target, original=False)
+    cell = cells.setdefault(item.category, [0, 0, 0, 0, 0, 0])
+    cell[(0 if pass_m else 1) if pass_o else (2 if pass_m else 3)] += 1
+    cell[4] += broken_o
+    cell[5] += broken_m
+
+
+def _finish(cells: dict[str, list[int]], target: str | None) -> list[CategoryResult]:
+    results = [
+        CategoryResult(cat, a + b + c + d, a + b, a + c, a, b, c, d, bo, bi, paired_diff(a, b, c, d))
+        for cat, (a, b, c, d, bo, bi) in cells.items()
+    ]
+    _apply_holm(results, target)
+    return results
+
+
+def _suite_hooked(
+    lm: LoadedModel,
+    items: list[SuiteItem],
+    interventions: Sequence[Intervention],
+    progress: Callable[[int, int], None] | None,
+    cancel: threading.Event | None,
+    max_new_tokens: int,
+    target: str | None,
+) -> list[CategoryResult]:
+    cells: dict[str, list[int]] = {}  # kategori -> [a, b, c, d, bozuk_orig, bozuk_int]; sıra = ilk görünüş
+    total = len(items)
+    for done, item in enumerate(items):
+        if cancel is not None and cancel.is_set():
+            return []
+        orig, mod, _ = generate_pair(lm, item.prompt, interventions, max_new_tokens=max_new_tokens)
+        nll_o = answer_nll(lm, item.prompt, orig)
+        nll_m = answer_nll(lm, item.prompt, mod)
+        _tally(cells, item, target, orig, mod, nll_o, nll_m)
+        if progress is not None:
+            progress(done + 1, total)
+    if cancel is not None and cancel.is_set():
+        return []
+    return _finish(cells, target)
+
+
+def _suite_baked(
+    lm: LoadedModel,
+    items: list[SuiteItem],
+    interventions: Sequence[Intervention],
+    progress: Callable[[int, int], None] | None,
+    cancel: threading.Event | None,
+    max_new_tokens: int,
+    target: str | None,
+    seed: int = 42,
+) -> list[CategoryResult]:
+    """İki geçiş: önce tüm orijinaller, sonra BİR kez bake, tüm gömülü cevaplar, undo (finally) ve en son,
+    ağırlıklar geri gelmişken, tüm NLL'ler (answer_nll orijinal ağırlıklarla ölçülür)."""
+    from neshter.export import bake, save_dtype  # export, compare'i içe aktarır: döngüyü yerel import kırar
+
+    def cancelled() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    def gen(item: SuiteItem) -> str:
+        (text,) = _generate(lm, _encode(lm, item.prompt, 1), max_new_tokens, seed)
+        return text
+
+    n = len(items)
+    total = 2 * n
+    origs: list[str] = []
+    for i, item in enumerate(items):
+        if cancelled():
+            return []
+        origs.append(gen(item))
+        if progress is not None:
+            progress(i + 1, total)
+    undo = bake(lm, list(interventions), round_to=save_dtype(lm))
+    mods: list[str] = []
+    try:
+        for i, item in enumerate(items):
+            if cancelled():
+                return []
+            mods.append(gen(item))
+            if progress is not None:
+                progress(n + i + 1, total)
+    finally:
+        undo()
+    cells: dict[str, list[int]] = {}
+    for item, orig, mod in zip(items, origs, mods):
+        if cancelled():
+            return []
+        nll_o = answer_nll(lm, item.prompt, orig)
+        nll_m = answer_nll(lm, item.prompt, mod)
+        _tally(cells, item, target, orig, mod, nll_o, nll_m)
+    if cancelled():
+        return []
+    return _finish(cells, target)
+
+
 def run_suite(
     lm: LoadedModel,
     items: list[SuiteItem],
@@ -221,38 +355,20 @@ def run_suite(
     cancel: threading.Event | None = None,
     max_new_tokens: int = 200,
     target: str | None = None,
+    baked: bool | None = None,
 ) -> list[CategoryResult]:
     """Kategori başına eşli (orijinal, müdahaleli) sonuç tablosu. İptalde kısmi sonuç atılır ([] döner).
 
-    `progress(done, total)`: tamamlanan prompt sayısı. Bozukluk için NLL, generate_pair döndükten sonra
-    (müdahale kancaları kalkmışken) orijinal modelle ölçülür. Holm düzeltmesi hedef dışı kategorilere
-    uygulanır (hedef yoksa tümüne).
+    `progress(done, total)`: tamamlanan adım sayısı. Kancalı yolda adım = prompt (total = n). Gömülü yolda
+    (`baked=None`: yön varsa) iki geçiş vardır, total = 2n: geçiş 1 (orijinaller) 1..n, geçiş 2 (kayıt
+    dtype'ına yuvarlanmış gömülü ağırlıklar) n+1..2n. Bozukluk için NLL her iki yolda da müdahale
+    kancaları/gömülü ağırlıklar kalkmışken orijinal modelle ölçülür. Holm düzeltmesi hedef dışı
+    kategorilere uygulanır (hedef yoksa tümüne). Not: üretim dışındaki ölçümler (KL, perplexity:
+    _recipe_metrics) gömülü ağırlıklara değil kancalara dayanır.
     """
-    cells: dict[str, list[int]] = {}  # kategori -> [a, b, c, d, bozuk_orig, bozuk_int]; sıra = ilk görünüş
-    total = len(items)
-    for done, item in enumerate(items):
-        if cancel is not None and cancel.is_set():
-            return []
-        orig, mod, _ = generate_pair(lm, item.prompt, interventions, max_new_tokens=max_new_tokens)
-        broken_o = is_broken(orig, answer_nll(lm, item.prompt, orig))
-        broken_m = is_broken(mod, answer_nll(lm, item.prompt, mod))
-        is_target = item.category == target
-        pass_o = _outcome(item, orig, broken_o, is_target, original=True)
-        pass_m = _outcome(item, mod, broken_m, is_target, original=False)
-        cell = cells.setdefault(item.category, [0, 0, 0, 0, 0, 0])
-        cell[(0 if pass_m else 1) if pass_o else (2 if pass_m else 3)] += 1
-        cell[4] += broken_o
-        cell[5] += broken_m
-        if progress is not None:
-            progress(done + 1, total)
-    if cancel is not None and cancel.is_set():
-        return []
-    results = [
-        CategoryResult(cat, a + b + c + d, a + b, a + c, a, b, c, d, bo, bi, paired_diff(a, b, c, d))
-        for cat, (a, b, c, d, bo, bi) in cells.items()
-    ]
-    _apply_holm(results, target)
-    return results
+    if _has_direction(interventions) if baked is None else baked:
+        return _suite_baked(lm, items, interventions, progress, cancel, max_new_tokens, target)
+    return _suite_hooked(lm, items, interventions, progress, cancel, max_new_tokens, target)
 
 
 # --- Özet -------------------------------------------------------------------------------------

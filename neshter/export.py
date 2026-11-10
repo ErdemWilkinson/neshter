@@ -103,7 +103,8 @@ def bake(
 
     round_to verilirse dokunulan her parametre p, işlendikten sonra p.to(round_to).to(p.dtype) olur;
     böylece bellekteki model kaydedilen (ör. bf16) dosyayla aynı değerleri taşır.
-    Sınırlama: yalnızca DOKUNULAN parametreler yuvarlanır. Bütün modelin kayıtlı dosyayla eşitliği,
+    Bağlı gömmede lm_head'e verilen ayrı kopya da yuvarlanır (kayıtta o da round_to'ya çevrilir).
+    Sınırlama: yalnızca DOKUNULAN parametreler (ve bu lm_head kopyası) yuvarlanır. Bütün modelin kayıtlı dosyayla eşitliği,
     ancak dokunulmayan kaynak ağırlıklar zaten round_to ile tam gösterilebiliyorsa (bf16 kaynak) geçerlidir.
     """
     _validate(lm, interventions, None, "zero", None)
@@ -161,6 +162,9 @@ def bake(
             if round_to is not None:
                 for p, _ in originals.values():
                     p.copy_(p.to(round_to).to(p.dtype))
+                if tied_head is not None:  # ayrılan lm_head kopyası da kayıtta round_to'ya çevrilir
+                    h = tied_head.weight
+                    h.copy_(h.to(round_to).to(h.dtype))
     except BaseException:
         undo()
         raise

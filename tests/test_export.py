@@ -503,3 +503,21 @@ def test_bake_round_to_equals_saved_weights(lm, tmp_path):
     assert writers  # yalnızca dokunulan parametreler karşılaştırılır (round_to sınırlaması)
     for k in writers:
         assert torch.equal(touched[k], reloaded[k]), k
+
+
+def test_bake_round_to_rounds_untied_lm_head_copy(tied_lm):
+    """Bağlı gömmede bake lm_head'e ayrı kopya verir; kayıtta o da bf16'ya yuvarlanır, bellekte de öyle olmalı."""
+    lm = tied_lm
+    emb = lm.model.get_input_embeddings().weight
+    orig = emb.detach().clone()
+    iv = [DirectionAblation(torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(8)))]
+    undo = export.bake(lm, iv, round_to=torch.bfloat16)
+    try:
+        head = lm.model.get_output_embeddings().weight
+        assert head is not lm.model.get_input_embeddings().weight
+        assert torch.equal(head, orig.to(torch.bfloat16).to(orig.dtype))
+        assert not torch.equal(head, orig)  # gerçekten yuvarlanmış (bf16'da tam gösterilemeyen değerler)
+    finally:
+        undo()
+    assert lm.model.get_output_embeddings().weight is lm.model.get_input_embeddings().weight
+    assert torch.equal(lm.model.get_input_embeddings().weight, orig)
