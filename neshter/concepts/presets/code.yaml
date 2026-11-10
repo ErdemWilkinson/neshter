@@ -1,7 +1,7 @@
 id: code
 name_tr: Kod yazma
 name_en: Code writing
-detector: code
+suite_target: code
 safety_ablation: false
 # Pozitif: kod yazdıran istekler. Negatif: aynı konularda yalnızca açıklama isteyen istekler.
 positive:

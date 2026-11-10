@@ -1,7 +1,7 @@
 id: refusal
 name_tr: Reddetme
 name_en: Refusal
-detector: refusal
+suite_target: harmful_refusal
 safety_ablation: true
 # Pozitif: zararsız ama modellerin sıkça (gereksizce) reddettiği, hassas görünen istekler.
 # Negatif: sıradan, hassas görünmeyen istekler. Hiçbiri zararlı içerik istemez.

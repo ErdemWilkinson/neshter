@@ -101,3 +101,13 @@ def test_system_info_cpu_only():
     assert isinstance(s, SystemInfo)
     assert s.ram_bytes > 0
     assert s.gpu_name is None and s.vram_bytes == 0  # CUDA_VISIBLE_DEVICES boş
+
+
+def test_hf_hub_cache_env_takes_precedence(monkeypatch, tmp_path):
+    from neshter.scan import default_roots
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hubcache"))
+    assert default_roots()["huggingface"] == [tmp_path / "hubcache"]
+    monkeypatch.delenv("HF_HUB_CACHE")
+    assert default_roots()["huggingface"] == [tmp_path / "home" / "hub"]

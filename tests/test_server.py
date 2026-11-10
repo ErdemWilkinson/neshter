@@ -531,7 +531,8 @@ def test_sample_model_download_is_mocked(client, auth, tmp_path, monkeypatch):
 
 
 def test_static_dist_is_mounted_only_if_it_exists(tmp_path, monkeypatch, auth):
-    assert _make().get("/").status_code == 404  # dist yok (varsayılan)
+    r = _make().get("/")  # dist yok (varsayılan): belirteçsiz küçük bilgi sayfası
+    assert r.status_code == 200 and "API" in r.text and "derlenmedi" in r.text
     (tmp_path / "index.html").write_text("<h1>ada</h1>", encoding="utf-8")
     monkeypatch.setattr(app_module, "WEB_DIST", tmp_path)
     c = _make()
@@ -810,3 +811,143 @@ def test_export_gemma2_direction_is_rejected_upfront(ready, tmp_path, monkeypatc
     ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
     r = c.post("/api/export", json=_export_body(tmp_path / "g", recipe_ops=ops), headers=a)
     assert r.status_code == 422 and "gemma2" in r.json()["detail"]
+
+
+# --- Fix wave: I5 (SSE + meşgul kilit), I8 (yapı, kavramlar), Minor 8/15/16 ------------------------
+
+
+def test_guard_covers_methods_and_path_variants(client, token):
+    assert client.options("/api/system").status_code == 403
+    assert client.head("/api/system").status_code == 403
+    assert client.get("/api/system/").status_code == 403
+    assert client.get("/api").status_code == 403
+    assert client.get("/api/system", headers={"X-Neshter-Token": token, "Origin": "null"}).status_code == 403
+
+
+def test_sync_model_routes_return_409_when_busy(ready):
+    c, a = ready
+    lock = c.app.state.session.lock
+    assert lock.acquire(timeout=10)
+    try:
+        t0 = time.time()
+        for path, body in [
+            ("/api/activity", {"prompt": "a", "token_index": -1, "scale": "layer"}),
+            ("/api/mlp", {"prompt": "a", "token_index": -1}),
+            ("/api/compare", {"prompt": "a", "recipe_ops": HEAD_OPS, "max_new_tokens": 2}),
+        ]:
+            r = c.post(path, json=body, headers=a)
+            assert r.status_code == 409 and "meşgul" in r.json()["detail"], path
+        assert time.time() - t0 < 5  # beklemeden döner
+    finally:
+        lock.release()
+    ok = c.post("/api/activity", json={"prompt": "a", "token_index": -1, "scale": "layer"}, headers=a)
+    assert ok.status_code == 200
+
+
+class _FakeRequest:
+    def __init__(self, disconnect_after: int | None):
+        self.calls = 0
+        self.disconnect_after = disconnect_after
+
+    async def is_disconnected(self):
+        self.calls += 1
+        return self.disconnect_after is not None and self.calls > self.disconnect_after
+
+
+def _collect(gen, limit=50):
+    import asyncio
+
+    async def run():
+        out = []
+        async for chunk in gen:
+            out.append(chunk)
+            if len(out) >= limit:
+                break
+        return out
+
+    return asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+def test_sse_stream_ends_when_client_disconnects():
+    jm = JobManager()
+    release = threading.Event()
+    try:
+        jid = jm.submit(lambda report, cancel: release.wait(20))  # uzun süren iş
+        req = _FakeRequest(disconnect_after=3)
+        t0 = time.time()
+        chunks = _collect(app_module.job_stream(jm, jid, req, poll=0.01, keepalive=60))
+        assert time.time() - t0 < 2  # iş bitmeden akış kapandı
+        assert req.calls == 4 and all("event: done" not in c for c in chunks)
+    finally:
+        release.set()
+        jm.shutdown()
+
+
+def test_sse_stream_sends_keepalive_while_idle():
+    jm = JobManager()
+    release = threading.Event()
+    try:
+        jid = jm.submit(lambda report, cancel: release.wait(20))
+        chunks = _collect(app_module.job_stream(jm, jid, _FakeRequest(disconnect_after=40), poll=0.01, keepalive=0.05))
+        assert ": keepalive\n\n" in chunks
+    finally:
+        release.set()
+        jm.shutdown()
+
+
+def test_job_events_route_is_async():
+    import inspect
+
+    app = create_app(TOKEN, PORT, roots={})
+    (route,) = [r for r in app.routes if getattr(r, "path", "") == "/api/jobs/{job_id}/events"]
+    assert inspect.isasyncgenfunction(app_module.job_stream)
+    assert "request" in inspect.signature(route.endpoint).parameters
+
+
+def test_models_include_arch_and_supported(tmp_path, auth, tiny_model_dir):
+    import shutil
+
+    snap = tmp_path / "hub" / "models--org--tiny" / "snapshots" / "abc"
+    shutil.copytree(tiny_model_dir, snap)
+    (tmp_path / "bozuk.gguf").write_bytes(b"x" * 100)
+    c = _make({"huggingface": [tmp_path / "hub"], "lmstudio": [tmp_path]})
+    rows = {e["name"]: e for e in c.get("/api/models", headers=auth).json()}
+    hf = rows["org/tiny"]
+    assert hf["arch"] == {"family": "qwen2", "n_layers": 2, "n_heads": 4, "n_kv_heads": 2, "d_mlp": 128}
+    assert hf["supported"] is True
+    assert rows["bozuk"]["arch"] is None and rows["bozuk"]["supported"] is False
+
+
+def test_models_arch_from_gguf_metadata(tmp_path):
+    from gguf import GGUFWriter
+
+    from neshter.scan import model_arch
+
+    path = tmp_path / "m.gguf"
+    w = GGUFWriter(str(path), "llama")
+    w.add_block_count(32)
+    w.add_head_count(32)
+    w.add_head_count_kv(8)
+    w.add_feed_forward_length(14336)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    assert model_arch(path, "gguf") == {"family": "llama", "n_layers": 32, "n_heads": 32, "n_kv_heads": 8, "d_mlp": 14336}
+
+
+def test_concepts_endpoint(client, auth):
+    rows = client.get("/api/concepts", headers=auth).json()
+    assert [r["id"] for r in rows] == ["code", "refusal", "math", "tone"]
+    by = {r["id"]: r for r in rows}
+    assert by["refusal"]["safety_ablation"] is True and by["code"]["safety_ablation"] is False
+    assert by["refusal"]["suite_target"] == "harmful_refusal" and by["tone"]["suite_target"] is None
+    assert len(by["code"]["positive"]) >= 40
+
+
+def test_suite_without_target_has_no_summary(ready, monkeypatch):
+    monkeypatch.setattr(app_module, "run_suite", _stub_suite)
+    monkeypatch.setattr(app_module, "_recipe_metrics", lambda lm, iv: {"kl": 0.0})
+    c, a = ready
+    res = wait_done(c, a, c.post("/api/suite", json={"recipe_ops": HEAD_OPS}, headers=a).json()["job_id"])["result"]
+    assert res["summary"] is None and len(res["categories"]) == 2
