@@ -39,7 +39,7 @@ from neshter.interventions import (
     _validate,
     writer_bases,
 )
-from neshter.licenses import clean_id
+from neshter.licenses import clean_id, inside_model
 from neshter.loader import LoadedModel, sha256_path
 from neshter.recipe import DirectionOp, HeadOp, Recipe, save_recipe
 
@@ -184,23 +184,26 @@ def _describe(op: HeadOp | DirectionOp) -> str:
 
 GEMMA_NOTICE = "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms"
 _GEMMA_POLICY = "ai.google.dev/gemma/prohibited_use_policy"
-_SAFE_ID = re.compile(r"[^A-Za-z0-9._+\- ]")
+_SAFE_TEXT = re.compile(r"[^\w.:/+\- ]")
+
+
+def _md_safe(text: str, limit: int) -> str:
+    """Modelden gelen güvenilmez görüntü metni (lisans kimliği, model adı): denetim karakterleri atılır,
+    markdown/HTML işaretleri '?' olur, uzunluk sınırlanır."""
+    return _SAFE_TEXT.sub("?", clean_id(text))[:limit].strip()
 
 
 def _display_license(lm: LoadedModel) -> str | None:
-    """Karta yazılacak lisans kimliği: modelden gelen güvenilmez metin, kısa ve işaretlemeden arındırılmış."""
-    if not lm.license:
-        return None
-    safe = _SAFE_ID.sub("?", clean_id(lm.license))[:64].strip()
-    return safe or None
+    """Karta yazılacak lisans kimliği."""
+    return _md_safe(lm.license, 64) or None if lm.license else None
 
 
 def is_llama3(lm: LoadedModel) -> bool:
     if lm.arch.family != "llama":
         return False
     return (
-        (lm.license or "").startswith("llama3")
-        or re.search(r"llama[-_ ]?3", lm.name, re.IGNORECASE) is not None
+        (lm.license or "").lower().startswith("llama3")
+        or re.search(r"llama[-_ ]?3(?!\d)", lm.name, re.IGNORECASE) is not None
         or getattr(lm.model.config, "vocab_size", None) == 128256
     )
 
@@ -219,14 +222,22 @@ def license_notices(lm: LoadedModel) -> list[str]:
         out.append(
             f"**Lisans / License:** {GEMMA_NOTICE}. Kullanım kısıtları / Prohibited Use Policy: {_GEMMA_POLICY}"
         )
-    if lm.arch.family == "qwen2" and lid != "apache-2.0":
+    qwen = lm.arch.family == "qwen2"
+    if qwen and lid is not None and lid.lower() != "apache-2.0":
         out.append(
-            f"**Uyarı / Warning:** Bu Qwen modelinin lisansı Apache-2.0 değil ({lid or 'bilinmiyor'}); "
+            f"**Uyarı / Warning:** Bu Qwen modelinin lisansı Apache-2.0 değil ({lid}); "
             "dağıtmadan önce lisans koşullarını kontrol edin. "
-            f"This Qwen model's license is not Apache-2.0 ({lid or 'unknown'}); "
+            f"This Qwen model's license is not Apache-2.0 ({lid}); "
             "check the license terms before redistributing."
         )
-    if lid is None:
+    elif qwen and lid is None:  # tek, birleşik not (Qwen uyarısı + bulunamadı notu iki kez yazılmaz)
+        out.append(
+            "**Uyarı / Warning:** Kaynak modelin lisansı bulunamadı; dağıtmadan önce kontrol edin. "
+            "Qwen modellerinin bazı boyutları Apache-2.0 değildir (lisans bilinmiyor). "
+            "The source model's license was not found; check it before redistributing. "
+            "Some Qwen sizes are not Apache-2.0 (license unknown)."
+        )
+    elif lid is None:
         out.append(
             "**Uyarı / Warning:** Kaynak modelin lisansı bulunamadı; dağıtmadan önce kontrol edin. "
             "The source model's license was not found; check it before redistributing."
@@ -251,7 +262,7 @@ def model_card(
         front.rstrip("\n"),
         "---",
         "",
-        f"# {lm.name} (neshter)",
+        f"# {_md_safe(lm.name, 120) or 'model'} (neshter)",
         "",
         "Bu model, Neşter ile seçili dikkat head'leri susturularak ve/veya rezidüel akımdan "
         "yönler silinerek kaynak modelden türetilmiştir. Değişiklikler ağırlıklara gömülmüştür.",
@@ -315,7 +326,8 @@ def _copy_license_files(source: Path, dest: Path) -> None:
         return
     for pattern in _LICENSE_GLOBS:
         for f in sorted(source.glob(pattern)):
-            if f.is_file() and not (dest / f.name).exists():
+            # Sembolik bağ modelin klasörü (ya da HF blobs/) dışına çözülüyorsa kopyalanmaz.
+            if inside_model(source, f) and not (dest / f.name).exists():
                 shutil.copy2(f, dest / f.name)
 
 
