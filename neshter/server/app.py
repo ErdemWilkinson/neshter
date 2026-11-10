@@ -12,6 +12,7 @@ import base64
 import gc
 import hmac
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -34,10 +35,23 @@ import neshter
 from neshter.activity import head_output_power, normalize_global, normalize_per_layer, tokens, top_mlp_neurons
 from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
-from neshter.concepts.hunt import hunt
+from neshter.concepts.detectors import DETECTORS
+from neshter.concepts.hunt import MEASURE_TOP_K, default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
-from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf, verify_source_untouched
-from neshter.hardware import system_info
+from neshter.export import (
+    LlamaCppMissing,
+    estimate_export_bytes,
+    export_gguf,
+    find_llama_cpp,
+    modelfile_license,
+    ollama_create,
+    save_safetensors,
+    suggest_export_name,
+    ensure_source_untouched,
+    is_bad_file_name,
+    is_refusal,
+)
+from neshter.hardware import available_ram_bytes, cpu_has_native_bf16, system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import (
     SUPPORTED_FAMILIES,
@@ -45,18 +59,31 @@ from neshter.loader import (
     UnsafeModelFile,
     UnsupportedArchitecture,
     load_model,
-    read_license,
+    pick_compute_dtype,
+    planned_device,
 )
-from neshter.metrics import kl_effect, load_neutral, perplexity, real_effect, recipe_effect
-from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
-from neshter.scan import model_arch, scan_all
+from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
+from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
+from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
+from neshter.scan import scan_all
+from neshter.server.errors import SECURITY_HEADERS, ApiError, NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 SAMPLE_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+# Duman testinde doğrulanan anlık görüntü; "main" sessizce değişmesin. README.md, read_license'ın
+# okuduğu lisans ön bilgisini taşır (yoksa Apache örnek "Qwen Apache değil" uyarısı alırdı).
+SAMPLE_REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
+SAMPLE_PATTERNS = ["*.json", "*.safetensors", "*.txt", "LICENSE*", "README.md"]
 _QUANT = {"gguf_q4_k_m": "Q4_K_M", "gguf_q8_0": "Q8_0"}
 
 Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
+
+QUICK_GUARD = "general"  # hızlı kip: hedef kategori + bu "kimseyi bozmadım" kontrol kategorisi
+QUICK_MAX_NEW_TOKENS = 64
+QUICK_N_RANDOM = 20  # kullanıcıya dönük alt sınır (EffectReq.n_random ge=20)
+MAX_ACTIVITY_TOKENS = 512  # /api/activity yanıtı L×H×T'ye büyür: token sayısı sınırlanır
+MAX_ACTIVITY_CHARS = 8000  # tokenlaştırmadan önce ucuz üst sınır
 
 
 # --- İstek şemaları (bilinmeyen alan yasak) -------------------------------------------------------
@@ -67,9 +94,9 @@ class _Req(BaseModel, extra="forbid"):
 
 
 class ActivityReq(_Req):
-    prompt: str = Field(min_length=1)
-    token_index: int
-    scale: Literal["layer", "global"]
+    prompt: str = Field(min_length=1, max_length=MAX_ACTIVITY_CHARS)
+    token_index: int | None = None  # None: yalnızca ham güç (tüm token'lar tek çağrıda)
+    scale: Literal["layer", "global"] = "layer"
 
 
 class MlpReq(_Req):
@@ -80,18 +107,19 @@ class MlpReq(_Req):
 class LoadReq(_Req):
     path: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=256)  # görünen ad (ör. "qwen2.5:7b")
-    dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = bf16 (CPU ve GPU'da aynı)
+    dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = politika (loader.pick_compute_dtype)
 
 
 class EffectReq(_Req):
     heads: list[tuple[int, int]] = Field(min_length=1)
     prompts: list[str] | None = Field(default=None, min_length=1)
+    n_random: int = Field(DEFAULT_N_RANDOM, ge=20, le=50)  # kullanıcıya dönük alt sınır 20; kütüphane en az 1
 
 
 class HuntReq(_Req):
     concept_id: str | None = None
     concept: Concept | None = None
-    method: Literal["attribution", "activation_diff", "direction"]
+    method: Literal["attribution", "activation_diff", "direction"] | None = None  # None: default_method(lm)
     seed: int = 0
 
     @model_validator(mode="after")
@@ -105,31 +133,58 @@ class CompareReq(_Req):
     prompt: str = Field(min_length=1)
     recipe_ops: list[Op] = Field(min_length=1)
     max_new_tokens: int = Field(default=200, ge=1, le=1024)
+    concept_id: str | None = None  # DETECTORS'ta varsa yanıt "target_hit" taşır
 
 
 class SuiteReq(_Req):
     recipe_ops: list[Op] = Field(min_length=1)
     target: str | None = None  # None: özet yok (ör. "tone"un test kategorisi yok)
     max_new_tokens: int = Field(default=200, ge=1, le=1024)
+    quick: bool = False  # yalnızca hedef + QUICK_GUARD kategorisi, ≤ 64 token, 20 rastgele kontrol
+
+
+def _check_out_dir(out_dir: str) -> None:
+    if re.search(r"[\x00-\x1f]", out_dir):  # ör. satır sonu Modelfile'ın FROM satırına ulaşabilirdi
+        raise ValueError("out_dir denetim karakteri içeremez.")
+    if out_dir.startswith(("\\\\", "//")):
+        # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
+        raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
+    if not Path(out_dir).is_absolute():
+        raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
 
 
 class ExportReq(_Req):
     recipe_ops: list[Op] = Field(min_length=1)
-    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # None: suggest_export_name
     format: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"]
     ollama: bool
     out_dir: str = Field(min_length=1)
-    concept: str | None = Field(default=None, max_length=64)  # "refusal" ise güvenlik-ablasyonu işareti
+    concept: str | None = Field(default=None, pattern=RECIPE_TEXT)  # "refusal" ise güvenlik-ablasyonu işareti
 
     @model_validator(mode="after")
     def _ollama_needs_gguf(self) -> ExportReq:
         if self.ollama and self.format == "safetensors":
             raise ValueError("Ollama'ya eklemek için GGUF biçimi seçilmeli.")
-        if self.out_dir.startswith(("\\\\", "//")):
-            # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
-            raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
-        if not Path(self.out_dir).is_absolute():
-            raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
+        if self.name is not None and is_bad_file_name(self.name):
+            raise ValueError("Bu ad Windows'ta ayrılmış (CON, NUL, COM1...) ya da nokta/boşlukla bitiyor.")
+        _check_out_dir(self.out_dir)
+        return self
+
+
+class EstimateReq(_Req):
+    """Dışa aktarım disk tahmini. `recipe_ops` verilirse yön var mı ve güvenlik etiketi ondan türetilir
+    (dışa aktarma işiyle aynı); verilmezse açık `has_directions` ve yalnızca `concept` kullanılır, ad geçicidir."""
+
+    format: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"]
+    recipe_ops: list[Op] | None = Field(default=None, min_length=1)
+    has_directions: bool = False
+    out_dir: str | None = Field(default=None, min_length=1)
+    concept: str | None = Field(default=None, pattern=RECIPE_TEXT)
+
+    @model_validator(mode="after")
+    def _local_out_dir(self) -> EstimateReq:
+        if self.out_dir is not None:
+            _check_out_dir(self.out_dir)
         return self
 
 
@@ -140,10 +195,6 @@ class RecipeCheckReq(_Req):
 # --- Oturum ---------------------------------------------------------------------------------------
 
 
-class NoModel(Exception):
-    pass
-
-
 class Session:
     """Tek yüklü model. `lock`, modeli kullanan her işlemi (kanca kuran işler dahil) sıraya sokar."""
 
@@ -152,6 +203,8 @@ class Session:
         self.lm: LoadedModel | None = None
         # Bu modelde safety_ablation'lı kavramlardan (ör. refusal) bulunan birim yönler (CPU float32).
         self.safety_dirs: list[torch.Tensor] = []
+        # Aynı kavramlardan bulunmuş (katman, head) çiftleri (avın ölçülen ilk MEASURE_TOP_K head'i).
+        self.safety_heads: set[tuple[int, int]] = set()
 
     def require(self) -> LoadedModel:
         if self.lm is None:
@@ -161,6 +214,7 @@ class Session:
     def free(self) -> None:
         self.lm = None
         self.safety_dirs = []
+        self.safety_heads = set()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -191,12 +245,22 @@ def _recipe_from_ops(lm: LoadedModel, ops: list, concept: str | None = None) -> 
 
 
 SAFETY_COS = 0.99
+REFUSAL_SUITE_CATEGORY = "harmful_refusal"  # reddetme dedektörünün (check: refusal) test kategorisi
+
+
+def _is_safety_concept(c: Concept) -> bool:
+    """Av bir güvenlik avı mı? Bayrak, "refusal" kimliği ya da reddetme dedektörünün kategorisi (özel kavramlar
+    bayrağı kapalı bırakıp yine de reddetmeyi arıyor olabilir; etiket bayrağa bağlı kalmaz)."""
+    return c.safety_ablation or c.id == "refusal" or c.suite_target == REFUSAL_SUITE_CATEGORY
 
 
 def _is_safety(session: Session, ops: list, concept: str | None) -> bool:
     """Kayıt güvenlik-ablasyonu sayılır mı? İstemcinin "refusal" demesi YA DA sunucu tarafı eşleşme:
-    tarifteki herhangi bir yön, bu oturumda güvenlik kavramından bulunmuş bir yöne |cos| ≥ 0.99."""
-    if concept == "refusal":
+    tarifteki herhangi bir head, bu oturumda güvenlik kavramından bulunmuş bir head'dir YA DA herhangi bir
+    yön, bulunmuş bir yöne |cos| ≥ 0.99. Tek bir eşleşme yeter; istemci etiketi kaldıramaz."""
+    if is_refusal(concept):
+        return True
+    if any(isinstance(op, HeadOp) and (op.layer, op.head) in session.safety_heads for op in ops):
         return True
     if not session.safety_dirs:
         return False
@@ -218,9 +282,14 @@ def _bad_input():
         yield
     except (ValueError, IndexError) as e:
         raise HTTPException(422, str(e)) from e
+    except MemoryError as e:  # ör. gömme öncesi RAM denetimi (export.ensure_bake_ram)
+        raise ApiError(503, str(e) or "Bellek yetmedi.", "oom") from e
 
 
 # --- Güvenlik ara katmanı (saf ASGI; akışlı yanıtları bozmaz) ------------------------------------
+
+
+_SECURITY_HEADER_PAIRS = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in SECURITY_HEADERS.items()]
 
 
 class _Guard:
@@ -248,10 +317,20 @@ class _Guard:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         reason = self._deny(scope["path"], headers)
+
+        async def send_with_security_headers(message):
+            if message["type"] == "http.response.start":
+                names = {k for k, _ in message.get("headers", [])}
+                extra = [(k, v) for k, v in _SECURITY_HEADER_PAIRS if k not in names]
+                message = {**message, "headers": [*message.get("headers", []), *extra]}
+            await send(message)
+
         if reason is None:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send_with_security_headers)
         elif scope["type"] == "http":
-            await JSONResponse({"detail": reason}, status_code=403)(scope, receive, send)
+            await JSONResponse({"detail": reason, "error_code": "forbidden"}, status_code=403)(
+                scope, receive, send_with_security_headers
+            )
         else:
             await send({"type": "websocket.close", "code": 1008})
 
@@ -263,24 +342,73 @@ def _b64_f32(t: torch.Tensor) -> str:
     return base64.b64encode(np.ascontiguousarray(t.detach().cpu().to(torch.float32).numpy(), dtype="<f4").tobytes()).decode("ascii")
 
 
-_DTYPES = {"auto": torch.bfloat16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+_DTYPES = {"auto": None, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
 
-def _memory_bytes(fmt: str, size_bytes: int) -> int:
-    # GGUF yüklenirken bf16'ya açılır; ~Q4 varsayımıyla parametre sayısı tahmin edilir (muhafazakâr).
-    # Yükleme politikası CPU'da da GPU'da da bf16'dır → parametre başına 2 bayt.
-    n_params = size_bytes / 0.6 if fmt == "gguf" else size_bytes / 2
-    return estimate_memory_bytes(int(n_params), 2)
+def _ollama_available() -> bool:
+    return shutil.which("ollama") is not None
 
 
-def _load(path: Path, dtype: torch.dtype, name: str | None) -> LoadedModel:
+def _check_export_tools(fmt: str, ollama: bool) -> None:
+    """GGUF/Ollama dışa aktarımı için araçlar: yoksa iş başlamadan 422 (`llama_cpp_missing` / `ollama_missing`)."""
+    if fmt != "safetensors":
+        llama = find_llama_cpp()
+        if llama is None or not (llama / "convert_hf_to_gguf.py").is_file():
+            raise ApiError(
+                422,
+                "llama.cpp bulunamadı ya da convert_hf_to_gguf.py eksik. GGUF için NESHTER_LLAMA_CPP ortam "
+                "değişkenini llama.cpp klasörüne ayarlayın (llama-quantize ve convert_hf_to_gguf.py orada olmalı).",
+                "llama_cpp_missing",
+            )
+    if ollama and not _ollama_available():
+        raise ApiError(
+            422, "Ollama bulunamadı (PATH'te 'ollama' yok). Ollama'yı kurun ya da bu adımı kapatın.", "ollama_missing"
+        )
+
+
+def _memory_bytes(fmt: str, size_bytes: int, available_ram: int, native_bf16: bool) -> int:
+    """Açınca gereken bellek: parametre sayısı tahmini × yükleme politikasının dtype'ı.
+
+    GGUF: ~Q4 varsayımıyla (0.6 bayt/parametre, muhafazakâr); safetensors: bf16 dosya (2 bayt/parametre).
+    `load_model(dtype=None)` ile aynı karar: GPU'ya sığarsa bf16; yerel bf16'sı olmayan CPU'da RAM yeterse
+    float32 (parametre başına 4 bayt), değilse bf16 (2 bayt).
+    """
+    n_params = int(size_bytes / 0.6 if fmt == "gguf" else size_bytes / 2)
+    dtype = pick_compute_dtype(planned_device("auto", n_params), n_params, available_ram, native_bf16)
+    return estimate_memory_bytes(n_params, 4 if dtype == torch.float32 else 2)
+
+
+def _load(
+    path: Path,
+    dtype: torch.dtype | None,
+    name: str | None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> LoadedModel:
     """load_model; beklenmeyen (çoğu İngilizce) hatalar Türkçe bir öneke sarılır."""
     try:
-        return load_model(path, device="auto", dtype=dtype, name=name)
-    except (UnsupportedArchitecture, UnsafeModelFile):
+        return load_model(path, device="auto", dtype=dtype, name=name, progress=progress, cancel=cancel)
+    except (UnsupportedArchitecture, UnsafeModelFile, Cancelled):
         raise
     except Exception as e:
         raise RuntimeError(f"Model yüklenemedi: {type(e).__name__}: {e}") from e
+
+
+def _unsupported_reason(arch: dict | None) -> str | None:
+    if arch is None:
+        return "unknown_arch"
+    return None if arch["family"] in SUPPORTED_FAMILIES else "unsupported_family"
+
+
+def _free_bytes(out_dir: str) -> int:
+    """Boş disk: `out_dir`in (henüz yoksa) var olan en yakın atasında ölçülür; klasör yaratılmaz."""
+    p = Path(out_dir)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return int(shutil.disk_usage(p).free)
+    except OSError as e:  # var olmayan sürücü (ör. Q:\x), erişilemeyen birim
+        raise HTTPException(422, "Hedef klasörün sürücüsü bulunamadı.") from e
 
 
 def _default_effect_prompts() -> list[str]:
@@ -288,30 +416,47 @@ def _default_effect_prompts() -> list[str]:
     return load_neutral()
 
 
-def _recipe_metrics(lm: LoadedModel, interventions: list) -> dict:
+def _recipe_metrics(
+    lm: LoadedModel,
+    interventions: list,
+    n_random: int = DEFAULT_N_RANDOM,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> dict:
     """Tarif düzeyi metrikler (nötr set): KL + aynı biçimde rastgele kontrol, perplexity önce/sonra.
 
     Hedef davranış ORANI için rastgele kontrol v0.2'de (test setini ikinci kez koşturmak gerekir).
+    İlerleme 0..1 aralığındadır (çağıran sub_progress ile eşler); iptal çekilişler arasında kontrol edilir.
     """
     neutral = load_neutral()
     out: dict = {"n_prompts": len(neutral), "kl_random_note": None}
     try:
-        eff = recipe_effect(lm, interventions, neutral)
-        out.update(kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl)
+        eff = recipe_effect(
+            lm, interventions, neutral, n_random=n_random, progress=sub_progress(progress, 0.0, 0.9), cancel=cancel
+        )
+        out.update(
+            kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl, kl_random_p=eff.p_value, kl_percentile=eff.percentile,
+            direction_control=eff.direction_control,
+        )
     except ValueError as e:  # ör. neredeyse tüm head'ler seçili: aynı sayıda rastgele kontrol yok
         values = kl_effect(lm, neutral, interventions)
-        out.update(kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_note=str(e))
+        out.update(
+            kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_p=None, kl_percentile=None,
+            direction_control=None, kl_random_note=str(e),
+        )
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.9, "Perplexity ölçülüyor")
     out["perplexity_orig"] = perplexity(lm, neutral)
+    check_cancel(cancel)
     out["perplexity_int"] = perplexity(lm, neutral, interventions)
+    if progress is not None:
+        progress(1.0, "Metrikler hazır")
     return out
 
 
 def _sse(event: str, status) -> str:
     return f"event: {event}\ndata: {json.dumps(asdict(status), ensure_ascii=False)}\n\n"
-
-
-class _Cancelled(Exception):
-    pass
 
 
 async def job_stream(jobs: JobManager, job_id: str, request, poll: float = 0.1, keepalive: float = 15.0):
@@ -370,28 +515,42 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     app.state.jobs = jobs
     app.add_middleware(_Guard, token=token, port=port)
 
-    @app.exception_handler(NoModel)
-    async def _no_model(_, exc: NoModel):
-        return JSONResponse({"detail": str(exc)}, status_code=409)
+    install_handlers(app)
 
     def require_model() -> LoadedModel:
         return session.require()
 
-    def start(fn) -> dict:
-        return {"job_id": jobs.submit(fn)}
+    def start(fn, kind: str) -> dict:
+        return {"job_id": jobs.submit(fn, kind=kind)}
 
     # -- sistem / modeller --
 
     @app.get("/api/system")
     def get_system():
-        return asdict(system_info())
+        llama = find_llama_cpp()
+        return {
+            **asdict(system_info()),
+            "default_out_dir": str(Path.home() / "Neshter"),
+            "llama_cpp": {
+                "found": llama is not None,
+                "path": None if llama is None else str(llama),
+                "converter": llama is not None and (llama / "convert_hf_to_gguf.py").is_file(),
+            },
+            "ollama": shutil.which("ollama") is not None,
+            "torch_version": torch.__version__,
+            "torch_cuda": torch.version.cuda,
+            "cuda_available": torch.cuda.is_available(),
+            "native_bf16": cpu_has_native_bf16(),
+            "cpu_threads": torch.get_num_threads(),
+        }
 
     @app.get("/api/models")
     def get_models():
         info = system_info()
+        ram, native = available_ram_bytes(), cpu_has_native_bf16()
         out = []
         for e in scan_all(roots):
-            mem = _memory_bytes(e.fmt, e.size_bytes)
+            mem = _memory_bytes(e.fmt, e.size_bytes, ram, native)
             out.append(
                 {
                     "name": e.name,
@@ -401,9 +560,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "size_bytes": e.size_bytes,
                     "memory_bytes": mem,
                     "badge": fit_badge(mem, info.vram_bytes, info.ram_bytes),
-                    "license": read_license(e.path) if e.path.is_dir() else None,
-                    "arch": (arch := model_arch(e.path, e.fmt)),
+                    "license": e.license,
+                    "arch": (arch := e.arch),
                     "supported": arch is not None and arch["family"] in SUPPORTED_FAMILIES,
+                    "unsupported_reason": _unsupported_reason(arch),
                 }
             )
         return out
@@ -439,7 +599,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
                 def update(self, n=1):
                     if cancel.is_set():
-                        raise _Cancelled()
+                        raise Cancelled()
                     self._seen += n or 0
                     if self.total:
                         report(
@@ -449,9 +609,11 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     return True
 
             report(0.0, "İndirme başlıyor")
-            return {"path": str(snapshot_download(SAMPLE_REPO, tqdm_class=Bar))}
+            return {"path": str(snapshot_download(
+                    SAMPLE_REPO, revision=SAMPLE_REVISION, allow_patterns=SAMPLE_PATTERNS, tqdm_class=Bar
+                ))}
 
-        return start(fn)
+        return start(fn, "download")
 
     # -- oturum --
 
@@ -468,7 +630,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 if cancel.is_set():
                     return None
                 report(0.1, "Model yükleniyor")
-                lm = _load(path, _DTYPES[body.dtype], body.name)
+                lm = _load(path, _DTYPES[body.dtype], body.name, report, cancel)
                 if cancel.is_set():  # yükleme sürerken iptal edildi: durum "cancelled", oturum boş kalsın
                     del lm
                     session.free()
@@ -480,9 +642,33 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "license": lm.license,
                 "device": next(lm.model.parameters()).device.type,
                 "device_note": lm.device_note,
+                "dtype": str(next(lm.model.parameters()).dtype).removeprefix("torch."),
             }
 
-        return start(fn)
+        return start(fn, "load")
+
+    @app.get("/api/session")
+    def get_session():
+        """Kilit almaz: yükleme/av sürerken de anlık durumu verir. `source_path` yerel arayüz için açıktır;
+        belirteç hiçbir yanıta girmez."""
+        lm = session.lm
+        if lm is None:
+            return {"loaded": False}
+        param = next(lm.model.parameters())
+        return {
+            "loaded": True,
+            "name": lm.name,
+            "arch": asdict(lm.arch),
+            "device": param.device.type,
+            "dtype": str(param.dtype).removeprefix("torch."),
+            "license": lm.license,
+            "memory_bytes": sum(p.numel() * p.element_size() for p in lm.model.parameters()),
+            "device_note": lm.device_note,
+            "source_path": str(lm.source_path),
+            "default_method": default_method(lm),
+            "safety_dirs": len(session.safety_dirs),
+            "safety_heads": len(session.safety_heads),
+        }
 
     # -- anlık (eşzamanlı) uçlar --
 
@@ -500,13 +686,18 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def activity(body: ActivityReq):
         with _model_busy_guard(), _bad_input():
             lm = require_model()
-            power = head_output_power(lm, body.prompt)  # [L, H, T]
-            n_tokens = power.shape[-1]
-            if not -n_tokens <= body.token_index < n_tokens:
-                raise ValueError(f"token_index {body.token_index} aralık dışı (prompt {n_tokens} token).")
-            at = power[:, :, body.token_index]
-            norm = normalize_per_layer(at) if body.scale == "layer" else normalize_global(at)
-            return {"tokens": tokens(lm, body.prompt), "power": norm.tolist()}
+            toks = tokens(lm, body.prompt)
+            if len(toks) > MAX_ACTIVITY_TOKENS:
+                raise ValueError(f"İstem çok uzun: en fazla {MAX_ACTIVITY_TOKENS} token (şu an {len(toks)}).")
+            power = head_output_power(lm, body.prompt)  # [L, H, T]; tek ileri geçiş, tüm token'lar
+            out = {"tokens": toks, "power_raw": power.tolist()}
+            if body.token_index is not None:
+                n_tokens = power.shape[-1]
+                if not -n_tokens <= body.token_index < n_tokens:
+                    raise ValueError(f"token_index {body.token_index} aralık dışı (prompt {n_tokens} token).")
+                at = power[:, :, body.token_index]
+                out["power"] = (normalize_per_layer(at) if body.scale == "layer" else normalize_global(at)).tolist()
+            return out
 
     @app.post("/api/mlp")
     def mlp(body: MlpReq):
@@ -520,7 +711,9 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             lm = require_model()
             interventions = to_interventions(_recipe_from_ops(lm, body.recipe_ops))
             original, modified, mode = generate_pair(lm, body.prompt, interventions, max_new_tokens=body.max_new_tokens)
-        return {"original": original, "modified": modified, "mode": mode}
+        detector = DETECTORS.get(body.concept_id) if body.concept_id is not None else None
+        target_hit = None if detector is None else {"original": detector(original), "modified": detector(modified)}
+        return {"original": original, "modified": modified, "mode": mode, "target_hit": target_hit}
 
     @app.post("/api/recipe/check")
     def recipe_check(body: RecipeCheckReq):
@@ -546,15 +739,27 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 if cancel.is_set():
                     return None
                 report(0.1, "Gerçek etki hesaplanıyor")
-                return asdict(real_effect(lm, heads, prompts))
+                return asdict(
+                    real_effect(
+                        lm, heads, prompts, n_random=body.n_random,
+                        progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
+                    )
+                )
 
-        return start(fn)
+        return start(fn, "effect")
 
     @app.post("/api/hunt")
     def hunt_endpoint(body: HuntReq):
         require_model()
         if body.concept is not None:
             concept = body.concept
+            if not re.fullmatch(RECIPE_TEXT, concept.id):
+                # Tarife ve dışa aktarıma girecek kimlik; avlanabilir ama kaydedilemez bir kavram olmasın.
+                raise HTTPException(
+                    422,
+                    "Kavram kimliği yalnızca harf, rakam, '.', '_', '-' içerebilir (en fazla 64 karakter): "
+                    f"{concept.id[:64]!r}.",
+                )
         else:
             try:
                 concept = load_preset(body.concept_id)
@@ -566,22 +771,41 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 lm = require_model()
                 if cancel.is_set():
                     return None
-                report(0.1, "Kavram aranıyor")
-                r = hunt(lm, concept, body.method, seed=body.seed)
-                if concept.safety_ablation and r.direction is not None:
-                    # Bu yön kaydedilirse etiket istemciye bağlı kalmasın (bkz. _is_safety).
-                    d = r.direction.detach().to("cpu", torch.float32)
-                    session.safety_dirs.append(d / d.norm())
+                method = body.method or default_method(lm)
+                report(0.0, "Kavram aranıyor")
+                r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel)
+                # Etiketler yalnızca av tamamen bittiyse ve iş iptal edilmediyse oturuma girer (geç iptal
+                # edilen av iz bırakmaz). Bu yön/head'ler kaydedilirse etiket istemciye bağlı kalmaz.
+                if _is_safety_concept(concept) and not cancel.is_set():
+                    if r.direction is not None:
+                        d = r.direction.detach().to("cpu", torch.float32)
+                        session.safety_dirs.append(d / d.norm())
+                    session.safety_heads.update((layer, head) for layer, head, _ in r.heads[:MEASURE_TOP_K])
+            measured = {(m.layer, m.head): m for m in r.measured}
+
+            def _measured(layer: int, head: int):
+                # signal_drop null: head ref_layer'da ya da sonrasında, sinyali yapısal olarak etkileyemez
+                # (ölçülmedi; "etkisiz" ölçümü değil). neutral_kl her ölçülen head için doludur.
+                m = measured.get((layer, head))
+                return None if m is None else {"signal_drop": m.signal_drop, "neutral_kl": m.neutral_kl}
+
             return {
+                "method": method,
                 "layer_scores": r.layer_scores,
-                "heads": [{"layer": layer, "head": head, "score": score} for layer, head, score in r.heads],
+                "heads": [
+                    {"layer": layer, "head": head, "score": score, "measured": _measured(layer, head)}
+                    for layer, head, score in r.heads
+                ],
                 "direction": None if r.direction is None else _b64_f32(r.direction),
                 "direction_shape": None if r.direction is None else list(r.direction.shape),
                 "direction_layer": r.direction_layer,
-                "val_consistency": r.val_consistency,
+                "ref_layer": r.ref_layer,
+                "val_accuracy": r.val_accuracy,
+                "val_ci": list(r.val_ci),
+                "val_n": r.val_n,
             }
 
-        return start(fn)
+        return start(fn, "hunt")
 
     @app.post("/api/suite")
     def suite(body: SuiteReq):
@@ -591,6 +815,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             raise HTTPException(422, f"Hedef kategori '{body.target}' test setinde yok.")
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops)
+        if body.quick:
+            items = [i for i in items if i.category in {body.target, QUICK_GUARD}]
+        max_new_tokens = min(body.max_new_tokens, QUICK_MAX_NEW_TOKENS) if body.quick else body.max_new_tokens
+        extra = {"n_random": QUICK_N_RANDOM} if body.quick else {}
 
         def fn(report, cancel):
             with session.lock:
@@ -600,35 +828,56 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     lm,
                     items,
                     interventions,
-                    progress=lambda done, total: report(done / total, f"{done}/{total} test"),
+                    progress=lambda done, total: report(0.95 * done / total, f"{done}/{total} adım"),
                     cancel=cancel,
-                    max_new_tokens=body.max_new_tokens,
+                    max_new_tokens=max_new_tokens,
+                    target=body.target,
                 )
                 if cancel.is_set():
                     return None
-                report(0.97, "KL ve perplexity ölçülüyor")
-                metrics = _recipe_metrics(lm, interventions)
+                report(0.95, "KL ve perplexity ölçülüyor")
+                metrics = _recipe_metrics(
+                    lm, interventions, progress=sub_progress(report, 0.95, 1.0), cancel=cancel, **extra
+                )
             if cancel.is_set():
                 return None
             return {
                 "categories": [asdict(r) for r in results],
                 "summary": None if body.target is None else asdict(summarize(results, body.target)),
                 "metrics": metrics,
+                "quick": body.quick,
             }
 
-        return start(fn)
+        return start(fn, "suite")
+
+    @app.post("/api/export/estimate")
+    def export_estimate(body: EstimateReq):
+        """Disk tahmini + önerilen ad. Model kullanmaz (yalnızca parametre boyutları): kilit gerekmez."""
+        lm = require_model()
+        if body.recipe_ops is not None:
+            with _bad_input():
+                _recipe_from_ops(lm, body.recipe_ops, body.concept)
+            has_directions = any(isinstance(op, DirectionOp) for op in body.recipe_ops)
+            safety = _is_safety(session, body.recipe_ops, body.concept)
+        else:  # tarif yok: ad geçicidir (head/yön eşleşmesi bilinmez); yalnızca concept == "refusal"
+            has_directions = body.has_directions
+            safety = _is_safety(session, [], body.concept)
+        needed = int(estimate_export_bytes(lm, body.format, has_directions) * 1.1)
+        free = _free_bytes(body.out_dir or str(Path.home() / "Neshter"))
+        return {
+            "bytes_needed": needed,
+            "free_bytes": free,
+            "enough": free >= needed,
+            "suggested_name": suggest_export_name(lm, safety),
+        }
 
     @app.post("/api/export")
     def export(body: ExportReq):
         lm = require_model()
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops, body.concept)
-        if lm.arch.family == "gemma2" and any(isinstance(op, DirectionOp) for op in body.recipe_ops):
-            raise HTTPException(
-                422,
-                "gemma2 için yön silme ağırlıklara gömülemiyor (post-attention/post-feedforward normları "
-                "yüzünden kanca ile aynı sonucu vermez). Head susturma desteklenir.",
-            )
+        _free_bytes(body.out_dir)  # sürücü yoksa iş başlamadan 422 (iş hatası yerine)
+        _check_export_tools(body.format, body.ollama)  # eksik araç uzun kayıttan SONRA değil, önce anlaşılır
 
         def fn(report, cancel):
             with session.lock:
@@ -636,25 +885,47 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 safety = _is_safety(session, body.recipe_ops, body.concept)
                 concept = "refusal" if safety else body.concept  # istemci etiketi kaldıramaz
                 recipe = _recipe_from_ops(lm, body.recipe_ops, concept)
+                name = body.name or suggest_export_name(lm, safety)
                 out_dir = Path(body.out_dir)
                 if body.format == "safetensors":
-                    report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-                    path = save_safetensors(lm, recipe, out_dir, safety_ablated=safety)
-                else:
-                    path = _export_gguf(lm, recipe, out_dir, body, report, safety)
-                report(0.95, "Kaynak model doğrulanıyor")
-                if not verify_source_untouched(lm):
-                    raise RuntimeError(
-                        "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor)."
+                    path = save_safetensors(
+                        lm, recipe, out_dir, safety_ablated=safety,
+                        progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
                     )
+                else:
+                    llama_cpp = find_llama_cpp()
+                    if llama_cpp is None:
+                        raise LlamaCppMissing(
+                            "llama.cpp bulunamadı. GGUF için NESHTER_LLAMA_CPP ortam değişkenini llama.cpp "
+                            "klasörüne ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
+                        )
+                    path = export_gguf(
+                        lm, recipe, out_dir, name, _QUANT[body.format], llama_cpp, safety,
+                        progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
+                    )
+                report(0.9, "Kaynak model doğrulanıyor")
+                # Uyuşmazlık: out_dir silinir, SourceModified (source_modified); iptal edilebilir, ilerleme bildirir.
+                ensure_source_untouched(lm, out_dir, sub_progress(report, 0.9, 0.95), cancel)
+                if cancel.is_set():  # son adımda gelen iptal de çıktıyı bırakmaz (out_dir bu işte oluştu)
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    return None
+                if body.ollama:
+                    report(0.95, "Ollama'ya ekleniyor")
+                    try:
+                        ollama_create(name, path, license_text=modelfile_license(lm, out_dir))
+                    except subprocess.CalledProcessError as e:
+                        raise RuntimeError(
+                            f"Ollama'ya ekleme başarısız oldu ('ollama create' {e.returncode} koduyla çıktı)."
+                        ) from e
             return {
                 "path": str(path),
                 "source_sha256": lm.source_sha256,
                 "source_untouched": True,
                 "safety_ablated": safety,
+                "name": name,
             }
 
-        return start(fn)
+        return start(fn, "export")
 
     # -- iş durumu --
 
@@ -663,6 +934,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             return jobs.status(job_id)
         except KeyError as e:
             raise HTTPException(404, "İş bulunamadı.") from e
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        return [{k: v for k, v in asdict(st).items() if k != "result"} for st in jobs.list()]
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -694,37 +969,3 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             return _PLACEHOLDER_HTML
 
     return app
-
-
-def _export_gguf(
-    lm: LoadedModel, recipe: Recipe, out_dir: Path, body: ExportReq, report, safety: bool = False
-) -> Path:
-    """safetensors ara klasörü → GGUF (→ Ollama). out_dir yeni olmalı; ara klasör işin sonunda silinir."""
-    llama_cpp = find_llama_cpp()
-    if llama_cpp is None:
-        raise FileNotFoundError(
-            "llama.cpp bulunamadı. GGUF için NESHTER_LLAMA_CPP ortam değişkenini llama.cpp klasörüne "
-            "ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
-        )
-    if out_dir.exists():
-        raise FileExistsError(f"'{out_dir}' zaten var; üzerine yazılmaz. Başka bir klasör adı seçin.")
-    try:
-        hf_dir = out_dir / "_hf"
-        report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-        save_safetensors(lm, recipe, hf_dir, safety_ablated=safety)
-        report(0.5, "GGUF'a dönüştürülüyor")
-        try:
-            gguf = to_gguf(hf_dir, out_dir / f"{body.name}.gguf", _QUANT[body.format], llama_cpp)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"GGUF dönüştürme başarısız oldu (llama.cpp {e.returncode} koduyla çıktı).") from e
-        shutil.rmtree(hf_dir)
-    except BaseException:
-        shutil.rmtree(out_dir, ignore_errors=True)  # out_dir bu işte oluştu (başta yoktu)
-        raise
-    if body.ollama:
-        report(0.9, "Ollama'ya ekleniyor")
-        try:
-            ollama_create(body.name, gguf)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Ollama'ya ekleme başarısız oldu ('ollama create' {e.returncode} koduyla çıktı).") from e
-    return gguf

@@ -1,11 +1,16 @@
 import math
+import random
+import threading
+from fractions import Fraction
 
 import pytest
 import torch
 from conftest import logits
 
 from neshter.interventions import HeadAblation, apply
-from neshter.metrics import kl_effect, perplexity, rate_diff, real_effect, wilson
+from neshter import metrics as m
+from neshter.metrics import kl_effect, perplexity, real_effect, wilson
+from neshter.progress import Cancelled
 
 
 def test_wilson_known_value():
@@ -25,25 +30,104 @@ def test_wilson_edges():
         wilson(-1, 10)
 
 
-def test_rate_diff_uncertain_and_certain():
-    assert rate_diff(78, 100, 77, 100).uncertain
-    d = rate_diff(94, 100, 11, 100)
-    assert not d.uncertain and d.hi < 0
+def test_mcnemar_exact_values():
+    assert m.mcnemar_exact(10, 0) == pytest.approx(0.001953125)
+    assert m.mcnemar_exact(6, 1) == pytest.approx(0.125)
+    assert m.mcnemar_exact(0, 0) == 1.0 and m.mcnemar_exact(3, 3) == 1.0
 
 
-def test_rate_diff_formula():
-    d = rate_diff(60, 100, 40, 100)
-    se = math.sqrt(0.6 * 0.4 / 100 + 0.4 * 0.6 / 100)
-    assert d.diff == pytest.approx(-0.2)
-    assert d.lo == pytest.approx(-0.2 - 1.96 * se)
-    assert d.hi == pytest.approx(-0.2 + 1.96 * se)
+def _binom_two_sided(b, c):
+    """Bağımsız hesap: Binom(n_d, 1/2) altında olasılığı gözlenenden büyük olmayan tüm sonuçların toplamı."""
+    nd = b + c
+    if nd == 0:
+        return Fraction(1)
+    probs = [Fraction(math.comb(nd, i), 2**nd) for i in range(nd + 1)]
+    obs = probs[b]
+    return min(Fraction(1), sum(p for p in probs if p <= obs))
 
 
-def test_rate_diff_rejects_bad_counts():
+def test_mcnemar_exact_matches_independent_binomial():
+    for b in range(0, 16):
+        for c in range(0, 16):
+            assert m.mcnemar_exact(b, c) == pytest.approx(float(_binom_two_sided(b, c)), rel=1e-12), (b, c)
+
+
+def test_mcnemar_exact_is_symmetric_and_rejects_negative():
+    assert m.mcnemar_exact(7, 2) == m.mcnemar_exact(2, 7)
     with pytest.raises(ValueError):
-        rate_diff(1, 0, 1, 10)
+        m.mcnemar_exact(-1, 2)
+
+
+def test_paired_ci_regression_values():  # plan tanımlı skor aralığının regresyon değerleri; a=12 b=2 c=1 d=6
+    lo, hi = m.paired_ci(12, 2, 1, 6)
+    assert lo == pytest.approx(-0.1999, abs=1e-3) and hi == pytest.approx(0.1080, abs=1e-3)
+
+
+def test_paired_ci_matches_formula_with_wilson():
+    a, b, c, d = 9, 5, 2, 4
+    n = a + b + c + d
+    p1, l1, u1 = wilson(a + b, n)
+    p2, l2, u2 = wilson(a + c, n)
+    phi = (a * d - b * c) / math.sqrt((a + b) * (c + d) * (a + c) * (b + d))
+    delta = p2 - p1
+    lo = delta - math.sqrt((p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2)
+    hi = delta + math.sqrt((u2 - p2) ** 2 - 2 * phi * (u2 - p2) * (p1 - l1) + (p1 - l1) ** 2)
+    assert m.paired_ci(a, b, c, d) == pytest.approx((lo, hi))
+
+
+def test_paired_ci_rejects_bad_counts():
     with pytest.raises(ValueError):
-        rate_diff(11, 10, 1, 10)
+        m.paired_ci(0, 0, 0, 0)
+    with pytest.raises(ValueError):
+        m.paired_ci(1, -1, 0, 0)
+
+
+def test_paired_diff_all_pass_has_width():
+    d = m.paired_diff(25, 0, 0, 0)
+    assert d.diff == 0 and d.lo == pytest.approx(-0.1332, abs=1e-3) and d.hi == pytest.approx(0.1332, abs=1e-3)
+    assert d.uncertain and d.p_value == 1.0 and d.p_adj is None
+
+
+def test_paired_diff_clear_drop():
+    d = m.paired_diff(15, 10, 0, 0)
+    assert d.diff == pytest.approx(-0.4) and d.lo == pytest.approx(-0.5926, abs=1e-3)
+    assert d.hi == pytest.approx(-0.1872, abs=1e-3) and not d.uncertain
+    assert d.p_value == pytest.approx(2 * 0.5**10)
+
+
+def test_paired_diff_uncertain_iff_p_at_least_005():
+    assert m.paired_diff(10, 6, 1, 3).uncertain  # p = 0.125
+    assert not m.paired_diff(10, 6, 0, 3).uncertain  # p = 2/64 = 0.03125
+    assert m.paired_diff(10, 5, 0, 3).uncertain  # p = 2/32 = 0.0625
+
+
+def test_rate_diff_removed():
+    assert not hasattr(m, "rate_diff")
+
+
+def test_holm():
+    assert m.holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+
+
+def test_holm_edge_cases():
+    assert m.holm([]) == []
+    assert m.holm([0.2]) == [0.2]
+    assert m.holm([0.5, 0.001, 0.4, 0.02]) == pytest.approx([0.8, 0.004, 0.8, 0.06])
+    assert m.holm([0.9, 0.9]) == [1.0, 1.0]
+
+
+def test_min_detectable_drop():
+    assert m.min_detectable_drop(25) == pytest.approx(0.24)
+    assert m.min_detectable_drop(25, m=4) == pytest.approx(0.32)
+    assert m.min_detectable_drop(5) == 1.0
+
+
+def test_min_detectable_drop_matches_brute_force():
+    for mm in (1, 2, 3, 4, 7):
+        k = next(k for k in range(1, 100) if 2 * Fraction(1, 2) ** k < Fraction(5, 100) / mm)
+        assert m.mcnemar_exact(k, 0) < 0.05 / mm <= m.mcnemar_exact(k - 1, 0)
+        assert m.min_detectable_drop(40, m=mm) == pytest.approx(min(1.0, k / 40))
+    assert m.min_detectable_drop(25, m=0) == m.min_detectable_drop(25, m=1)  # m en az 1
 
 
 def test_kl_zero_without_intervention(lm):
@@ -124,8 +208,10 @@ def test_real_effect_random_control_excludes_chosen_and_averages(lm, monkeypatch
     for control in seen[1:]:
         assert len(control) == 2 and len(set(control)) == 2
         assert not set(control) & set(chosen)
+        assert sorted(h.layer for h in control) == [0, 1]  # katman eşleşmeli
     means = [sum(vals) / len(vals) for vals in (kl_effect(lm, prompts, c) for c in seen[1:])]
     assert r.random_kl == pytest.approx(sum(means) / 5)
+    assert r.random_kls == pytest.approx(means) and r.n_random == 5 and r.layer_matched
 
 
 def test_real_effect_dedupes_heads(lm):
@@ -191,7 +277,7 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
     monkeypatch.setattr(m, "_kl_from", lambda lm_, b, p, iv, k: seen.append(list(iv)) or real(lm_, b, p, iv, k))
     d = DirectionAblation(torch.ones(lm.arch.d_model))
     r = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
-    assert r.kl > 0 and r.random_kl >= 0
+    assert r.kl > 0 and r.random_kl >= 0 and len(r.random_kls) == 2
     for control in seen[1:]:
         dirs = [iv for iv in control if isinstance(iv, DirectionAblation)]
         heads = [iv for iv in control if isinstance(iv, HeadAblation)]
@@ -199,6 +285,17 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
         assert not torch.allclose(dirs[0].direction, d.direction)
     again = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
     assert again == r  # tohumlu
+    assert r.direction_control == "isotropic" and r.layer_matched  # yön var: etiket dürüst, head'ler yine eşleşmiş
+    ctrl, matched = m.random_control(lm, [d, HeadAblation(0, 1)], random.Random(0), torch.Generator().manual_seed(0))
+    assert matched and len(ctrl) == 2  # artık (kontrol, eşleşti_mi) çifti döner
+
+
+def test_effect_does_not_touch_global_seed(lm):
+    torch.manual_seed(123)
+    random.seed(456)
+    t_before, r_before = torch.get_rng_state(), random.getstate()
+    real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, seed=5)
+    assert torch.equal(t_before, torch.get_rng_state()) and r_before == random.getstate()
 
 
 def test_neutral_prompts_are_reserved():
@@ -225,3 +322,138 @@ def test_kl_uses_logits_to_keep(lm, monkeypatch):
     monkeypatch.setattr(lm.model, "forward", spy)
     kl_effect(lm, ["bir iki üç dört beş altı"], [HeadAblation(0, 0)], last_k=3)
     assert seen == [3, 3]
+
+
+# --- Task 6: katman eşleşmeli kontrol, yüzdelik ve permütasyon p ----------------------------------
+
+
+def test_layer_matched_control_same_layers(lm):
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(0, 0), HeadAblation(0, 1), HeadAblation(1, 3)]
+    ctrl, matched = m.layer_matched_heads(lm, chosen, random.Random(0))
+    assert matched and sorted(h.layer for h in ctrl) == [0, 0, 1] and not set(ctrl) & set(chosen)
+
+
+def test_layer_matched_control_falls_back_to_nearest_layer(lm):  # tiny modelde H = 4
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(0, 0), HeadAblation(0, 1), HeadAblation(0, 2)]
+    ctrl, matched = m.layer_matched_heads(lm, chosen, random.Random(0))
+    assert not matched and sorted(h.layer for h in ctrl) == [0, 1, 1]
+    assert len(set(ctrl)) == 3 and not set(ctrl) & set(chosen)
+
+
+def test_layer_matched_control_raises_when_model_too_small(lm):
+    import neshter.metrics as m
+
+    chosen = [HeadAblation(l, h) for l in range(2) for h in range(4)][:7]
+    with pytest.raises(ValueError, match="yeterli seçilmemiş head"):
+        m.layer_matched_heads(lm, chosen, random.Random(0))
+
+
+def test_effect_percentile_and_p_value(lm, monkeypatch):
+    import neshter.metrics as m
+
+    values = iter([[0.5]] + [[0.1]] * 18 + [[0.6], [0.7]])
+    monkeypatch.setattr(m, "_kl_from", lambda *a, **k: next(values))
+    r = m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=20)
+    assert r.p_value == pytest.approx(3 / 21) and r.percentile == pytest.approx(90.0)
+    assert r.random_p05 == pytest.approx(0.1) and r.random_p95 == pytest.approx(0.605)
+    assert r.n_random == 20 and len(r.random_kls) == 20 and r.random_kl == pytest.approx(sum(r.random_kls) / 20)
+    assert r.layer_matched and r.direction_control is None  # yalnız head tarifi
+    assert r.kl_se == pytest.approx(r.kl_std / math.sqrt(r.n_prompts))
+
+
+def test_effect_default_is_30_draws(lm):
+    import neshter.metrics as m
+
+    assert m.DEFAULT_N_RANDOM == 30
+    r = m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"])
+    assert r.n_random == 30 and len(r.random_kls) == 30
+
+
+def test_effect_reports_progress_and_cancels(lm):
+    import neshter.metrics as m
+
+    seen = []
+    m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, progress=lambda p, msg: seen.append(p))
+    assert len(seen) >= 3 and seen == sorted(seen) and seen[-1] >= 0.9
+    assert all(0.0 <= p <= 1.0 for p in seen)
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        m.real_effect(lm, [HeadAblation(0, 0)], ["bir iki"], n_random=3, cancel=ev)
+
+
+# --- Final fix wave I8: KL istekleri yığınlanır (sola dolgu + dikkat maskesi), değerler aynı kalır -----------
+
+_MIXED_PROMPTS = [
+    "a",  # last_k'dan kısa
+    "merhaba dünya",
+    "the quick brown fox jumps over the lazy dog " * 6,
+    "dikkat kafaları",
+    "kediler çatıda uyuyor ve köpekler bahçede oynuyor, " * 3,
+    "x y",
+    "she sells sea shells by the sea shore",
+    "İstanbul'da yağmur yağıyor, şemsiyemi unuttum " * 4,
+    "bir iki üç dört beş altı yedi sekiz dokuz on",  # 9. istek: ikinci yığın
+    "hello",
+]
+
+
+def _unbatched_reference_kl(lm, prompts, interventions, last_k):
+    """Bağımsız başvuru: istek başına tek, dolgusuz ileri geçiş (eski davranış)."""
+    out = []
+    for p in prompts:
+        enc = lm.tokenizer(p, return_tensors="pt")
+        with torch.no_grad():
+            lp = lm.model(**enc, use_cache=False).logits[0, -last_k:].float().log_softmax(-1)
+            with apply(lm, interventions):
+                lq = lm.model(**enc, use_cache=False).logits[0, -last_k:].float().log_softmax(-1)
+        out.append((lp.exp() * (lp - lq)).sum(-1).mean().item())
+    return out
+
+
+@pytest.mark.parametrize("last_k", [16, 1, 4])
+def test_kl_effect_batched_matches_unbatched_reference(lm, last_k):
+    from neshter.interventions import DirectionAblation
+
+    g = torch.Generator().manual_seed(3)
+    for ivs in ([HeadAblation(0, 1)], [HeadAblation(1, 2), DirectionAblation(torch.randn(64, generator=g))]):
+        got = kl_effect(lm, _MIXED_PROMPTS, ivs, last_k=last_k)
+        ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, ivs, last_k)
+        assert len(got) == len(ref) and all(r > 0 for r in ref)
+        for a, b in zip(got, ref):
+            assert a == pytest.approx(b, abs=1e-5, rel=1e-4)
+
+
+def test_recipe_effect_batched_matches_unbatched_reference(lm):
+    heads = [HeadAblation(0, 1)]
+    r = m.recipe_effect(lm, heads, _MIXED_PROMPTS, n_random=3, seed=5)
+    ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, heads, 16)
+    assert r.kl == pytest.approx(sum(ref) / len(ref), abs=1e-5)
+    rng, gen = random.Random(5), torch.Generator().manual_seed(5)
+    for got in r.random_kls:
+        control, _ = m.random_control(lm, heads, rng, gen)
+        ref = _unbatched_reference_kl(lm, _MIXED_PROMPTS, control, 16)
+        assert got == pytest.approx(sum(ref) / len(ref), abs=1e-5)
+
+
+def test_kl_forward_passes_are_batched(lm):
+    calls = []
+    h = lm.model.register_forward_pre_hook(lambda mod, args, kwargs: calls.append(kwargs["input_ids"].shape[0]), with_kwargs=True)
+    try:
+        kl_effect(lm, _MIXED_PROMPTS, [HeadAblation(0, 1)])
+    finally:
+        h.remove()
+    # 10 istek, yığın 8: orijinal 2 + müdahaleli 2 geçiş (eskiden 10 + 10)
+    assert calls == [8, 2, 8, 2]
+
+
+def test_kl_effect_batched_matches_unbatched_reference_gemma2(gemma_lm):
+    ivs = [HeadAblation(0, 1), HeadAblation(1, 3)]
+    got = kl_effect(gemma_lm, _MIXED_PROMPTS, ivs)
+    ref = _unbatched_reference_kl(gemma_lm, _MIXED_PROMPTS, ivs, 16)
+    for a, b in zip(got, ref):
+        assert a == pytest.approx(b, abs=1e-5, rel=1e-4)

@@ -30,6 +30,35 @@ def head_grams(module, n_heads: int, head_dim: int) -> torch.Tensor:
     return torch.einsum("mhd,mhe->hde", w, w)
 
 
+def _register_power_hooks(lm: LoadedModel, grams: dict[int, torch.Tensor] | None, last_only: bool, sink):
+    """Her o_proj girdisine, head çıktı gücünü hesaplayıp `sink(layer, power)` çağıran ön-kanca ekler
+    (head_output_power ve last_token_head_power'ın ortak yolu). `power`: [B, T, H] (last_only ise
+    [B, 1, H], yalnızca son konum). Gram matrisleri `grams` varsa katman başına önbelleğe alınır.
+    Dönen kanca tutamaçlarını çağıran kaldırır."""
+    arch = lm.arch
+
+    def make_hook(layer: int):
+        def hook(module, args):
+            if grams is not None and layer in grams:
+                g = grams[layer]
+            else:
+                g = head_grams(module, arch.n_heads, arch.head_dim)
+                if grams is not None:
+                    grams[layer] = g
+            x = args[0].detach()
+            if last_only:
+                x = x[:, -1:]
+            z = x.to(torch.float32).reshape(x.shape[0], x.shape[1], arch.n_heads, arch.head_dim)
+            sq = torch.einsum("bthd,hde,bthe->bth", z, g.to(z.device), z)
+            sink(layer, sq.clamp_min(0).sqrt().cpu())
+
+        return hook
+
+    return [
+        o_proj(lm.model, layer).register_forward_pre_hook(make_hook(layer)) for layer in range(arch.n_layers)
+    ]
+
+
 def head_output_power(
     lm: LoadedModel,
     prompt: str,
@@ -51,27 +80,35 @@ def head_output_power(
     n_tokens = enc["input_ids"].shape[-1]
     power = torch.zeros(arch.n_layers, arch.n_heads, n_tokens, dtype=torch.float32)
 
-    def make_hook(layer: int):
-        def hook(module, args):
-            if grams is not None and layer in grams:
-                g = grams[layer]
-            else:
-                g = head_grams(module, arch.n_heads, arch.head_dim)
-                if grams is not None:
-                    grams[layer] = g
-            z = args[0].detach().to(torch.float32)[0].reshape(-1, arch.n_heads, arch.head_dim)
-            sq = torch.einsum("thd,hde,the->th", z, g.to(z.device), z)
-            power[layer] = sq.clamp_min(0).sqrt().T.cpu()
+    def sink(layer: int, p: torch.Tensor) -> None:
+        power[layer] = p[0].T
 
-        return hook
-
-    handles = [
-        o_proj(lm.model, layer).register_forward_pre_hook(make_hook(layer))
-        for layer in range(arch.n_layers)
-    ]
+    handles = _register_power_hooks(lm, grams, False, sink)
     try:
         with torch.no_grad():
-            lm.model(**enc, use_cache=False)
+            lm.model.model(**enc, use_cache=False)  # lm_head gerekmez
+    finally:
+        for h in handles:
+            h.remove()
+    return power
+
+
+def last_token_head_power(
+    lm: LoadedModel, enc, grams: dict[int, torch.Tensor] | None = None
+) -> torch.Tensor:
+    """[B, n_layers, n_heads] CPU float32: head çıktı gücü, sola dolgulu `enc` yığınında son konumda (−1).
+    `enc` hunt._encode_batch çıktısıdır (attention_mask + position_ids dahil); lm_head çağrılmaz."""
+    arch = lm.arch
+    batch = enc["input_ids"].shape[0]
+    power = torch.zeros(batch, arch.n_layers, arch.n_heads, dtype=torch.float32)
+
+    def sink(layer: int, p: torch.Tensor) -> None:
+        power[:, layer] = p[:, 0]
+
+    handles = _register_power_hooks(lm, grams, True, sink)
+    try:
+        with torch.no_grad():
+            lm.model.model(**enc, use_cache=False)
     finally:
         for h in handles:
             h.remove()
@@ -115,7 +152,7 @@ def top_mlp_neurons(
     ]
     try:
         with torch.no_grad():
-            lm.model(**enc, use_cache=False)
+            lm.model.model(**enc, use_cache=False)  # lm_head gerekmez
     finally:
         for h in handles:
             h.remove()

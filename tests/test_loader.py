@@ -1,8 +1,12 @@
+import hashlib
 import json
+import re
 import shutil
 
+import gguf
 import pytest
 import torch
+from safetensors.torch import load_file, save_file
 
 from neshter import loader
 from neshter.loader import (
@@ -10,6 +14,12 @@ from neshter.loader import (
     UnsupportedArchitecture,
     load_model,
     sha256_path,
+)
+from neshter.licenses import (
+    license_id_from_text,
+    ollama_license_text,
+    read_gguf_license,
+    read_license_text,
 )
 
 
@@ -92,7 +102,21 @@ def test_gguf_unsupported_arch_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", boom)
     with pytest.raises(UnsupportedArchitecture, match="desteklenmiyor"):
-        load_model(tmp_path / "x.gguf", device="cpu")
+        load_model(_valid_gguf(tmp_path / "x.gguf"), device="cpu")
+
+
+def test_gguf_loading_prerequisite_accelerate_is_declared_and_installed():
+    """transformers 5.x, `gguf_file=` verildiğinde accelerate ister ("accelerate is required when loading a GGUF
+    file"); gerçek bir GGUF yüklemesi (Task 14 duman testi) bu yüzden temiz kurulumda çöküyordu."""
+    import tomllib
+    from pathlib import Path
+
+    from transformers.utils import is_accelerate_available
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    deps = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert any(d.startswith("accelerate") for d in deps), "accelerate bağımlılıklarda yok"
+    assert is_accelerate_available()
 
 
 def test_gguf_passes_gguf_file_and_safety_flags(tmp_path, monkeypatch):
@@ -104,7 +128,7 @@ def test_gguf_passes_gguf_file_and_safety_flags(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", boom)
     with pytest.raises(UnsupportedArchitecture):
-        load_model(tmp_path / "x.gguf", device="cpu", dtype=torch.float32)
+        load_model(_valid_gguf(tmp_path / "x.gguf"), device="cpu", dtype=torch.float32)
     assert seen["args"] == (tmp_path,)
     assert seen["kwargs"]["gguf_file"] == "x.gguf"
     assert seen["kwargs"]["trust_remote_code"] is False
@@ -169,10 +193,63 @@ def test_display_name_override(tiny_model_dir):
     assert lm.name == "qwen2.5:7b"
 
 
-def test_default_dtype_is_bf16(tiny_model_dir):
-    lm = load_model(tiny_model_dir, device="cpu")
+@pytest.mark.parametrize("device,n,ram,native,expected", [
+    ("cuda", 10**9, 64 * 2**30, False, torch.bfloat16),
+    ("cpu", 5 * 10**8, 16 * 2**30, False, torch.float32),   # 0.5B·4·2.0 = 4 GB < 0.7·16 GB
+    ("cpu", 2 * 10**9, 16 * 2**30, False, torch.bfloat16),  # 2B·4·2.0 = 16 GB > 12 GB (1.2 ile geçerdi: I4)
+    ("cpu", 8 * 10**9, 16 * 2**30, False, torch.bfloat16),  # 38 GB > 11.2 GB
+    ("cpu", 5 * 10**8, 16 * 2**30, True, torch.bfloat16),   # AVX512_BF16 / AMX
+])
+def test_pick_compute_dtype_table(device, n, ram, native, expected):
+    assert loader.pick_compute_dtype(device, n, ram, native) == expected
+
+
+def test_auto_dtype_loads_float32_on_cpu_without_native_bf16(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
+    assert next(lm.model.parameters()).dtype == torch.float32 and lm.device_note is None
+
+
+def test_auto_dtype_bf16_with_note_when_ram_tight(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
     assert next(lm.model.parameters()).dtype == torch.bfloat16
-    assert lm.device_note is None
+    assert loader.SLOW_BF16_NOTE in lm.device_note
+
+
+def test_explicit_dtype_is_respected(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    lm = loader.load_model(tiny_model_dir, device="cpu", dtype=torch.bfloat16)
+    assert next(lm.model.parameters()).dtype == torch.bfloat16
+
+
+def test_native_bf16_cpu_keeps_bf16_without_note(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
+    assert next(lm.model.parameters()).dtype == torch.bfloat16 and lm.device_note is None
+
+
+def test_fp32_policy_loads_without_bf16_rounding(tmp_path, tiny_model_dir, monkeypatch):
+    # a float32 checkpoint must not be rounded through bf16 on its way to float32
+    shutil.copytree(tiny_model_dir, tmp_path / "m")
+    f = tmp_path / "m" / "model.safetensors"
+    sd = load_file(f)
+    key = next(k for k, v in sd.items() if v.ndim == 2)
+    sd[key] = torch.full_like(sd[key], 1 + 2**-12, dtype=torch.float32)   # not bf16-representable
+    save_file(sd, f, metadata={"format": "pt"})
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    lm = loader.load_model(tmp_path / "m", device="cpu")
+    assert torch.equal(dict(lm.model.named_parameters())[key], sd[key])
+
+
+def test_hardware_probes_return_plain_values():
+    from neshter import hardware
+
+    assert isinstance(hardware.cpu_has_native_bf16(), bool)
+    assert hardware.available_ram_bytes() > 0
 
 
 def test_auto_device_stays_on_cpu_when_vram_too_small(tiny_model_dir, monkeypatch):
@@ -206,3 +283,391 @@ def test_folder_without_safetensors_is_rejected(tmp_path, tiny_model_dir):
 
 def test_read_license_is_public():
     assert loader.read_license is loader._read_license
+
+
+# --- Task 9: lisans her kaynaktan ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,lid",
+    [
+        ("Apache License\nVersion 2.0, January 2004", "apache-2.0"),
+        ("MIT License\n\nCopyright (c) 2024", "mit"),
+        ("LLAMA 3.1 COMMUNITY LICENSE AGREEMENT", "llama3.1"),
+        ("Llama 3.2 Community License", "llama3.2"),
+        ("Llama 3.3 Community License", "llama3.3"),
+        ("META LLAMA 3 COMMUNITY LICENSE AGREEMENT", "llama3"),
+        ("Gemma Terms of Use", "gemma"),
+        ("Qwen RESEARCH LICENSE AGREEMENT", "qwen-research"),
+        ("Tongyi Qianwen LICENSE AGREEMENT", "qwen"),
+        ("Qwen LICENSE AGREEMENT", "qwen"),
+        ("Some custom terms", "other"),
+    ],
+)
+def test_license_id_from_text(text, lid):
+    assert license_id_from_text(text) == lid
+
+
+@pytest.mark.parametrize("text", ["You may permit license holders to proceed.", "submit license forms here"])
+def test_license_id_from_text_uses_word_boundaries(text):
+    assert license_id_from_text(text) == "other"
+
+
+def _write_gguf(path, **kv):
+    w = gguf.GGUFWriter(str(path), "qwen2")
+    for k, v in kv.items():
+        w.add_string(k.replace("__", "."), v)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def test_read_gguf_license(tmp_path):
+    _write_gguf(tmp_path / "a.gguf", general__license="apache-2.0")
+    assert read_gguf_license(tmp_path / "a.gguf") == "apache-2.0"
+    _write_gguf(tmp_path / "b.gguf", general__license__name="Qwen License")
+    assert read_gguf_license(tmp_path / "b.gguf") == "Qwen License"
+    _write_gguf(tmp_path / "c.gguf")
+    assert read_gguf_license(tmp_path / "c.gguf") is None
+    (tmp_path / "d.gguf").write_bytes(b"not a gguf")
+    assert read_gguf_license(tmp_path / "d.gguf") is None
+    assert read_gguf_license(tmp_path / "yok.gguf") is None
+
+
+def test_read_license_text_bounded_and_utf8_tolerant(tmp_path):
+    assert read_license_text(tmp_path) is None
+    (tmp_path / "LICENSE.md").write_bytes(b"Lisans \xff metni " + b"x" * (300 * 1024))
+    text = read_license_text(tmp_path)
+    assert text.startswith("Lisans � metni") and len(text.encode("utf-8")) <= 256 * 1024 + 4
+
+
+def test_folder_license_falls_back_to_license_file(tmp_path, tiny_model_dir):  # README'siz snapshot
+    shutil.copytree(tiny_model_dir, tmp_path / "m")
+    (tmp_path / "m" / "README.md").unlink(missing_ok=True)
+    (tmp_path / "m" / "LICENSE").write_text("Apache License\nVersion 2.0, January 2004", encoding="utf-8")
+    lm = loader.load_model(tmp_path / "m", device="cpu", dtype=torch.float32)
+    assert lm.license == "apache-2.0" and lm.license_text.startswith("Apache License")
+
+
+def test_readme_license_wins_over_license_file(tmp_path, tiny_model_dir):
+    shutil.copytree(tiny_model_dir, tmp_path / "m")
+    (tmp_path / "m" / "README.md").write_text("---\nlicense: mit\n---\n", encoding="utf-8")
+    (tmp_path / "m" / "LICENSE").write_text("Apache License\nVersion 2.0", encoding="utf-8")
+    lm = loader.load_model(tmp_path / "m", device="cpu", dtype=torch.float32)
+    assert lm.license == "mit" and lm.license_text.startswith("Apache License")
+
+
+def test_license_file_symlink_outside_folder_is_not_read(tmp_path):
+    outside = tmp_path / "gizli.txt"
+    outside.write_text("DIŞARIDAKİ SIR", encoding="utf-8")
+    folder = tmp_path / "m"
+    folder.mkdir()
+    try:
+        (folder / "LICENSE").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink oluşturulamadı")
+    assert read_license_text(folder) is None
+
+
+def _digest(tag: str) -> str:
+    return hashlib.sha256(tag.encode()).hexdigest()
+
+
+def _ollama_tree(root, model_digest, license_digest, license_text="Llama 3.1 Community License", tag="7b"):
+    mdir = root / "manifests/registry.ollama.ai/library/llama3"
+    mdir.mkdir(parents=True, exist_ok=True)
+    layers = [
+        {"mediaType": "application/vnd.ollama.image.model", "digest": model_digest, "size": 1},
+        {"mediaType": "application/vnd.ollama.image.license", "digest": license_digest, "size": 1},
+    ]
+    (mdir / tag).write_text(json.dumps({"layers": layers}), encoding="utf-8")
+    blobs = root / "blobs"
+    blobs.mkdir(exist_ok=True)
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", license_digest):
+        (blobs / ("sha256-" + license_digest.removeprefix("sha256:"))).write_text(license_text, encoding="utf-8")
+    return blobs
+
+
+def test_ollama_license_text_from_manifest(tmp_path):
+    md, ld = "sha256:" + _digest("model"), "sha256:" + _digest("lic")
+    blobs = _ollama_tree(tmp_path, md, ld)
+    blob = blobs / ("sha256-" + md.removeprefix("sha256:"))
+    blob.write_bytes(b"GGUF")
+    assert ollama_license_text(blob) == "Llama 3.1 Community License"
+    assert ollama_license_text(blobs / ("sha256-" + _digest("baska"))) is None  # manifest'te yok
+
+
+def test_ollama_license_text_rejects_bad_digests(tmp_path):
+    # Hile: lisans katmanı digest'i bir yol gezintisi; hedef dosya blobs'un dışında gerçekten var.
+    (tmp_path / "x").write_text("SIR", encoding="utf-8")
+    md = "sha256:" + _digest("model")
+    blobs = _ollama_tree(tmp_path, md, "sha256:../x")
+    blob = blobs / ("sha256-" + md.removeprefix("sha256:"))
+    blob.write_bytes(b"GGUF")
+    assert ollama_license_text(blob) is None
+    # Büyük harf / kısa / sonunda satır sonu olan digest de geçersiz.
+    for bad in ("sha256:" + "A" * 64, "sha256:abc", "sha256:" + "a" * 63 + "\n"):
+        _ollama_tree(tmp_path, md, bad)
+        assert ollama_license_text(blob) is None
+    # Blob adı da doğrulanır (dizin gezintisi içeremez).
+    assert ollama_license_text(tmp_path / "blobs" / "sha256-..") is None
+
+
+def test_gguf_load_reads_license_from_gguf_then_ollama_layer(tmp_path, monkeypatch, lm):
+    monkeypatch.setattr(loader, "_load_gguf", lambda path, dtype: (lm.model, lm.tokenizer))
+    md, ld = "sha256:" + _digest("model"), "sha256:" + _digest("lic")
+    blobs = _ollama_tree(tmp_path, md, ld, license_text="LLAMA 3.1 COMMUNITY LICENSE AGREEMENT")
+    blob = blobs / ("sha256-" + md.removeprefix("sha256:"))
+    _write_gguf(blob)  # üst veride lisans yok -> Ollama katmanı
+    got = load_model(blob, device="cpu", dtype=torch.float32)
+    assert got.license == "llama3.1" and got.license_text.startswith("LLAMA 3.1")
+    blob.unlink()
+    _write_gguf(blob, general__license="apache-2.0")  # üst veri kazanır; metin yine katmandan
+    got = load_model(blob, device="cpu", dtype=torch.float32)
+    assert got.license == "apache-2.0" and got.license_text.startswith("LLAMA 3.1")
+    plain = tmp_path / "x.gguf"  # Ollama dışı GGUF, lisanssız
+    _write_gguf(plain)
+    got = load_model(plain, device="cpu", dtype=torch.float32)
+    assert got.license is None and got.license_text is None
+
+
+def test_inside_model_accepts_hf_blobs_but_not_outside(tmp_path):
+    # HF düzeni: repo/snapshots/rev/LICENSE -> repo/blobs/<hash> (sembolik bağ; Windows'ta oluşturulamayabilir,
+    # bu yüzden çözümlenmiş hedef taklit edilir).
+    from neshter.licenses import inside_model
+
+    class FakeLink:
+        def __init__(self, target):
+            self.target = target
+
+        def resolve(self, strict=False):
+            return self.target
+
+    repo = tmp_path / "models--a--b"
+    snap = repo / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    blob = repo / "blobs" / "abc123"
+    blob.write_text("lisans", encoding="utf-8")
+    outside = tmp_path / "baska.txt"
+    outside.write_text("sır", encoding="utf-8")
+    assert inside_model(snap, FakeLink(blob))
+    assert not inside_model(snap, FakeLink(outside))
+    plain = tmp_path / "plain"  # snapshots düzeni değilse kardeş blobs/ kabul edilmez
+    plain.mkdir()
+    (tmp_path / "blobs").mkdir()
+    (tmp_path / "blobs" / "z").write_text("x", encoding="utf-8")
+    assert not inside_model(plain, FakeLink(tmp_path / "blobs" / "z"))
+
+
+# --- Task 9 fix round 1 ---------------------------------------------------------------------------
+
+
+def test_read_license_uses_license_name_when_other(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "---\nlicense: other\nlicense_name: qwen-research\nlicense_link: https://x\n---\n", encoding="utf-8"
+    )
+    assert loader.read_license(tmp_path) == "qwen-research"
+    (tmp_path / "README.md").write_text("---\nlicense: other\n---\n", encoding="utf-8")
+    assert loader.read_license(tmp_path) == "other"
+    (tmp_path / "README.md").write_text("---\nlicense: mit\nlicense_name: x\n---\n", encoding="utf-8")
+    assert loader.read_license(tmp_path) == "mit"
+
+
+def test_read_license_is_bounded_and_tolerant(tmp_path):
+    # Dev README: ön yazı en başta olduğundan kimlik okunur; devasa/bozuk config.json kimliği bozmaz.
+    (tmp_path / "README.md").write_text("---\nlicense: mit\n---\n" + "x" * (2 * 1024 * 1024), encoding="utf-8")
+    (tmp_path / "config.json").write_text("[" * 100000, encoding="utf-8")  # RecursionError üretir
+    assert loader.read_license(tmp_path) == "mit"
+    (tmp_path / "README.md").write_bytes(b"\xff\xfe---\nlicense: mit\n---\n")  # bozuk UTF-8
+    assert loader.read_license(tmp_path) is None
+
+
+def test_read_license_does_not_follow_files_outside_folder(tmp_path, monkeypatch):
+    from neshter import licenses
+
+    (tmp_path / "README.md").write_text("---\nlicense: mit\n---\n", encoding="utf-8")
+    monkeypatch.setattr(licenses, "inside_model", lambda folder, f: False)
+    assert loader.read_license(tmp_path) is None
+
+
+# --- Task 10: yükleme ilerlemesi ve iptali ------------------------------------------------------
+
+
+def test_load_model_reports_progress_and_cancel(tiny_model_dir):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    seen = []
+    load_model(tiny_model_dir, device="cpu", dtype=torch.float32, progress=lambda p, msg: seen.append(p))
+    assert seen == sorted(seen) and seen[0] >= 0.1 and seen[-1] == pytest.approx(1.0)
+    assert len(seen) >= 4  # okuma, cihaz, SHA-256 aşamaları
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        load_model(tiny_model_dir, device="cpu", dtype=torch.float32, cancel=ev)
+
+
+def test_load_model_cancel_during_sha_drops_model(tiny_model_dir, monkeypatch):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    ev = threading.Event()
+    real = loader.sha256_path
+
+    def sha_then_cancel(path, progress=None, cancel=None):
+        ev.set()  # SHA-256 aşamasına gelindiğinde iptal
+        return real(path, progress, cancel)
+
+    monkeypatch.setattr(loader, "sha256_path", sha_then_cancel)
+    with pytest.raises(Cancelled):
+        load_model(tiny_model_dir, device="cpu", dtype=torch.float32, cancel=ev)
+
+
+def test_sha256_path_progress_and_cancel(tmp_path):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    (tmp_path / "a.bin").write_bytes(b"a" * 3_000_000)
+    (tmp_path / "b.bin").write_bytes(b"b" * 1_000_000)
+    seen = []
+    digest = sha256_path(tmp_path, progress=lambda p, m: seen.append(p))
+    assert digest == sha256_path(tmp_path)  # ilerleme özeti değiştirmez
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0) and len(seen) >= 3
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        sha256_path(tmp_path, cancel=ev)
+    with pytest.raises(Cancelled):
+        sha256_path(tmp_path / "a.bin", cancel=ev)
+
+
+# --- Final fix wave: I1 (GGUF ön doğrulama), I3 (GGUF dtype politikası), I5 (fp16 kaynak fp16 kalır) ----------
+
+
+def _hostile_ggufs(tmp_path):
+    import struct
+
+    def s(b):
+        return struct.pack("<Q", len(b)) + b
+
+    hdr = lambda nt, nkv: b"GGUF" + struct.pack("<IQQ", 3, nt, nkv)  # noqa: E731
+    cases = {
+        # T9 incelemesindeki dosya: uint8 dizisi, sayı 2^62 (GGUFReader sonsuz döngü / sınırsız bellek)
+        "array_2_62": hdr(0, 1) + s(b"a") + struct.pack("<I", 9) + struct.pack("<IQ", 0, 2**62) + b"\0" * 100,
+        "tensor_count_huge": hdr(2**40, 0) + b"\0" * 64,
+        "tensor_offset_past_eof": hdr(1, 0) + s(b"t") + struct.pack("<IQIQ", 1, 4, 0, 2**40) + b"\0" * 64,
+    }
+    out = []
+    for name, data in cases.items():
+        p = tmp_path / f"{name}.gguf"
+        p.write_bytes(data)
+        out.append(p)
+    return out
+
+
+def test_invalid_gguf_is_rejected_before_transformers_parser(tmp_path, monkeypatch):
+    calls = []
+
+    def spy(*a, **k):
+        calls.append((a, k))
+        raise AssertionError("transformers ayrıştırıcısı çağrıldı")
+
+    monkeypatch.setattr(loader.AutoModelForCausalLM, "from_pretrained", spy)
+    monkeypatch.setattr(loader.AutoTokenizer, "from_pretrained", spy)
+    for p in _hostile_ggufs(tmp_path):
+        with pytest.raises(UnsupportedArchitecture, match="GGUF dosyası bozuk ya da desteklenmeyen biçimde"):
+            load_model(p, device="cpu")
+    assert calls == []
+
+
+def _valid_gguf(path, n=16):
+    import numpy as np
+
+    w = gguf.GGUFWriter(str(path), "qwen2")
+    w.add_tensor("token_embd.weight", np.zeros((n, 8), dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    return path
+
+
+def _spy_gguf_load(monkeypatch, lm):
+    seen = []
+
+    def fake(path, dtype):
+        seen.append(dtype)
+        return lm.model, lm.tokenizer
+
+    monkeypatch.setattr(loader, "_load_gguf", fake)
+    return seen
+
+
+def test_gguf_auto_dtype_follows_policy_fp32_when_ram_allows(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.float32] and got.device_note is None
+
+
+def test_gguf_auto_dtype_bf16_with_note_when_ram_short(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.bfloat16] and loader.SLOW_BF16_NOTE in got.device_note
+
+
+def test_gguf_policy_uses_walker_param_count(tmp_path, monkeypatch, lm):
+    seen = []
+    monkeypatch.setattr(loader, "_load_gguf", lambda path, dtype: (lm.model, lm.tokenizer))
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(
+        loader, "pick_compute_dtype", lambda dev, n, ram, native: seen.append((dev, n)) or torch.float32
+    )
+    load_model(_valid_gguf(tmp_path / "m.gguf", n=32), device="cpu")
+    assert seen == [("cpu", 32 * 8)]
+
+
+def test_gguf_explicit_dtype_and_native_bf16(tmp_path, monkeypatch, lm):
+    seen = _spy_gguf_load(monkeypatch, lm)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)
+    got = load_model(_valid_gguf(tmp_path / "m.gguf"), device="cpu")
+    assert seen == [torch.bfloat16] and got.device_note is None
+    load_model(tmp_path / "m.gguf", device="cpu", dtype=torch.float32)
+    assert seen[-1] == torch.float32
+
+
+def _fp16_folder(tmp_path, tiny_model_dir):
+    m = tmp_path / "fp16"
+    shutil.copytree(tiny_model_dir, m)
+    f = m / "model.safetensors"
+    sd = {k: v.to(torch.float16) for k, v in load_file(f).items()}
+    save_file(sd, f, metadata={"format": "pt"})
+    cfg = json.loads((m / "config.json").read_text(encoding="utf-8"))
+    cfg["dtype"] = "float16"
+    (m / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    return m, sd
+
+
+def test_fp16_source_stays_fp16_when_policy_picks_bf16(tmp_path, tiny_model_dir, monkeypatch):
+    from conftest import recipe_for
+
+    from neshter.export import save_safetensors
+    from neshter.interventions import HeadAblation
+
+    src, sd = _fp16_folder(tmp_path, tiny_model_dir)
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)  # politika: bf16
+    lm16 = load_model(src, device="cpu")
+    assert next(lm16.model.parameters()).dtype == torch.float16
+    out = save_safetensors(lm16, recipe_for(lm16, [HeadAblation(0, 1)]), tmp_path / "out")
+    saved = load_file(out / "model.safetensors")
+    touched = "model.layers.0.self_attn.o_proj.weight"
+    untouched = [k for k in sd if k != touched]
+    assert untouched and all(saved[k].dtype == torch.float16 and torch.equal(saved[k], sd[k]) for k in untouched)

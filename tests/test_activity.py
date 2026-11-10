@@ -7,7 +7,7 @@ from neshter.activity import (
     tokens,
     top_mlp_neurons,
 )
-from neshter.interventions import HeadAblation, apply
+from neshter.interventions import HeadAblation, apply, head_means
 
 PROMPT = "bugün hava nasıl"
 
@@ -143,32 +143,53 @@ def test_add_special_tokens_is_forwarded(lm, monkeypatch):
 
 def test_activity_forwards_disable_kv_cache(lm, monkeypatch):
     seen = []
-    real = lm.model.forward
+    real = lm.model.model.forward
 
     def spy(*a, **kw):
         seen.append(kw.get("use_cache"))
         return real(*a, **kw)
 
-    monkeypatch.setattr(lm.model, "forward", spy)
+    monkeypatch.setattr(lm.model.model, "forward", spy)
     head_output_power(lm, PROMPT)
     top_mlp_neurons(lm, PROMPT, k=3)
     assert seen == [False, False]
+
+
+def test_activity_and_head_means_skip_lm_head(lm, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("lm_head çağrıldı")
+
+    monkeypatch.setattr(lm.model.lm_head, "forward", boom)
+    head_output_power(lm, "merhaba dünya")
+    top_mlp_neurons(lm, "merhaba dünya")
+    head_means(lm, ["merhaba dünya"])
 
 
 def test_activation_diff_does_not_add_second_bos(lm, monkeypatch):
     import neshter.concepts.hunt as hunt_mod
     from neshter.concepts.model import load_preset
 
-    seen = []
-    real = hunt_mod.head_output_power
+    calls = []
+    tok_cls = type(lm.tokenizer)
+    real_call = tok_cls.__call__
 
-    def spy(lm_, prompt, add_special_tokens=True, grams=None):
-        seen.append((add_special_tokens, grams is not None))
-        return real(lm_, prompt, add_special_tokens, grams)
+    def spy(self, *a, **kw):
+        calls.append(kw.get("add_special_tokens"))
+        return real_call(self, *a, **kw)
 
-    monkeypatch.setattr(hunt_mod, "head_output_power", spy)
+    assert lm.tokenizer.chat_template  # tiny tokenizer'ın şablonu var → özel token eklenmez
+    monkeypatch.setattr(tok_cls, "__call__", spy)
+    enc = hunt_mod._encode_batch(lm, ["merhaba dünya"])
+    assert calls == [False]
+    # Girdi, şablonlu metnin özel token eklenmeden kodlanmış hâlidir (ikinci BOS yok).
+    expected = real_call(lm.tokenizer, hunt_mod.format_prompt(lm, "merhaba dünya"), add_special_tokens=False)
+    assert enc["input_ids"][0].tolist() == expected["input_ids"]
+    bos = lm.tokenizer.bos_token_id
+    if bos is not None:
+        assert enc["input_ids"][0].tolist().count(bos) <= 1
+
+    calls.clear()
     c = load_preset("code")
     small = c.model_copy(update={"positive": c.positive[:2], "negative": c.negative[:2]})
     hunt_mod.activation_diff(lm, small)
-    assert lm.tokenizer.chat_template  # tiny tokenizer'ın şablonu var → özel token eklenmez
-    assert seen == [(False, True)] * 4
+    assert calls and set(calls) == {False}

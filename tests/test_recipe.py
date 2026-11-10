@@ -142,13 +142,27 @@ def test_nested_unknown_field_and_unknown_type_rejected():
         Recipe.model_validate(_raw(interventions=[{"type": "neuron", "layer": 0, "head": 1}]))
 
 
-@pytest.mark.parametrize("field", ["concept", "method", "neshter_version"])
-def test_long_display_strings_rejected(field):
-    Recipe.model_validate(_raw(**{field: "x" * 256}))
+@pytest.mark.parametrize("field, limit", [("concept", 64), ("method", 64), ("neshter_version", 256)])
+def test_long_display_strings_rejected(field, limit):
+    Recipe.model_validate(_raw(**{field: "x" * limit}))
     with pytest.raises(ValidationError):
-        Recipe.model_validate(_raw(**{field: "x" * 257}))
+        Recipe.model_validate(_raw(**{field: "x" * (limit + 1)}))
     with pytest.raises(ValidationError):
         Recipe.model_validate(_raw(source_model={"name": "x" * 257, "sha256": SHA}))
+
+
+@pytest.mark.parametrize("bad", ["a b", "x" * 65, "<b>", "refusal\n", ""])
+@pytest.mark.parametrize("field", ["concept", "method"])
+def test_recipe_concept_and_method_pattern(field, bad):
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(**{field: bad}))
+
+
+@pytest.mark.parametrize("good", ["refusal", "My_Concept-2.1", "x" * 64])
+def test_recipe_concept_and_method_accept_safe_text(good):
+    r = Recipe.model_validate(_raw(concept=good, method=good))
+    assert r.concept == good and r.method == good
+    assert Recipe.model_validate(_raw(concept=None)).concept is None
 
 
 def test_naive_created_at_rejected():

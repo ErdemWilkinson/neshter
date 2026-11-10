@@ -2,9 +2,13 @@
 
 Gömülen model, kancalı modelle (neshter.interventions.apply) birebir aynı davranmalıdır:
   - HeadAblation: o_proj.weight[:, h·d:(h+1)·d] = 0 (o_proj girdisinin head dilimini sıfırlamaya denk).
-  - DirectionAblation (r birim): embed.weight ← W − (W r) rᵀ; her katmanda rezidüele yazan
-    o_proj ve down_proj için W ← W − r (rᵀ W) (varsa bias da: b ← b − (b·r) r).
-    Rezidüel girdisi zaten r'ye dik olduğundan katman çıktısı da diktir → kanca ile aynı.
+  - DirectionAblation: tüm yönler tek izdüşümle silinir; Q = direction_basis(r_1..r_k) yönlerin
+    gerdiği uzayın dik birim tabanıdır ([d, k'], SVD). embed.weight ← W − (W Q) Qᵀ; her katmanda
+    rezidüele yazan o_proj ve down_proj için W ← W − Q (Qᵀ W) (varsa bias da: b ← b − Q (Qᵀ b)).
+    Yazıcı/taban listesi kancayla aynıdır (interventions.writer_bases). Rezidüel girdisi zaten
+    span(R)'ye dik olduğundan katman çıktısı da diktir → kanca ile aynı; yön sırası önemsiz.
+    gemma2: o_proj/down_proj için taban S = direction_basis([γ ⊙ r_i]) (γ = 1 + post-norm ağırlığı);
+    W ← W − S (Sᵀ W) post-norm çıktısını her r_i'ye dik yapar (rms skaler) → yine kanca ile aynı.
 Kaynak modelin dosyalarına asla yazılmaz.
 """
 
@@ -16,6 +20,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from datetime import date
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
@@ -27,12 +33,48 @@ from torch import nn
 import neshter
 from neshter.arch import decoder_layers, down_proj, embed, o_proj
 from neshter.compare import Summary
-from neshter.interventions import DirectionAblation, HeadAblation, Intervention, _validate
+from neshter.hardware import available_ram_bytes
+from neshter.interventions import (
+    DirectionAblation,
+    HeadAblation,
+    Intervention,
+    _validate,
+    writer_bases,
+)
+from neshter.licenses import clean_id, inside_model
 from neshter.loader import LoadedModel, sha256_path
+from neshter.progress import ProgressFn, check_cancel, sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, save_recipe
 
 _QUANTS = ("Q4_K_M", "Q8_0")
 _GB = 1024**3
+QUANT_BYTES_PER_PARAM = {"Q4_K_M": 0.6, "Q8_0": 1.07}
+
+
+class DiskFull(OSError):
+    """Diskte dışa aktarım için yeterli yer yok (yazmaya başlamadan önce tespit edilir)."""
+
+
+class LlamaCppMissing(FileNotFoundError):
+    """llama.cpp (dönüştürücü ya da llama-quantize) bulunamadı."""
+
+
+class SourceModified(RuntimeError):
+    """Kaynak model dosyaları kayıt sırasında değişti (SHA-256 uyuşmuyor); çıktı silindi."""
+
+
+_RESERVED_NAME = re.compile(r"(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?", re.IGNORECASE)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
+
+
+def is_bad_file_name(name: str) -> bool:
+    """Windows'ta ayrılmış ad (CON, NUL, COM1...; uzantılı da) ya da nokta/boşlukla biten ad mı?"""
+    return _RESERVED_NAME.fullmatch(name) is not None or name.endswith((".", " "))
+
+
+def is_refusal(concept: str | None) -> bool:
+    """Kavram reddetme mi? Büyük/küçük harf duyarsız (tarif deseni büyük harfe izin verir)."""
+    return (concept or "").lower() == "refusal"
 
 
 def _quantize_name() -> str:
@@ -46,27 +88,32 @@ ROW_CHUNK = 8192  # embed satır bloğu
 COL_CHUNK = 4096  # o_proj/down_proj sütun bloğu
 
 
-def _orth_rows_(w: torch.Tensor, r: torch.Tensor, chunk: int = ROW_CHUNK) -> None:
-    """embed, yerinde: W[vocab, d] ← W − (W r) rᵀ. float32'de, satır bloklarıyla (tam float32 kopya yok)."""
+def _orth_rows_(w: torch.Tensor, basis: torch.Tensor, chunk: int = ROW_CHUNK) -> None:
+    """embed, yerinde: W[vocab, d] ← W − (W Q) Qᵀ (Q = basis [d, k']).
+
+    float32'de, satır bloklarıyla (tam float32 kopya yok).
+    """
+    q = basis.to(device=w.device, dtype=torch.float32)
     for i in range(0, w.shape[0], chunk):
         blk = w[i : i + chunk]
         wf = blk.to(torch.float32)
-        blk.copy_(wf - torch.outer(wf @ r, r))
+        blk.copy_(wf - (wf @ q) @ q.T)
 
 
-def _orth_out_(w: torch.Tensor, r: torch.Tensor, chunk: int = COL_CHUNK) -> None:
-    """Rezidüele yazan katman, yerinde: W[d, in] ← W − r (rᵀ W); bias[d] ← b − (b·r) r.
+def _orth_out_(w: torch.Tensor, basis: torch.Tensor, chunk: int = COL_CHUNK) -> None:
+    """Rezidüele yazan katman, yerinde: W[d, in] ← W − Q (Qᵀ W); bias[d] ← b − Q (Qᵀ b).
 
-    Sütunlar bağımsızdır; float32'de sütun bloklarıyla işlenir.
+    Q = basis [d, k']. Sütunlar bağımsızdır; float32'de sütun bloklarıyla işlenir.
     """
+    q = basis.to(device=w.device, dtype=torch.float32)
     if w.ndim == 1:
         wf = w.to(torch.float32)
-        w.copy_(wf - (wf @ r) * r)
+        w.copy_(wf - q @ (q.T @ wf))
         return
     for j in range(0, w.shape[1], chunk):
         blk = w[:, j : j + chunk]
         wf = blk.to(torch.float32)
-        blk.copy_(wf - torch.outer(r, r @ wf))
+        blk.copy_(wf - q @ (q.T @ wf))
 
 
 def _snapshot(p: torch.Tensor) -> torch.Tensor:
@@ -81,17 +128,20 @@ def _tied_lm_head(model) -> nn.Module | None:
     return None
 
 
-def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[], None]:
-    """Müdahaleleri ağırlıklara yerinde işler; orijinal tensörleri birebir geri yükleyen undo döner."""
+def bake(
+    lm: LoadedModel, interventions: Sequence[Intervention], round_to: torch.dtype | None = None
+) -> Callable[[], None]:
+    """Müdahaleleri ağırlıklara yerinde işler; orijinal tensörleri birebir geri yükleyen undo döner.
+
+    round_to verilirse dokunulan her parametre p, işlendikten sonra p.to(round_to).to(p.dtype) olur;
+    böylece bellekteki model kaydedilen (ör. bf16) dosyayla aynı değerleri taşır.
+    Bağlı gömmede lm_head'e verilen ayrı kopya da yuvarlanır (kayıtta o da round_to'ya çevrilir).
+    Sınırlama: yalnızca DOKUNULAN parametreler (ve bu lm_head kopyası) yuvarlanır. Bütün modelin kayıtlı dosyayla eşitliği,
+    ancak dokunulmayan kaynak ağırlıklar zaten round_to ile tam gösterilebiliyorsa (bf16 kaynak) geçerlidir.
+    """
     _validate(lm, interventions, None, "zero", None)
     model, arch = lm.model, lm.arch
     directions = [iv.direction for iv in interventions if isinstance(iv, DirectionAblation)]
-    if directions and arch.family == "gemma2":
-        raise NotImplementedError(
-            "gemma2 için yön silme ağırlıklara gömülemiyor: o_proj/down_proj ile rezidüel toplama "
-            "arasındaki ek normlar (post-attention/post-feedforward) yüzünden ağırlık dikleştirmesi "
-            "kanca ile aynı sonucu vermez. Head susturma desteklenir."
-        )
 
     originals: dict[int, tuple[nn.Parameter, torch.Tensor]] = {}
 
@@ -127,21 +177,84 @@ def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[],
                     d = arch.head_dim
                     w[:, iv.head * d : (iv.head + 1) * d] = 0
 
-            for direction in directions:  # sıralı, liste düzeninde (kanca ile aynı)
-                e = embed(model).weight
-                r = direction.to(device=e.device, dtype=torch.float32)
-                touch(e)
-                _orth_rows_(e, r)
-                for layer in range(len(decoder_layers(model))):
-                    for mod in (o_proj(model, layer), down_proj(model, layer)):
-                        for p in (mod.weight, mod.bias):
-                            if p is not None:
-                                touch(p)
-                                _orth_out_(p, r)
+            # Kancayla aynı yazıcı/taban listesi; tüm yönler tek izdüşümle (span) silinir.
+            emb = embed(model)
+            for module, basis in writer_bases(model, arch.family, directions) if directions else []:
+                if basis.shape[1] == 0:
+                    continue
+                if module is emb:
+                    touch(module.weight)
+                    _orth_rows_(module.weight, basis)
+                    continue
+                for p in (module.weight, getattr(module, "bias", None)):
+                    if p is not None:
+                        touch(p)
+                        _orth_out_(p, basis)
+
+            if round_to is not None:
+                for p, _ in originals.values():
+                    p.copy_(p.to(round_to).to(p.dtype))
+                if tied_head is not None:  # ayrılan lm_head kopyası da kayıtta round_to'ya çevrilir
+                    h = tied_head.weight
+                    h.copy_(h.to(round_to).to(h.dtype))
     except BaseException:
         undo()
         raise
     return undo
+
+
+def bake_peak_bytes(
+    lm: LoadedModel, interventions: Sequence[Intervention], cast_dtype: torch.dtype | None = None
+) -> int:
+    """`bake`ın (ve verilirse kayıt dtype'ına çevirmenin) ek RAM tepesi, bayt.
+
+    Dokunulan her parametrenin CPU anlık görüntüsü (head: o_proj; yön: gömme + her katmanın o_proj/down_proj
+    ağırlık ve bias'ı), yönde bağlı gömmenin lm_head klonu (CPU'daysa) ve `cast_dtype` verilirse kayan noktalı
+    her CPU parametresinin o dtype'taki kopyası (`_cast_state_dict`).
+    """
+    model = lm.model
+    touched: dict[int, torch.Tensor] = {}
+    has_dir = False
+    for iv in interventions:
+        if isinstance(iv, HeadAblation):
+            w = o_proj(model, iv.layer).weight
+            touched[id(w)] = w
+        elif isinstance(iv, DirectionAblation):
+            has_dir = True
+    if has_dir:
+        e = embed(model).weight
+        touched[id(e)] = e
+        for i in range(len(decoder_layers(model))):
+            for mod in (o_proj(model, i), down_proj(model, i)):
+                for p in (mod.weight, getattr(mod, "bias", None)):
+                    if p is not None:
+                        touched[id(p)] = p
+    total = sum(p.numel() * p.element_size() for p in touched.values())
+    tied = has_dir and _tied_lm_head(model) is not None
+    if tied and embed(model).weight.device.type == "cpu":
+        total += embed(model).weight.numel() * embed(model).weight.element_size()
+    if cast_dtype is not None:
+        unit = torch.empty((), dtype=cast_dtype).element_size()
+        params = list(model.parameters()) + ([embed(model).weight] if tied else [])
+        total += sum(
+            p.numel() * unit
+            for p in params
+            if p.device.type == "cpu" and p.is_floating_point() and p.dtype != cast_dtype
+        )
+    return total
+
+
+def ensure_bake_ram(
+    lm: LoadedModel, interventions: Sequence[Intervention], cast_dtype: torch.dtype | None = None, what: str = "Kayıt"
+) -> None:
+    """Tepe (bake_peak_bytes) boş RAM'in %90'ını aşarsa ağırlıklara dokunmadan MemoryError (error_code `oom`)."""
+    need = bake_peak_bytes(lm, interventions, cast_dtype)
+    free = available_ram_bytes()
+    if need > 0.9 * free:
+        raise MemoryError(
+            f"{what} için RAM yetmiyor (gereken ~{need / _GB:.1f} GB, boş {free / _GB:.1f} GB). "
+            "Modeli dtype=bfloat16 ile yükleyip yeniden deneyin."
+        )
 
 
 # --------------------------------------------------------------------------- model card
@@ -153,21 +266,87 @@ def _describe(op: HeadOp | DirectionOp) -> str:
     return f"direction ({op.d_model})"
 
 
+GEMMA_NOTICE = "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms"
+_GEMMA_POLICY = "ai.google.dev/gemma/prohibited_use_policy"
+_SAFE_TEXT = re.compile(r"[^\w.:/+\- ]")
+
+
+def _md_safe(text: str, limit: int) -> str:
+    """Modelden gelen güvenilmez görüntü metni (lisans kimliği, model adı): denetim karakterleri atılır,
+    markdown/HTML işaretleri '?' olur, uzunluk sınırlanır."""
+    return _SAFE_TEXT.sub("?", clean_id(text))[:limit].strip()
+
+
+def _display_license(lm: LoadedModel) -> str | None:
+    """Karta yazılacak lisans kimliği."""
+    return _md_safe(lm.license, 64) or None if lm.license else None
+
+
+def is_llama3(lm: LoadedModel) -> bool:
+    if lm.arch.family != "llama":
+        return False
+    return (
+        (lm.license or "").lower().startswith("llama3")
+        or re.search(r"llama[-_ ]?3(?!\d)", lm.name, re.IGNORECASE) is not None
+        or getattr(lm.model.config, "vocab_size", None) == 128256
+    )
+
+
+def license_notices(lm: LoadedModel) -> list[str]:
+    """Aileye göre çift dilli lisans/kullanım notları (model kartı satırları)."""
+    lid = _display_license(lm)
+    out: list[str] = []
+    if is_llama3(lm):
+        out.append(
+            "**Lisans / License:** Built with Llama. Llama 3.x topluluk lisansı gereği türetilmiş "
+            "modelin adı \"Llama\" ile başlamalıdır. Under the Llama 3.x Community License, the "
+            "derivative model name must start with \"Llama\"."
+        )
+    if lm.arch.family == "gemma2":
+        out.append(
+            f"**Lisans / License:** {GEMMA_NOTICE}. Kullanım kısıtları / Prohibited Use Policy: {_GEMMA_POLICY}"
+        )
+    qwen = lm.arch.family == "qwen2"
+    if qwen and lid is not None and lid.lower() != "apache-2.0":
+        out.append(
+            f"**Uyarı / Warning:** Bu Qwen modelinin lisansı Apache-2.0 değil ({lid}); "
+            "dağıtmadan önce lisans koşullarını kontrol edin. "
+            f"This Qwen model's license is not Apache-2.0 ({lid}); "
+            "check the license terms before redistributing."
+        )
+    elif qwen and lid is None:  # tek, birleşik not (Qwen uyarısı + bulunamadı notu iki kez yazılmaz)
+        out.append(
+            "**Uyarı / Warning:** Kaynak modelin lisansı bulunamadı; dağıtmadan önce kontrol edin. "
+            "Qwen modellerinin bazı boyutları Apache-2.0 değildir (lisans bilinmiyor). "
+            "The source model's license was not found; check it before redistributing. "
+            "Some Qwen sizes are not Apache-2.0 (license unknown)."
+        )
+    elif lid is None:
+        out.append(
+            "**Uyarı / Warning:** Kaynak modelin lisansı bulunamadı; dağıtmadan önce kontrol edin. "
+            "The source model's license was not found; check it before redistributing."
+        )
+    return out
+
+
 def model_card(
     lm: LoadedModel, recipe: Recipe, summary: Summary | None, safety_ablated: bool
 ) -> str:
     tags = ["neshter"] + (["safety-ablated"] if safety_ablated else [])
-    front = yaml.safe_dump(
-        {"license": lm.license or "other", "base_model": lm.name, "tags": tags},
-        allow_unicode=True,
-        sort_keys=False,
-    )
+    lid = _display_license(lm)
+    meta: dict = {"license": lid or "other"}
+    if lid is None:
+        meta["license_name"] = "unknown"
+    meta |= {"base_model": lm.name, "tags": tags}
+    front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False)
+    n_heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    n_dirs = sum(isinstance(op, DirectionOp) for op in recipe.interventions)
     lines = [
         "---",
         front.rstrip("\n"),
         "---",
         "",
-        f"# {lm.name} (neshter)",
+        f"# {_md_safe(lm.name, 120) or 'model'} (neshter)",
         "",
         "Bu model, Neşter ile seçili dikkat head'leri susturularak ve/veya rezidüel akımdan "
         "yönler silinerek kaynak modelden türetilmiştir. Değişiklikler ağırlıklara gömülmüştür.",
@@ -175,6 +354,9 @@ def model_card(
         "This model was derived from the base model with Neşter (neshter) by silencing selected "
         "attention heads and/or removing directions from the residual stream. The changes are baked "
         "into the weights.",
+        "",
+        f"Modified with Neşter {neshter.__version__} on {date.today().isoformat()}: "
+        f"{n_heads} heads silenced, {n_dirs} directions removed.",
         "",
     ]
     if safety_ablated:
@@ -184,13 +366,8 @@ def model_card(
             "safety guardrails may be reduced.",
             "",
         ]
-    if lm.arch.family == "llama":
-        lines += [
-            "**Lisans / License:** Llama lisansı, türetilmiş model adlarının \"Llama\" ile "
-            "başlamasını gerektirir. The Llama license requires derivative model names to start "
-            "with \"Llama\".",
-            "",
-        ]
+    for notice in license_notices(lm):
+        lines += [notice, ""]
     lines += ["## Tarif / Recipe", ""]
     lines += [f"- concept: {recipe.concept or '-'}"]
     lines += [f"- method: {recipe.method}"]
@@ -217,11 +394,35 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 def _estimate_bytes(lm: LoadedModel, directions: bool) -> int:
     model = lm.model
-    total = sum(p.numel() * p.element_size() for p in model.parameters())
+    unit = torch.empty((), dtype=save_dtype(lm)).element_size()  # diske yazılan dtype, bellektekiyle değil
+    total = sum(p.numel() * unit for p in model.parameters())
     if directions and _tied_lm_head(model) is not None:
-        w = embed(model).weight
-        total += w.numel() * w.element_size()  # bağ çözülünce lm_head ayrıca yazılır
+        total += embed(model).weight.numel() * unit  # bağ çözülünce lm_head ayrıca yazılır
     return total
+
+
+def estimate_export_bytes(
+    lm: LoadedModel, fmt: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"], has_directions: bool
+) -> int:
+    """Dışa aktarımın disk tepe kullanımı. GGUF: _hf klasörü, f16 dosyası ve nicelenmiş dosya birlikte durur."""
+    st = _estimate_bytes(lm, has_directions)
+    if fmt == "safetensors":
+        return st
+    quant = fmt.removeprefix("gguf_").upper()
+    if quant not in QUANT_BYTES_PER_PARAM:
+        raise ValueError(f"Geçersiz dışa aktarım biçimi {fmt!r}.")
+    n = sum(p.numel() for p in lm.model.parameters())
+    return int(st + 2 * n + QUANT_BYTES_PER_PARAM[quant] * n)
+
+
+def _check_disk(parent: Path, estimate: int) -> None:
+    parent.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(parent).free
+    if free < estimate * 1.1:
+        raise DiskFull(
+            f"Diskte yeterli yer yok: gereken yaklaşık {estimate * 1.1 / _GB:.2f} GB, "
+            f"boş {free / _GB:.2f} GB."
+        )
 
 
 _LICENSE_GLOBS = ("LICENSE*", "USE_POLICY*", "NOTICE*")
@@ -233,7 +434,8 @@ def _copy_license_files(source: Path, dest: Path) -> None:
         return
     for pattern in _LICENSE_GLOBS:
         for f in sorted(source.glob(pattern)):
-            if f.is_file() and not (dest / f.name).exists():
+            # Sembolik bağ modelin klasörü (ya da HF blobs/) dışına çözülüyorsa kopyalanmaz.
+            if inside_model(source, f) and not (dest / f.name).exists():
                 shutil.copy2(f, dest / f.name)
 
 
@@ -286,6 +488,8 @@ def save_safetensors(
     summary: Summary | None = None,
     safety_ablated: bool = False,
     dtype: torch.dtype | None = None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
     """Müdahaleleri gömüp safetensors klasörü olarak atomik kaydeder; modeli eski haline döndürür.
 
@@ -309,23 +513,23 @@ def save_safetensors(
 
     interventions = to_interventions(recipe)
     has_dir = any(isinstance(iv, DirectionAblation) for iv in interventions)
-    estimate = _estimate_bytes(lm, has_dir)
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(out_dir.parent).free
-    if free < estimate * 1.1:
-        raise OSError(
-            f"Diskte yeterli yer yok: gereken yaklaşık {estimate * 1.1 / _GB:.2f} GB, "
-            f"boş {free / _GB:.2f} GB."
-        )
+    _check_disk(out_dir.parent, _estimate_bytes(lm, has_dir))
 
-    safety = safety_ablated or recipe.concept == "refusal"  # tek doğruluk kaynağı
+    safety = safety_ablated or is_refusal(recipe.concept)  # tek doğruluk kaynağı
     target = save_dtype(lm) if dtype is None else dtype
+    ensure_bake_ram(lm, interventions, cast_dtype=target)  # I4: uzun işlerin son adımında takas/OOM olmasın
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.05, "Ağırlıklara gömülüyor")
     undo = bake(lm, interventions)
     try:
         try:
+            if progress is not None:
+                progress(0.3, "Ağırlıklar yazılıyor")
             lm.model.save_pretrained(
                 tmp, safe_serialization=True, state_dict=_cast_state_dict(lm.model, target)
             )
+            check_cancel(cancel)  # Cancelled: aşağıdaki except tmp'yi siler, finally ağırlıkları geri alır
             lm.tokenizer.save_pretrained(tmp)
             cfg_path = tmp / "config.json"
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -342,8 +546,17 @@ def save_safetensors(
                 model_card(lm, recipe, summary, safety_ablated=safety), encoding="utf-8"
             )
             save_recipe(recipe, tmp / "recipe.nester.json")
-            _copy_license_files(Path(lm.source_path), tmp)
+            src = Path(lm.source_path)
+            _copy_license_files(src.parent if src.suffix.lower() == ".pt" else src, tmp)  # .pt: yanındaki dosyalar
+            if lm.license_text and not any(tmp.glob("LICENSE*")):
+                (tmp / "LICENSE").write_text(lm.license_text, encoding="utf-8")
+            if lm.arch.family == "gemma2" and not any(tmp.glob("NOTICE*")):
+                (tmp / "NOTICE").write_text(GEMMA_NOTICE + "\n", encoding="utf-8")
+            if progress is not None:
+                progress(0.95, "Kayıt tamamlanıyor")
             os.replace(tmp, out_dir)
+            if progress is not None:
+                progress(1.0, "Kaydedildi")
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
@@ -352,8 +565,31 @@ def save_safetensors(
     return out_dir
 
 
-def verify_source_untouched(lm: LoadedModel) -> bool:
-    return sha256_path(lm.source_path) == lm.source_sha256
+def verify_source_untouched(
+    lm: LoadedModel, progress: ProgressFn | None = None, cancel: threading.Event | None = None
+) -> bool:
+    """Kaynağın SHA-256'sı yüklemedekiyle aynı mı? İlerleme bildirir; `cancel` ile kesilir (Cancelled)."""
+    return sha256_path(lm.source_path, progress, cancel) == lm.source_sha256
+
+
+def ensure_source_untouched(
+    lm: LoadedModel,
+    out_dir: Path,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> None:
+    """Kayıttan sonra kaynağı yeniden doğrular. Uyuşmazlıkta ya da iptalde bu işin yazdığı `out_dir` silinir;
+    uyuşmazlık SourceModified (error_code `source_modified`), iptal Cancelled olarak yükselir."""
+    try:
+        same = verify_source_untouched(lm, progress, cancel)
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    if not same:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise SourceModified(
+            "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor); çıktı silindi."
+        )
 
 
 # --------------------------------------------------------------------------- gguf / ollama
@@ -370,31 +606,45 @@ def find_llama_cpp() -> Path | None:
 
 
 def to_gguf(
-    hf_dir: Path, out_file: Path, quant: Literal["Q4_K_M", "Q8_0"], llama_cpp: Path
+    hf_dir: Path,
+    out_file: Path,
+    quant: Literal["Q4_K_M", "Q8_0"],
+    llama_cpp: Path,
+    metadata: dict | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
+    """safetensors klasörü → f16 GGUF → nicelenmiş GGUF. `metadata` verilirse geçici bir JSON'a yazılır ve
+    dönüştürücüye `--metadata <dosya>` ile geçer (general.license, general.tags, ...); dosya her durumda silinir.
+    İptal yalnızca dönüştürme ile quantize arasında denetlenir (alt süreç ortasında kesilmez)."""
     if quant not in _QUANTS:
         raise ValueError(f"Geçersiz niceleme '{quant}'; {', '.join(_QUANTS)} olmalı.")
     llama_cpp, out_file = Path(llama_cpp), Path(out_file)
     converter = llama_cpp / "convert_hf_to_gguf.py"
     if not converter.is_file():
-        raise FileNotFoundError(
+        raise LlamaCppMissing(
             f"'{llama_cpp}' klasöründe convert_hf_to_gguf.py bulunamadı. GGUF'a dönüştürmek için "
             "llama.cpp kaynak deposundaki convert_hf_to_gguf.py (ve gguf-py) bu klasörde olmalı."
         )
     quantize = llama_cpp / _quantize_name()
     if not quantize.is_file():
-        raise FileNotFoundError(f"'{llama_cpp}' klasöründe {_quantize_name()} bulunamadı.")
+        raise LlamaCppMissing(f"'{llama_cpp}' klasöründe {_quantize_name()} bulunamadı.")
     if not (Path(hf_dir) / "config.json").is_file():
         raise FileNotFoundError(f"'{hf_dir}' içinde config.json yok; dönüştürülecek safetensors klasörü eksik.")
     if out_file.exists():
         raise FileExistsError(f"'{out_file}' zaten var; üzerine yazılmaz.")
     f16 = out_file.with_name(out_file.name + ".f16.tmp")
     qtmp = out_file.with_name(out_file.name + ".tmp")
+    meta_file = out_file.with_name(out_file.name + ".metadata.json.tmp")
     try:
-        subprocess.run(
-            [sys.executable, str(converter), str(hf_dir), "--outtype", "f16", "--outfile", str(f16)],
-            check=True,
-        )
+        cmd = [sys.executable, str(converter), str(hf_dir), "--outtype", "f16", "--outfile", str(f16)]
+        try:
+            if metadata is not None:
+                meta_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+                cmd += ["--metadata", str(meta_file)]
+            subprocess.run(cmd, check=True)
+        finally:
+            meta_file.unlink(missing_ok=True)
+        check_cancel(cancel)
         try:
             subprocess.run([str(quantize), str(f16), str(qtmp), quant], check=True)
             os.replace(qtmp, out_file)
@@ -406,10 +656,132 @@ def to_gguf(
     return out_file
 
 
+def gguf_metadata(lm: LoadedModel, recipe: Recipe, safety: bool) -> dict:
+    """Dönüştürücünün `--metadata` dosyası: lisans, etiketler, tek satırlık İngilizce açıklama."""
+    n_heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    n_dirs = sum(isinstance(op, DirectionOp) for op in recipe.interventions)
+    return {
+        "general.license": _display_license(lm) or "other",
+        "general.tags": ["neshter"] + (["safety-ablated", "abliterated"] if safety else []),
+        "general.description": (
+            f"Derived from {_md_safe(lm.name, 120) or 'a base model'} with Neshter {neshter.__version__}: "
+            f"{n_heads} heads silenced, {n_dirs} directions removed."
+        ),
+    }
+
+
+_KEEP_GLOBS = ("README.md", "recipe.nester.json", *_LICENSE_GLOBS)
+_GGUF_NAME = re.compile(r'[^/\\:*?"<>|\x00-\x1f]+')
+
+
+def export_gguf(
+    lm: LoadedModel,
+    recipe: Recipe,
+    out_dir: Path,
+    name: str,
+    quant: str,
+    llama_cpp: Path,
+    safety: bool,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> Path:
+    """safetensors ara klasörü → GGUF. Son düzen: out_dir/{name}.gguf + README.md + recipe.nester.json +
+    lisans dosyaları (ara `_hf` klasörü silinir). out_dir yeni olmalı; hata ya da iptalde tamamen silinir."""
+    out_dir = Path(out_dir)
+    if quant not in _QUANTS:
+        raise ValueError(f"Geçersiz niceleme '{quant}'; {', '.join(_QUANTS)} olmalı.")
+    if name in ("", ".", "..") or not _GGUF_NAME.fullmatch(name) or is_bad_file_name(name):
+        raise ValueError(f"Geçersiz dosya adı {name!r} (Windows'ta ayrılmış ya da nokta/boşlukla biten ad olamaz).")
+    source = Path(lm.source_path)
+    if _is_within(out_dir, source) or (source.is_file() and out_dir.resolve() == source.resolve()):
+        raise ValueError("Kayıt klasörü kaynak modelin içinde olamaz; kaynak dosyalara asla yazılmaz.")
+    if out_dir.exists():
+        raise FileExistsError(f"'{out_dir}' zaten var; üzerine yazılmaz. Başka bir klasör adı seçin.")
+    check_cancel(cancel)
+    has_dir = any(isinstance(op, DirectionOp) for op in recipe.interventions)
+    _check_disk(out_dir.parent, estimate_export_bytes(lm, f"gguf_{quant.lower()}", has_dir))
+    safety = safety or is_refusal(recipe.concept)
+
+    out_dir.mkdir()  # bundan sonra out_dir bu işe aittir
+    try:
+        hf_dir = out_dir / "_hf"
+        save_safetensors(
+            lm, recipe, hf_dir, safety_ablated=safety, progress=sub_progress(progress, 0.02, 0.6), cancel=cancel
+        )
+        if progress is not None:
+            progress(0.6, "GGUF'a dönüştürülüyor ve nicelendiriliyor")
+        try:
+            gguf = to_gguf(
+                hf_dir, out_dir / f"{name}.gguf", quant, llama_cpp,
+                metadata=gguf_metadata(lm, recipe, safety), cancel=cancel,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"GGUF dönüştürme başarısız oldu (llama.cpp {e.returncode} koduyla çıktı).") from e
+        check_cancel(cancel)
+        if progress is not None:
+            progress(0.95, "Kart, tarif ve lisans GGUF'un yanına taşınıyor")
+        for pattern in _KEEP_GLOBS:
+            for f in sorted(hf_dir.glob(pattern)):
+                if f.is_file() and not (out_dir / f.name).exists():
+                    os.replace(f, out_dir / f.name)
+        shutil.rmtree(hf_dir)
+        if progress is not None:
+            progress(1.0, "GGUF hazır")
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    return gguf
+
+
+def modelfile_license(lm: LoadedModel, out_dir: Path) -> str | None:
+    """Ollama Modelfile'a yazılacak lisans metni: out_dir/LICENSE, yoksa modelin lisans metni, yoksa bildirimler."""
+    path = Path(out_dir) / "LICENSE"
+    if path.is_file():
+        with open(path, "rb") as f:
+            text = f.read(1024 * 1024).decode("utf-8", errors="replace")
+        if text.strip():
+            return text
+    if lm.license_text and lm.license_text.strip():
+        return lm.license_text
+    return "\n\n".join(license_notices(lm)) or None
+
+
 OLLAMA_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
-def ollama_create(name: str, gguf: Path) -> None:
+_TR_ASCII = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+
+
+def suggest_export_name(lm: LoadedModel, safety: bool) -> str:
+    """Varsayılan dışa aktarım adı: `<ad>-neshter[-abliterated]`; her zaman OLLAMA_NAME'e (en çok 64) uyar.
+
+    Llama 3.x lisansı türev modelin adının "Llama" ile başlamasını ister; ad zaten öyle değilse önek eklenir.
+    `base` önek dahil en çok 40 karakterdir; en uzun sonuç 40 + len("-neshter-abliterated") = 60'tır.
+    """
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", lm.name.translate(_TR_ASCII)).strip("-._")
+    if safety:  # ad zaten "-abliterated" ile bitiyorsa sonek üst üste binmesin
+        clean = re.sub(r"(?:-abliterated)+$", "", clean, flags=re.IGNORECASE).strip("-._")
+    prefix = "Llama-" if is_llama3(lm) and not clean.lower().startswith("llama") else ""
+    base = prefix + (clean[: 40 - len(prefix)].strip("-._") or "model")
+    return f"{base}-neshter" + ("-abliterated" if safety else "")
+
+
+def write_modelfile(gguf: Path, license_text: str | None) -> Path:
+    """gguf'un yanına Modelfile yazar: `FROM <mutlak yol>` ve lisans metni varsa üç tırnaklı LICENSE bloğu."""
+    gguf = Path(gguf)
+    target = str(gguf.resolve())
+    if _CONTROL_CHARS.search(target):  # satır sonu FROM satırından sonra yeni bir yönerge açabilirdi
+        raise ValueError("GGUF yolunda denetim karakteri var; Modelfile yazılmadı.")
+    content = f"FROM {target}\n"
+    if license_text and license_text.strip():
+        safe = license_text.replace('"""', "'''")  # üç tırnak Modelfile'ı erken kapatır
+        content += f'LICENSE """\n{safe}\n"""\n'
+    path = gguf.parent / "Modelfile"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def ollama_create(name: str, gguf: Path, license_text: str | None = None) -> None:
     if not OLLAMA_NAME.fullmatch(name):
         raise ValueError(
             f"Geçersiz Ollama model adı {name!r}: harf/rakamla başlamalı; yalnızca harf, rakam, '.', '_', '-' (en çok 64)."
@@ -419,8 +791,6 @@ def ollama_create(name: str, gguf: Path) -> None:
         raise FileNotFoundError(
             "Ollama bulunamadı (PATH'te 'ollama' yok). Ollama'yı kurun ya da bu adımı atlayın."
         )
-    gguf = Path(gguf)
-    modelfile = gguf.parent / "Modelfile"
-    modelfile.write_text(f"FROM {gguf.resolve()}\n", encoding="utf-8")
+    modelfile = write_modelfile(Path(gguf), license_text)
     # Tam yol: Windows'ta CreateProcess çıplak adı önce çalışma klasöründe arar.
     subprocess.run([exe, "create", name, "-f", str(modelfile)], check=True)
