@@ -499,24 +499,32 @@ def test_measure_top_heads_matches_manual_zeroing(lm):
     c = load_preset("code")
     r = hunt_mod.hunt(lm, c, "attribution")
     assert len(r.measured) == min(20, lm.arch.n_layers * lm.arch.n_heads)
-    drops = [m.signal_drop for m in r.measured]
+    drops = [m.signal_drop for m in r.measured if m.signal_drop is not None]
     assert drops == sorted(drops, reverse=True)
+    n_measured = len(drops)
+    assert all(m.signal_drop is None for m in r.measured[n_measured:])  # ölçülmeyenler sonda
     assert any(m.layer < r.ref_layer for m in r.measured)  # tiny modelde ref=1: katman 0 etkili
     est = {(l, h): s for l, h, s in r.heads}
     neutral = load_neutral()[:8]
     for m in r.measured:
-        expected = _manual_signal_drop(lm, c, r.ref_layer, m.layer, m.head) if m.layer < r.ref_layer else 0.0
-        assert m.signal_drop == pytest.approx(expected, abs=1e-5)
+        if m.layer < r.ref_layer:
+            assert m.signal_drop == pytest.approx(_manual_signal_drop(lm, c, r.ref_layer, m.layer, m.head), abs=1e-5)
+        else:
+            assert m.signal_drop is None
         assert m.estimated == est[(m.layer, m.head)]
         kl = kl_effect(lm, neutral, [HeadAblation(m.layer, m.head)])
         assert m.neutral_kl == pytest.approx(sum(kl) / len(kl), abs=1e-5)
-    assert any(m.signal_drop != 0.0 for m in r.measured)  # katman 0 head'i gerçekten bir şey değiştirir
+    assert any(m.signal_drop not in (None, 0.0) for m in r.measured)  # katman 0 head'i gerçekten bir şey değiştirir
 
 
-def test_measured_heads_at_or_after_ref_layer_have_zero_signal_drop(lm):
+def test_measured_heads_at_or_after_ref_layer_have_no_signal_drop(lm):
+    # M5: ref katmanı ve sonrası m'yi yapısal olarak etkileyemez; 0.0 ("ölçüldü: etkisiz") değil None.
     r = hunt_mod.hunt(lm, load_preset("code"), "attribution")
     late = [m for m in r.measured if m.layer >= r.ref_layer]
-    assert late and all(m.signal_drop == 0.0 for m in late)
+    assert late and all(m.signal_drop is None for m in late)
+    assert all(m.neutral_kl >= 0 for m in late)  # nötr KL yine ölçülür
+    early = [m for m in r.measured if m.layer < r.ref_layer]
+    assert r.measured == early + late  # None en sonda
 
 
 def test_measure_applies_to_every_method(lm):
@@ -556,3 +564,36 @@ def test_encode_batch_pads_left_even_if_tokenizer_default_is_right(lm):
     finally:
         tok.padding_side = old
     assert int(enc["attention_mask"][:, -1].min()) == 1  # son sütun gerçek token
+
+
+
+# --- Final fix wave M6: activation_diff artık akım geçişlerinin z'sini yeniden kullanır ---------------------
+
+
+@pytest.mark.parametrize("method", ["activation_diff", "direction"])
+def test_hunt_activation_diff_reuses_residual_pass_z(lm, monkeypatch, method):
+    c = load_preset("code")
+    train, _ = split(c, seed=0)
+    expected = activation_diff(lm, train)  # bağımsız: ayrı ileri geçişlerle
+    monkeypatch.setattr(hunt_mod, "activation_diff", lambda *a, **k: pytest.fail("ek ileri geçiş yapıldı"))
+    r = hunt_mod.hunt(lm, c, method)
+    got = {(layer, head): s for layer, head, s in r.heads}
+    for layer in range(lm.arch.n_layers):
+        for head in range(lm.arch.n_heads):
+            assert got[(layer, head)] == pytest.approx(float(expected[layer, head]), abs=1e-5)
+
+
+def test_hunt_activation_diff_runs_fewer_forward_passes(lm):
+    c = load_preset("code")
+    train, val = split(c, seed=0)
+    calls = []
+    h = lm.model.model.register_forward_pre_hook(lambda mod, args: calls.append(1))
+    try:
+        hunt_mod.hunt(lm, c, "activation_diff")
+    finally:
+        h.remove()
+    batches = lambda n: -(-n // hunt_mod.HUNT_BATCH)  # noqa: E731
+    resid = sum(batches(len(x)) for x in (train.positive, train.negative, val.positive, val.negative))
+    # artık akım geçişleri + ölçüm (head başına val_pos geçişleri); eskiden train pos/neg bir kez daha geçerdi
+    measure_max = hunt_mod.MEASURE_TOP_K * batches(len(val.positive))
+    assert len(calls) <= resid + measure_max

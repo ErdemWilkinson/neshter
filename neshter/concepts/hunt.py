@@ -21,7 +21,7 @@ from typing import Literal
 
 import torch
 
-from neshter.activity import last_token_head_power
+from neshter.activity import head_grams, last_token_head_power
 from neshter.arch import decoder_layers, embed, o_proj
 from neshter.concepts.model import Concept, split
 from neshter.interventions import HeadAblation, apply
@@ -41,7 +41,9 @@ class HeadMeasure:
     layer: int
     head: int
     estimated: float  # av yönteminin tahmini (heads'teki skor)
-    signal_drop: float  # (m_pos - m_pos_h) / (m_pos - m_neg); 1.0: pozitifler negatif ortalamaya çöktü
+    # (m_pos - m_pos_h) / (m_pos - m_neg); 1.0: pozitifler negatif ortalamaya çöktü. None: ölçülmedi —
+    # head ref_layer'da ya da sonrasında, m'yi yapısal olarak etkileyemez ("etkisiz" ölçümü DEĞİL).
+    signal_drop: float | None
     neutral_kl: float  # head sıfırlanınca nötr istekler üzerinde ortalama KL(orijinal || müdahaleli)
 
 
@@ -345,13 +347,40 @@ def head_attribution(lm: LoadedModel, c: Concept, ref_layer: int, normalize: boo
     return _normalize_abs(raw) if normalize else raw
 
 
+def _power_from_z(lm: LoadedModel, z: torch.Tensor, grams: dict[int, torch.Tensor]) -> torch.Tensor:
+    """z [N, L, H, head_dim] (son token, float32 CPU) → head çıktı gücü ‖W_h z_h‖ [N, L, H].
+
+    last_token_head_power ile aynı formül (Gram matrisleri, activity.head_grams); ileri geçiş yok.
+    """
+    arch = lm.arch
+    out = torch.empty(z.shape[0], arch.n_layers, arch.n_heads, dtype=torch.float32)
+    for layer in range(arch.n_layers):
+        if layer not in grams:
+            grams[layer] = head_grams(o_proj(lm.model, layer), arch.n_heads, arch.head_dim).to("cpu")
+        zl = z[:, layer]
+        out[:, layer] = torch.einsum("nhd,hde,nhe->nh", zl, grams[layer], zl).clamp_min(0).sqrt()
+    return out
+
+
+def _activation_diff_from_z(lm: LoadedModel, z_pos: torch.Tensor, z_neg: torch.Tensor) -> torch.Tensor:
+    """activation_diff'in aynısı, artık akım geçişlerinde yakalanmış z'lerden (ek ileri geçiş yok)."""
+    grams: dict[int, torch.Tensor] = {}
+    diff = (_power_from_z(lm, z_pos, grams).mean(dim=0) - _power_from_z(lm, z_neg, grams).mean(dim=0)).abs()
+    top = diff.max()
+    return diff / top if top > 0 else torch.zeros_like(diff)
+
+
 def activation_diff(
     lm: LoadedModel,
     c: Concept,
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
 ) -> torch.Tensor:
-    """[n_layers, n_heads]; |ort. head çıktı gücü(pos) − ort.(neg)| son token'da, en büyüğe bölünmüş."""
+    """[n_layers, n_heads]; |ort. head çıktı gücü(pos) − ort.(neg)| son token'da, en büyüğe bölünmüş.
+
+    Kendi ileri geçişlerini yapar (tek başına kullanım). `hunt` aynı değeri artık akım geçişlerinde yakaladığı
+    z'lerden hesaplar (_activation_diff_from_z); pozitif/negatifler ikinci kez geçirilmez.
+    """
     grams: dict[int, torch.Tensor] = {}  # o_proj Gram matrisleri bu av boyunca bir kez hesaplanır
     total = len(c.positive) + len(c.negative)
     done = 0
@@ -406,8 +435,9 @@ def measure_top_heads(
     """`heads`in (tahmine göre sıralı) ilk k head'ini tek tek sıfırlayıp ölçer; signal_drop azalan sıralı.
 
     signal_drop = (m_pos - m_pos_h) / (m_pos - m_neg); yalnızca ref_layer'dan ÖNCEKİ katmanlar m'yi etkiler,
-    bu yüzden layer >= ref_layer için 0.0 (yapısal, ileri geçiş yok). neutral_kl: ilk n_neutral nötr istekte,
-    son NEUTRAL_LAST_K pozisyonda ortalama KL; orijinal log-olasılıklar tek kez hesaplanır.
+    bu yüzden layer >= ref_layer için None (yapısal olarak ölçülemez, ileri geçiş yok; API'de `null`).
+    Sıralama: ölçülenler signal_drop'a göre azalan, None'lar en sonda. neutral_kl: ilk n_neutral nötr
+    istekte, son NEUTRAL_LAST_K pozisyonda ortalama KL; orijinal log-olasılıklar tek kez hesaplanır.
     """
     top = heads[:k]
     if not top:
@@ -420,17 +450,16 @@ def measure_top_heads(
     for i, (layer, head, est) in enumerate(top):
         check_cancel(cancel)
         iv = [HeadAblation(layer, head)]
+        drop: float | None = None
         if layer < ref_layer and denom > 0:
             with apply(lm, iv):
                 m_h = float(_ref_projection(lm, val_pos, ref_layer, r, cancel).mean())
-            drop = (m_pos - m_h) / denom
-        else:
-            drop = 0.0
+            drop = float((m_pos - m_h) / denom)
         kls = _kl_from(lm, base, neutral, iv, NEUTRAL_LAST_K, cancel)
-        out.append(HeadMeasure(layer, head, est, float(drop), sum(kls) / len(kls)))
+        out.append(HeadMeasure(layer, head, est, drop, sum(kls) / len(kls)))
         if progress is not None:
             progress((i + 1) / len(top), f"{i + 1}/{len(top)} head ölçüldü")
-    out.sort(key=lambda m: m.signal_drop, reverse=True)
+    out.sort(key=lambda m: (m.signal_drop is not None, m.signal_drop or 0.0), reverse=True)  # None en sonda
     return out
 
 
@@ -438,7 +467,11 @@ def measure_top_heads(
 
 
 def default_method(lm: LoadedModel) -> Literal["attribution", "activation_diff"]:
-    """Varsayılan yöntem: atıf (geri yayılım) CUDA'da; CPU'da çok yavaş olduğundan etkinlik farkı."""
+    """Varsayılan yöntem: CUDA'da atıf (geri yayılım), CPU'da etkinlik farkı (spec varsayılanı).
+
+    v0.1.1 ölçümlerinde atıf CPU'da da kullanılabilir hızdadır; iki yöntemin süresine çoğunlukla ölçüm
+    aşaması (nötr KL) hakimdir. Varsayılanı değiştirmek, yığınlı KL'den sonra yeniden ölçüm ister.
+    """
     on_cuda = next(lm.model.parameters()).device.type == "cuda"
     return "attribution" if on_cuda else "activation_diff"
 
@@ -474,8 +507,10 @@ def hunt(
             lm, sets[i], capture_z=capture_z, progress=sub_progress(progress, *bounds[i]), cancel=cancel
         )
 
-    pos, _ = resid(0)
-    neg, z_neg = resid(1, capture_z=method == "attribution")  # negatif z, atıf için ek geçiş olmadan gelir
+    # z (o_proj girdisi, son token) artık akım geçişlerinde bedavaya yakalanır: atıf negatiflerin ortalamasını,
+    # activation_diff/direction pozitif + negatiflerin head gücünü ondan alır (ikinci ileri geçiş yok).
+    pos, z_pos = resid(0, capture_z=method != "attribution")
+    neg, z_neg = resid(1, capture_z=True)
     dirs = _directions_from(pos, neg)
     val_pos, _ = resid(2)
     val_neg, _ = resid(3)
@@ -494,7 +529,10 @@ def hunt(
             )
         )
     else:
-        head_scores = activation_diff(lm, train, progress=head_progress, cancel=cancel)
+        check_cancel(cancel)
+        head_scores = _activation_diff_from_z(lm, z_pos, z_neg)
+        if head_progress is not None:
+            head_progress(1.0, "Head gücü farkı hesaplandı")
     n_heads = head_scores.shape[1]
     heads = sorted(
         ((layer, head, float(head_scores[layer, head])) for layer in range(head_scores.shape[0]) for head in range(n_heads)),
