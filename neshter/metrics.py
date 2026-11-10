@@ -185,10 +185,18 @@ def _kl_from(
     last_k: int,
     cancel: threading.Event | None = None,
 ) -> list[float]:
-    """Önceden hesaplanmış orijinal log-olasılıklara (base) karşı prompt başına ortalama KL (yığınlı)."""
+    """Önceden hesaplanmış orijinal log-olasılıklara (base) karşı prompt başına ortalama KL (yığınlı).
+
+    KL her KL_BATCH yığınında hemen indirgenir: müdahaleli log-olasılıklar tüm istekler için tutulmaz
+    (n_prompts × last_k × V float32 ek tepe yok).
+    """
+    out: list[float] = []
     with apply(lm, interventions):
-        cut = _log_probs_batch(lm, prompts, last_k, cancel)
-    return [(logp.exp() * (logp - logq)).sum(-1).mean().item() for logp, logq in zip(base, cut)]
+        for start in range(0, len(prompts), KL_BATCH):
+            cut = _log_probs_batch(lm, prompts[start : start + KL_BATCH], last_k, cancel)
+            for logp, logq in zip(base[start : start + KL_BATCH], cut):
+                out.append((logp.exp() * (logp - logq)).sum(-1).mean().item())
+    return out
 
 
 def kl_effect(

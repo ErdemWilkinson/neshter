@@ -104,7 +104,7 @@ def test_head_chain(lm, code_hunt, results, work_dir, model_dir):
     results["checks"]["val_ci"] = list(code_hunt.val_ci)
     results["checks"]["ref_layer"] = code_hunt.ref_layer
     results["checks"]["measured_top"] = [
-        (m.layer, m.head, round(m.signal_drop, 4), round(m.neutral_kl, 5)) for m in code_hunt.measured[:6]
+        (m.layer, m.head, None if m.signal_drop is None else round(m.signal_drop, 4), round(m.neutral_kl, 5)) for m in code_hunt.measured[:6]
     ]
     print(f"[smoke] ilk {TOP_HEADS} head: {top}", flush=True)
 
