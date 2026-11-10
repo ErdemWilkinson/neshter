@@ -97,8 +97,9 @@ def generate_pair(
     karışamaz, bu yüzden bu yol her zaman sıralıdır.
     """
     if _has_direction(interventions) if baked is None else baked:
-        from neshter.export import bake, save_dtype  # export, compare'i içe aktarır: döngüyü yerel import kırar
+        from neshter.export import bake, ensure_bake_ram, save_dtype  # export, compare'i içe aktarır: yerel import
 
+        ensure_bake_ram(lm, interventions, what="Gömme")
         enc = _encode(lm, prompt, 1)
         (a,) = _generate(lm, enc, max_new_tokens, seed)
         undo = bake(lm, list(interventions), round_to=save_dtype(lm))
@@ -306,7 +307,9 @@ def _suite_baked(
 ) -> list[CategoryResult]:
     """İki geçiş: önce tüm orijinaller, sonra BİR kez bake, tüm gömülü cevaplar, undo (finally) ve en son,
     ağırlıklar geri gelmişken, tüm NLL'ler (answer_nll orijinal ağırlıklarla ölçülür)."""
-    from neshter.export import bake, save_dtype  # export, compare'i içe aktarır: döngüyü yerel import kırar
+    from neshter.export import bake, ensure_bake_ram, save_dtype  # export, compare'i içe aktarır: yerel import
+
+    ensure_bake_ram(lm, interventions, what="Gömme")  # uzun ilk geçişten ÖNCE
 
     def cancelled() -> bool:
         return cancel is not None and cancel.is_set()

@@ -49,7 +49,7 @@ from neshter.export import (
     suggest_export_name,
     verify_source_untouched,
 )
-from neshter.hardware import cpu_has_native_bf16, system_info
+from neshter.hardware import available_ram_bytes, cpu_has_native_bf16, system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import (
     SUPPORTED_FAMILIES,
@@ -57,12 +57,14 @@ from neshter.loader import (
     UnsafeModelFile,
     UnsupportedArchitecture,
     load_model,
+    pick_compute_dtype,
+    planned_device,
 )
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
-from neshter.server.errors import SECURITY_HEADERS, NoModel, install_handlers
+from neshter.server.errors import SECURITY_HEADERS, ApiError, NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -274,6 +276,8 @@ def _bad_input():
         yield
     except (ValueError, IndexError) as e:
         raise HTTPException(422, str(e)) from e
+    except MemoryError as e:  # ör. gömme öncesi RAM denetimi (export.ensure_bake_ram)
+        raise ApiError(503, str(e) or "Bellek yetmedi.", "oom") from e
 
 
 # --- Güvenlik ara katmanı (saf ASGI; akışlı yanıtları bozmaz) ------------------------------------
@@ -335,11 +339,16 @@ def _b64_f32(t: torch.Tensor) -> str:
 _DTYPES = {"auto": None, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
 
-def _memory_bytes(fmt: str, size_bytes: int) -> int:
-    # GGUF yüklenirken bf16'ya açılır; ~Q4 varsayımıyla parametre sayısı tahmin edilir (muhafazakâr).
-    # Yükleme politikası CPU'da da GPU'da da bf16'dır → parametre başına 2 bayt.
-    n_params = size_bytes / 0.6 if fmt == "gguf" else size_bytes / 2
-    return estimate_memory_bytes(int(n_params), 2)
+def _memory_bytes(fmt: str, size_bytes: int, available_ram: int, native_bf16: bool) -> int:
+    """Açınca gereken bellek: parametre sayısı tahmini × yükleme politikasının dtype'ı.
+
+    GGUF: ~Q4 varsayımıyla (0.6 bayt/parametre, muhafazakâr); safetensors: bf16 dosya (2 bayt/parametre).
+    `load_model(dtype=None)` ile aynı karar: GPU'ya sığarsa bf16; yerel bf16'sı olmayan CPU'da RAM yeterse
+    float32 (parametre başına 4 bayt), değilse bf16 (2 bayt).
+    """
+    n_params = int(size_bytes / 0.6 if fmt == "gguf" else size_bytes / 2)
+    dtype = pick_compute_dtype(planned_device("auto", n_params), n_params, available_ram, native_bf16)
+    return estimate_memory_bytes(n_params, 4 if dtype == torch.float32 else 2)
 
 
 def _load(
@@ -511,9 +520,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     @app.get("/api/models")
     def get_models():
         info = system_info()
+        ram, native = available_ram_bytes(), cpu_has_native_bf16()
         out = []
         for e in scan_all(roots):
-            mem = _memory_bytes(e.fmt, e.size_bytes)
+            mem = _memory_bytes(e.fmt, e.size_bytes, ram, native)
             out.append(
                 {
                     "name": e.name,

@@ -31,8 +31,9 @@ import yaml
 from torch import nn
 
 import neshter
-from neshter.arch import embed, o_proj
+from neshter.arch import decoder_layers, down_proj, embed, o_proj
 from neshter.compare import Summary
+from neshter.hardware import available_ram_bytes
 from neshter.interventions import (
     DirectionAblation,
     HeadAblation,
@@ -182,6 +183,60 @@ def bake(
         undo()
         raise
     return undo
+
+
+def bake_peak_bytes(
+    lm: LoadedModel, interventions: Sequence[Intervention], cast_dtype: torch.dtype | None = None
+) -> int:
+    """`bake`ın (ve verilirse kayıt dtype'ına çevirmenin) ek RAM tepesi, bayt.
+
+    Dokunulan her parametrenin CPU anlık görüntüsü (head: o_proj; yön: gömme + her katmanın o_proj/down_proj
+    ağırlık ve bias'ı), yönde bağlı gömmenin lm_head klonu (CPU'daysa) ve `cast_dtype` verilirse kayan noktalı
+    her CPU parametresinin o dtype'taki kopyası (`_cast_state_dict`).
+    """
+    model = lm.model
+    touched: dict[int, torch.Tensor] = {}
+    has_dir = False
+    for iv in interventions:
+        if isinstance(iv, HeadAblation):
+            w = o_proj(model, iv.layer).weight
+            touched[id(w)] = w
+        elif isinstance(iv, DirectionAblation):
+            has_dir = True
+    if has_dir:
+        e = embed(model).weight
+        touched[id(e)] = e
+        for i in range(len(decoder_layers(model))):
+            for mod in (o_proj(model, i), down_proj(model, i)):
+                for p in (mod.weight, getattr(mod, "bias", None)):
+                    if p is not None:
+                        touched[id(p)] = p
+    total = sum(p.numel() * p.element_size() for p in touched.values())
+    tied = has_dir and _tied_lm_head(model) is not None
+    if tied and embed(model).weight.device.type == "cpu":
+        total += embed(model).weight.numel() * embed(model).weight.element_size()
+    if cast_dtype is not None:
+        unit = torch.empty((), dtype=cast_dtype).element_size()
+        params = list(model.parameters()) + ([embed(model).weight] if tied else [])
+        total += sum(
+            p.numel() * unit
+            for p in params
+            if p.device.type == "cpu" and p.is_floating_point() and p.dtype != cast_dtype
+        )
+    return total
+
+
+def ensure_bake_ram(
+    lm: LoadedModel, interventions: Sequence[Intervention], cast_dtype: torch.dtype | None = None, what: str = "Kayıt"
+) -> None:
+    """Tepe (bake_peak_bytes) boş RAM'in %90'ını aşarsa ağırlıklara dokunmadan MemoryError (error_code `oom`)."""
+    need = bake_peak_bytes(lm, interventions, cast_dtype)
+    free = available_ram_bytes()
+    if need > 0.9 * free:
+        raise MemoryError(
+            f"{what} için RAM yetmiyor (gereken ~{need / _GB:.1f} GB, boş {free / _GB:.1f} GB). "
+            "Modeli dtype=bfloat16 ile yükleyip yeniden deneyin."
+        )
 
 
 # --------------------------------------------------------------------------- model card
@@ -444,6 +499,7 @@ def save_safetensors(
 
     safety = safety_ablated or recipe.concept == "refusal"  # tek doğruluk kaynağı
     target = save_dtype(lm) if dtype is None else dtype
+    ensure_bake_ram(lm, interventions, cast_dtype=target)  # I4: uzun işlerin son adımında takas/OOM olmasın
     check_cancel(cancel)
     if progress is not None:
         progress(0.05, "Ağırlıklara gömülüyor")

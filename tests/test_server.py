@@ -2045,3 +2045,46 @@ def test_load_gguf_bf16_policy_sets_device_note(client, auth, tmp_path, tiny_mod
     assert seen == [torch.bfloat16] and st["result"]["dtype"] == "bfloat16"
     assert loader.SLOW_BF16_NOTE in st["result"]["device_note"]
     assert loader.SLOW_BF16_NOTE in client.get("/api/session", headers=auth).json()["device_note"]
+
+
+def test_compare_baked_ram_short_is_oom_not_internal(ready, monkeypatch):
+    c, a = ready
+    monkeypatch.setattr(export_module, "available_ram_bytes", lambda: 1000)
+    vec = base64.b64encode(torch.ones(64).numpy().astype("<f4").tobytes()).decode()
+    ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
+    r = c.post("/api/compare", json={"prompt": "merhaba", "recipe_ops": ops, "max_new_tokens": 3}, headers=a)
+    assert r.status_code == 503 and r.json()["error_code"] == "oom" and "RAM yetmiyor" in r.json()["detail"]
+
+
+# --- Final fix wave I6: /api/models bellek tahmini yükleme politikasının dtype'ını izler -----------------
+
+
+def _hf_root_with_model(tmp_path, n_bytes=2000):
+    snap = tmp_path / "models--a--b" / "snapshots" / "r1"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (snap / "model.safetensors").write_bytes(b"z" * n_bytes)
+    return tmp_path
+
+
+@pytest.mark.parametrize("native,bytes_per_param", [(False, 4), (True, 2)])
+def test_models_memory_follows_compute_dtype_policy(tmp_path, auth, monkeypatch, native, bytes_per_param):
+    from neshter.arch import estimate_memory_bytes
+
+    monkeypatch.setattr(app_module, "cpu_has_native_bf16", lambda: native)
+    monkeypatch.setattr(app_module, "available_ram_bytes", lambda: 1 << 40)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    c = _make({"huggingface": [_hf_root_with_model(tmp_path)]})
+    (entry,) = c.get("/api/models", headers=auth).json()
+    assert entry["memory_bytes"] == estimate_memory_bytes(1000, bytes_per_param)
+
+
+def test_models_memory_bf16_when_ram_short_for_fp32(tmp_path, auth, monkeypatch):
+    from neshter.arch import estimate_memory_bytes
+
+    monkeypatch.setattr(app_module, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(app_module, "available_ram_bytes", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    c = _make({"huggingface": [_hf_root_with_model(tmp_path)]})
+    (entry,) = c.get("/api/models", headers=auth).json()
+    assert entry["memory_bytes"] == estimate_memory_bytes(1000, 2)
