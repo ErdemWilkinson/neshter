@@ -784,6 +784,8 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             measured = {(m.layer, m.head): m for m in r.measured}
 
             def _measured(layer: int, head: int):
+                # signal_drop null: head ref_layer'da ya da sonrasında, sinyali yapısal olarak etkileyemez
+                # (ölçülmedi; "etkisiz" ölçümü değil). neutral_kl her ölçülen head için doludur.
                 m = measured.get((layer, head))
                 return None if m is None else {"signal_drop": m.signal_drop, "neutral_kl": m.neutral_kl}
 
