@@ -49,9 +49,11 @@ class DirectionOp(BaseModel, extra="forbid"):
                 f"vector_b64 {len(raw)} bayt çözüldü; d_model={self.d_model} için "
                 f"{4 * self.d_model} bayt (float32) gerekir."
             )
-        v = np.frombuffer(raw, dtype="<f4")
-        if not np.isfinite(v).all() or not np.any(v):
-            raise ValueError("vector_b64 sonlu ve sıfırdan farklı bir vektör olmalı.")
+        v = torch.from_numpy(np.frombuffer(raw, dtype="<f4").copy())
+        # DirectionAblation ile aynı ölçüt: float32 normu sonlu ve > 0 olmalı.
+        norm = v.norm()
+        if not torch.isfinite(v).all() or not torch.isfinite(norm) or norm == 0:
+            raise ValueError("vector_b64 sonlu, sıfırdan farklı ve normalize edilebilir bir vektör olmalı.")
         return self
 
 

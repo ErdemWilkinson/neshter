@@ -122,3 +122,11 @@ def test_oversize_file(tmp_path):
     (tmp_path / "b.json").write_bytes(b" " * (5 * 1024 * 1024 + 1))
     with pytest.raises(ValueError):
         load_recipe(tmp_path / "b.json")
+
+
+@pytest.mark.parametrize("value", [1e30, 1e-42], ids=["norm-overflow", "norm-underflow"])
+def test_direction_norm_overflow_underflow_rejected(value):
+    raw = base64.b64encode(torch.full((8,), value).numpy().astype("<f4").tobytes()).decode()
+    op = {"type": "direction", "d_model": 8, "vector_b64": raw}
+    with pytest.raises(ValidationError):
+        Recipe.model_validate_json(json.dumps(_raw(interventions=[op])))
