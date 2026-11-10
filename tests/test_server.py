@@ -4,6 +4,7 @@ import base64
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -174,7 +175,7 @@ def test_endpoints_need_loaded_model(client, auth):
         ("/api/effect", {"heads": [[0, 0]]}),
         ("/api/hunt", {"concept_id": "code", "method": "attribution"}),
         ("/api/suite", {"recipe_ops": HEAD_OPS, "target": "code"}),
-        ("/api/export", {"recipe_ops": HEAD_OPS, "name": "x", "format": "safetensors", "ollama": False, "out_dir": "x"}),
+        ("/api/export", {"recipe_ops": HEAD_OPS, "name": "x", "format": "safetensors", "ollama": False, "out_dir": str(Path.cwd().anchor) + "x"}),
     ]:
         r = client.post(path, json=body, headers=auth)
         assert r.status_code == 409, path
@@ -400,6 +401,8 @@ def test_export_safetensors(ready, tmp_path):
     res = wait_done(c, a, job, timeout=120)["result"]
     assert (out / "model.safetensors").is_file() and (out / "recipe.nester.json").is_file()
     assert res["path"] == str(out)
+    assert res["source_untouched"] is True and len(res["source_sha256"]) == 64
+    assert res["safety_ablated"] is False
 
 
 def test_export_refusal_concept_marks_metadata(ready, tmp_path):
@@ -730,3 +733,80 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
     c, a = ready
     wait_done(c, a, c.post("/api/effect", json={"heads": [[0, 1]]}, headers=a).json()["job_id"])
     assert seen["prompts"] == load_neutral()
+
+
+# --- Fix wave: I1 (SHA doğrulama), I2 (güvenlik etiketi), Minor 7/11 ---------------------------------
+
+
+def test_export_fails_when_source_sha_changes(ready, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "verify_source_untouched", lambda lm: False)
+    c, a = ready
+    out = tmp_path / "sha"
+    st = wait_done(c, a, c.post("/api/export", json=_export_body(out), headers=a).json()["job_id"], timeout=120, expect="error")
+    assert "SHA-256" in st["error"]
+    assert out.exists()  # çıktı silinmez
+
+
+def _hunt_direction(c, a, concept_id, seed):
+    body = {"concept_id": concept_id, "method": "direction", "seed": seed}
+    res = wait_done(c, a, c.post("/api/hunt", json=body, headers=a).json()["job_id"], timeout=180)["result"]
+    return [{"type": "direction", "d_model": 64, "vector_b64": res["direction"]}]
+
+
+def test_refusal_direction_is_labelled_without_client_concept(ready, tmp_path):
+    c, a = ready
+    ops = _hunt_direction(c, a, "refusal", seed=1)  # tiny modelde refusal seed=1 ister (kural)
+    out = tmp_path / "ret-yon"
+    res = wait_done(c, a, c.post("/api/export", json=_export_body(out, recipe_ops=ops), headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["safety_ablated"] is True
+    assert json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
+    assert "safety-ablated" in (out / "README.md").read_text(encoding="utf-8")
+    assert json.loads((out / "recipe.nester.json").read_text(encoding="utf-8"))["concept"] == "refusal"
+
+
+def test_is_safety_matches_by_abs_cosine():
+    import numpy as np
+    import torch
+
+    s = app_module.Session()
+    v = torch.randn(64, generator=torch.Generator().manual_seed(0))
+    s.safety_dirs.append(v / v.norm())
+
+    def op(t):
+        return app_module.DirectionOp(type="direction", d_model=64, vector_b64=base64.b64encode(np.asarray(t.numpy(), dtype="<f4").tobytes()).decode())
+
+    assert app_module._is_safety(s, [op(-3 * v)], None)  # işaret ve ölçek önemsiz
+    other = torch.randn(64, generator=torch.Generator().manual_seed(1))
+    assert not app_module._is_safety(s, [op(other)], None)
+    assert app_module._is_safety(s, [op(other)], "refusal")
+    s.free()
+    assert s.safety_dirs == [] and not app_module._is_safety(s, [op(v)], None)
+
+
+def test_code_direction_is_not_labelled(ready, tmp_path):
+    c, a = ready
+    ops = _hunt_direction(c, a, "code", seed=0)
+    out = tmp_path / "kod-yon"
+    res = wait_done(c, a, c.post("/api/export", json=_export_body(out, recipe_ops=ops), headers=a).json()["job_id"], timeout=120)["result"]
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert "abliterated" not in cfg["neshter"] and res["safety_ablated"] is False
+
+
+def test_export_out_dir_must_be_absolute_and_local(ready):
+    c, a = ready
+    assert c.post("/api/export", json=_export_body("goreli/klasor"), headers=a).status_code == 422
+    assert c.post("/api/export", json=_export_body(r"\sunucu\paylasim\m"), headers=a).status_code == 422
+    assert c.post("/api/export", json=_export_body("//sunucu/paylasim/m"), headers=a).status_code == 422
+
+
+def test_export_gemma2_direction_is_rejected_upfront(ready, tmp_path, monkeypatch):
+    import dataclasses
+
+    c, a = ready
+    s = c.app.state.session
+    gemma = dataclasses.replace(s.lm, arch=dataclasses.replace(s.lm.arch, family="gemma2"))
+    monkeypatch.setattr(s, "lm", gemma)
+    vec = base64.b64encode(b"\x00\x00\x80\x3f" * 64).decode()
+    ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
+    r = c.post("/api/export", json=_export_body(tmp_path / "g", recipe_ops=ops), headers=a)
+    assert r.status_code == 422 and "gemma2" in r.json()["detail"]

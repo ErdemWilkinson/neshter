@@ -121,7 +121,7 @@ def test_tied_embeddings_bake_save_undo(tied_lm, tmp_path):
     assert lm.model.config.tie_word_embeddings is True
     assert torch.equal(logits(lm, "deneme metni"), base)
 
-    out = save_safetensors(lm, recipe_for(lm, iv), tmp_path / "out")
+    out = save_safetensors(lm, recipe_for(lm, iv), tmp_path / "out", dtype=torch.float32)
     assert json.loads((out / "config.json").read_text(encoding="utf-8"))["tie_word_embeddings"] is False
     assert lm.model.get_output_embeddings().weight is lm.model.get_input_embeddings().weight
     assert lm.model.config.tie_word_embeddings is True
@@ -134,7 +134,7 @@ def test_tied_embeddings_bake_save_undo(tied_lm, tmp_path):
 
 
 def test_save_reload_equivalent(lm, tmp_path):
-    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(1, 1)]), tmp_path / "out")
+    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(1, 1)]), tmp_path / "out", dtype=torch.float32)
     m2 = AutoModelForCausalLM.from_pretrained(out)
     with apply(lm, [HeadAblation(1, 1)]):
         ref = logits(lm, "abc")
@@ -153,7 +153,7 @@ def test_save_reload_equivalent(lm, tmp_path):
 def test_save_reload_direction_equivalent(lm, tmp_path):
     iv = [DirectionAblation(torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(3)))]
     base = logits(lm, "abc")
-    out = save_safetensors(lm, recipe_for(lm, iv), tmp_path / "out")
+    out = save_safetensors(lm, recipe_for(lm, iv), tmp_path / "out", dtype=torch.float32)
     assert torch.equal(logits(lm, "abc"), base)
     m2 = AutoModelForCausalLM.from_pretrained(out)
     with apply(lm, iv):
@@ -255,7 +255,10 @@ def test_to_gguf_commands(tmp_path, monkeypatch):
     llama = tmp_path / "llama"
     llama.mkdir()
     (llama / "convert_hf_to_gguf.py").write_text("")
+    (llama / export._quantize_name()).write_text("")
     hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
     out = tmp_path / "m.gguf"
     calls = []
 
@@ -286,15 +289,115 @@ def test_ollama_create(tmp_path, monkeypatch):
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"x")
     calls = []
-    monkeypatch.setattr(export.shutil, "which", lambda name: "ollama")
+    monkeypatch.setattr(export.shutil, "which", lambda name: r"C:\Araclar\ollama.exe")
     monkeypatch.setattr(export.subprocess, "run", lambda cmd, check: calls.append((cmd, check)))
     ollama_create("benim-model", gguf)
     modelfile = tmp_path / "Modelfile"
     assert modelfile.read_text(encoding="utf-8").strip() == f"FROM {gguf.resolve()}"
-    assert calls == [(["ollama", "create", "benim-model", "-f", str(modelfile)], True)]
+    assert calls == [([r"C:\Araclar\ollama.exe", "create", "benim-model", "-f", str(modelfile)], True)]
 
 
 def test_ollama_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(export.shutil, "which", lambda name: None)
     with pytest.raises(FileNotFoundError, match="Ollama"):
         ollama_create("x", tmp_path / "m.gguf")
+
+
+# --- Fix wave: I6(b) CPU anlık görüntü + bloklu dikleştirme, I7 kayıt dtype'ı, Minor 10/19 ---------
+
+
+def test_snapshot_is_independent_cpu_copy():
+    w = torch.randn(4, 3)
+    snap = export._snapshot(w)
+    assert snap.device.type == "cpu" and torch.equal(snap, w)
+    assert snap.untyped_storage().data_ptr() != w.untyped_storage().data_ptr()
+
+
+def test_bake_snapshots_go_through_cpu_helper(lm, monkeypatch):
+    seen = []
+    real = export._snapshot
+    monkeypatch.setattr(export, "_snapshot", lambda p: seen.append(real(p)) or seen[-1])
+    undo = bake(lm, [DirectionAblation(torch.ones(lm.arch.d_model)), HeadAblation(0, 1)])
+    undo()
+    # embed + 2 katman × (o_proj, down_proj) = 5 parametre (head o_proj'u yönle aynı tensör)
+    assert len(seen) == 5 and all(t.device.type == "cpu" for t in seen)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_chunked_orthogonalization_matches_reference(dtype):
+    g = torch.Generator().manual_seed(0)
+    r = torch.randn(8, generator=g)
+    r = r / r.norm()
+    rows = torch.randn(37, 8, generator=g).to(dtype)
+    ref_rows = (rows.double() - torch.outer(rows.double() @ r.double(), r.double())).to(dtype)
+    export._orth_rows_(rows, r, chunk=5)  # birden çok blok
+    cols = torch.randn(8, 29, generator=g).to(dtype)
+    ref_cols = (cols.double() - torch.outer(r.double(), r.double() @ cols.double())).to(dtype)
+    export._orth_out_(cols, r, chunk=4)
+    tol = 1e-5 if dtype == torch.float32 else 1e-2
+    assert torch.allclose(rows.float(), ref_rows.float(), atol=tol)
+    assert torch.allclose(cols.float(), ref_cols.float(), atol=tol)
+    assert rows.dtype == dtype and cols.dtype == dtype
+
+
+def test_float32_model_saves_bf16_by_default(lm, tmp_path):
+    from safetensors import safe_open
+
+    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "out")
+    with safe_open(str(out / "model.safetensors"), "pt") as f:
+        dtypes = {f.get_slice(k).get_dtype() for k in f.keys()}
+    assert dtypes == {"BF16"}
+    assert json.loads((out / "config.json").read_text(encoding="utf-8"))["dtype"] == "bfloat16"
+    assert next(lm.model.parameters()).dtype == torch.float32  # bellekteki model değişmedi
+    assert verify_source_untouched(lm)
+
+
+def test_save_dtype_keeps_float16_sources(lm, monkeypatch):
+    monkeypatch.setattr(export, "_source_config", lambda _lm: {"torch_dtype": "float16"})
+    assert export.save_dtype(lm) == torch.float16
+    monkeypatch.setattr(export, "_source_config", lambda _lm: {"dtype": "float32"})
+    assert export.save_dtype(lm) == torch.bfloat16
+
+
+def test_safety_flag_cannot_be_removed_and_can_be_forced(lm, tmp_path):
+    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)], concept=None), tmp_path / "o", safety_ablated=True)
+    assert json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
+    assert "safety-ablated" in (out / "README.md").read_text(encoding="utf-8")
+    out2 = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)], concept="refusal"), tmp_path / "o2", safety_ablated=False)
+    assert json.loads((out2 / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
+
+
+def test_license_files_are_copied(tmp_path, tiny_model_dir):
+    import shutil as sh
+
+    from neshter.loader import load_model
+
+    src = tmp_path / "src"
+    sh.copytree(tiny_model_dir, src)
+    (src / "LICENSE").write_text("Llama lisans metni", encoding="utf-8")
+    (src / "USE_POLICY.md").write_text("Kullanım politikası", encoding="utf-8")
+    m = load_model(src, device="cpu", dtype=torch.float32)
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "LICENSE").read_text(encoding="utf-8") == "Llama lisans metni"
+    assert (out / "USE_POLICY.md").is_file()
+
+
+def test_to_gguf_checks_quantize_and_config(tmp_path):
+    llama = tmp_path / "llama"
+    llama.mkdir()
+    (llama / "convert_hf_to_gguf.py").write_text("")
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    with pytest.raises(FileNotFoundError, match="llama-quantize"):
+        to_gguf(hf, tmp_path / "m.gguf", "Q8_0", llama)
+    (llama / export._quantize_name()).write_text("")
+    with pytest.raises(FileNotFoundError, match="config.json"):
+        to_gguf(hf, tmp_path / "m.gguf", "Q8_0", llama)
+
+
+@pytest.mark.parametrize("name", ["-rm", "../x", "a b", "", "x" * 65])
+def test_ollama_create_rejects_bad_names(tmp_path, monkeypatch, name):
+    monkeypatch.setattr(export.shutil, "which", lambda n: "ollama")
+    monkeypatch.setattr(export.subprocess, "run", lambda *a, **k: pytest.fail("çalıştırılmamalı"))
+    with pytest.raises(ValueError, match="Ollama model adı"):
+        ollama_create(name, tmp_path / "m.gguf")

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,18 +42,36 @@ def _quantize_name() -> str:
 # --------------------------------------------------------------------------- bake
 
 
-def _orth_rows(w: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-    """embed: W[vocab, d] ← W − (W r) rᵀ."""
-    wf = w.to(torch.float32)
-    return (wf - torch.outer(wf @ r, r)).to(w.dtype)
+ROW_CHUNK = 8192  # embed satır bloğu
+COL_CHUNK = 4096  # o_proj/down_proj sütun bloğu
 
 
-def _orth_out(w: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-    """Rezidüele yazan katman: W[d, in] ← W − r (rᵀ W); bias[d] ← b − (b·r) r."""
-    wf = w.to(torch.float32)
-    if wf.ndim == 1:
-        return (wf - (wf @ r) * r).to(w.dtype)
-    return (wf - torch.outer(r, r @ wf)).to(w.dtype)
+def _orth_rows_(w: torch.Tensor, r: torch.Tensor, chunk: int = ROW_CHUNK) -> None:
+    """embed, yerinde: W[vocab, d] ← W − (W r) rᵀ. float32'de, satır bloklarıyla (tam float32 kopya yok)."""
+    for i in range(0, w.shape[0], chunk):
+        blk = w[i : i + chunk]
+        wf = blk.to(torch.float32)
+        blk.copy_(wf - torch.outer(wf @ r, r))
+
+
+def _orth_out_(w: torch.Tensor, r: torch.Tensor, chunk: int = COL_CHUNK) -> None:
+    """Rezidüele yazan katman, yerinde: W[d, in] ← W − r (rᵀ W); bias[d] ← b − (b·r) r.
+
+    Sütunlar bağımsızdır; float32'de sütun bloklarıyla işlenir.
+    """
+    if w.ndim == 1:
+        wf = w.to(torch.float32)
+        w.copy_(wf - (wf @ r) * r)
+        return
+    for j in range(0, w.shape[1], chunk):
+        blk = w[:, j : j + chunk]
+        wf = blk.to(torch.float32)
+        blk.copy_(wf - torch.outer(r, r @ wf))
+
+
+def _snapshot(p: torch.Tensor) -> torch.Tensor:
+    """Undo için CPU kopyası: GPU'da ikinci bir ağırlık kopyası tutulmaz."""
+    return p.detach().to("cpu", copy=True)
 
 
 def _tied_lm_head(model) -> nn.Module | None:
@@ -78,7 +97,7 @@ def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[],
 
     def touch(p: nn.Parameter) -> None:
         if id(p) not in originals:
-            originals[id(p)] = (p, p.detach().clone())
+            originals[id(p)] = (p, _snapshot(p))
 
     # Bağlı (tied) gömme: lm_head embed ile aynı tensörü paylaşıyorsa, kanca lm_head'e dokunmadığı
     # için yön silmeden önce lm_head'e ayrı bir kopya verilir; undo yeniden bağlar.
@@ -88,7 +107,7 @@ def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[],
     def undo() -> None:
         with torch.no_grad():
             for p, orig in originals.values():
-                p.copy_(orig)
+                p.copy_(orig.to(p.device))
         if tied_head is not None:
             tied_head.weight = embed(model).weight
             model.config.tie_word_embeddings = config_tie
@@ -112,13 +131,13 @@ def bake(lm: LoadedModel, interventions: Sequence[Intervention]) -> Callable[[],
                 e = embed(model).weight
                 r = direction.to(device=e.device, dtype=torch.float32)
                 touch(e)
-                e.copy_(_orth_rows(e, r))
+                _orth_rows_(e, r)
                 for layer in range(len(decoder_layers(model))):
                     for mod in (o_proj(model, layer), down_proj(model, layer)):
                         for p in (mod.weight, mod.bias):
                             if p is not None:
                                 touch(p)
-                                p.copy_(_orth_out(p, r))
+                                _orth_out_(p, r)
     except BaseException:
         undo()
         raise
@@ -205,10 +224,75 @@ def _estimate_bytes(lm: LoadedModel, directions: bool) -> int:
     return total
 
 
+_LICENSE_GLOBS = ("LICENSE*", "USE_POLICY*", "NOTICE*")
+
+
+def _copy_license_files(source: Path, dest: Path) -> None:
+    """Kaynak klasördeki lisans/kullanım politikası dosyalarını kopyalar ("model kartı + lisans her zaman")."""
+    if not source.is_dir():
+        return
+    for pattern in _LICENSE_GLOBS:
+        for f in sorted(source.glob(pattern)):
+            if f.is_file() and not (dest / f.name).exists():
+                shutil.copy2(f, dest / f.name)
+
+
+def _source_config(lm: LoadedModel) -> dict:
+    src = Path(lm.source_path)
+    folder = src if src.is_dir() else src.parent if src.suffix.lower() == ".pt" else None
+    if folder is None:
+        return {}
+    try:
+        return json.loads((folder / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_dtype(lm: LoadedModel) -> torch.dtype:
+    """Kayıt dtype'ı: kaynak float16 ise float16, aksi halde bf16 (spec: "safetensors bf16").
+
+    Model bellekte float32 olsa da (ör. testler) dosya bf16 yazılır; sunucu ve CLI aynı dosyayı üretir.
+    """
+    cfg = _source_config(lm)
+    src = cfg.get("dtype") or cfg.get("torch_dtype")
+    return torch.float16 if src == "float16" else torch.bfloat16
+
+
+def _cast_state_dict(model, dtype: torch.dtype) -> dict[str, torch.Tensor] | None:
+    """Kayan noktalı tensörleri dtype'a çevirir (paylaşılan tensörler paylaşılmış kalır).
+
+    Zaten hepsi dtype'taysa None döner: save_pretrained modeli olduğu gibi yazar, ek kopya olmaz.
+    """
+    sd = model.state_dict()
+    if all(not v.is_floating_point() or v.dtype == dtype for v in sd.values()):
+        return None
+    cache: dict[tuple, torch.Tensor] = {}
+    out: dict[str, torch.Tensor] = {}
+    for k, v in sd.items():
+        if not v.is_floating_point() or v.dtype == dtype:
+            out[k] = v
+            continue
+        key = (v.untyped_storage().data_ptr(), v.storage_offset(), tuple(v.shape), tuple(v.stride()))
+        if key not in cache:
+            cache[key] = v.to(dtype)
+        out[k] = cache[key]
+    return out
+
+
 def save_safetensors(
-    lm: LoadedModel, recipe: Recipe, out_dir: Path, summary: Summary | None = None
+    lm: LoadedModel,
+    recipe: Recipe,
+    out_dir: Path,
+    summary: Summary | None = None,
+    safety_ablated: bool = False,
+    dtype: torch.dtype | None = None,
 ) -> Path:
-    """Müdahaleleri gömüp safetensors klasörü olarak atomik kaydeder; modeli eski haline döndürür."""
+    """Müdahaleleri gömüp safetensors klasörü olarak atomik kaydeder; modeli eski haline döndürür.
+
+    Güvenlik işareti (`abliterated: refusal` + "safety-ablated") tarifin kavramı "refusal" ise YA DA
+    safety_ablated=True ise konur; çağıran bu işareti kaldıramaz. `dtype` verilmezse save_dtype(lm)
+    (bf16; kaynak float16 ise float16); float32 yalnızca açıkça istenirse (testler).
+    """
     out_dir = Path(out_dir)
     tmp = out_dir.parent / (out_dir.name + ".tmp")
     source = Path(lm.source_path)
@@ -234,23 +318,31 @@ def save_safetensors(
             f"boş {free / _GB:.2f} GB."
         )
 
+    safety = safety_ablated or recipe.concept == "refusal"  # tek doğruluk kaynağı
+    target = save_dtype(lm) if dtype is None else dtype
     undo = bake(lm, interventions)
     try:
         try:
-            lm.model.save_pretrained(tmp, safe_serialization=True)
+            lm.model.save_pretrained(
+                tmp, safe_serialization=True, state_dict=_cast_state_dict(lm.model, target)
+            )
             lm.tokenizer.save_pretrained(tmp)
             cfg_path = tmp / "config.json"
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            dtype_name = str(target).removeprefix("torch.")
+            cfg["dtype"] = dtype_name
+            if "torch_dtype" in cfg:
+                cfg["torch_dtype"] = dtype_name
             meta: dict[str, str] = {"version": neshter.__version__}
-            if recipe.concept == "refusal":
+            if safety:
                 meta["abliterated"] = "refusal"
             cfg["neshter"] = meta
             cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-            safety = recipe.concept == "refusal"
             (tmp / "README.md").write_text(
                 model_card(lm, recipe, summary, safety_ablated=safety), encoding="utf-8"
             )
             save_recipe(recipe, tmp / "recipe.nester.json")
+            _copy_license_files(Path(lm.source_path), tmp)
             os.replace(tmp, out_dir)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -289,9 +381,13 @@ def to_gguf(
             f"'{llama_cpp}' klasöründe convert_hf_to_gguf.py bulunamadı. GGUF'a dönüştürmek için "
             "llama.cpp kaynak deposundaki convert_hf_to_gguf.py (ve gguf-py) bu klasörde olmalı."
         )
+    quantize = llama_cpp / _quantize_name()
+    if not quantize.is_file():
+        raise FileNotFoundError(f"'{llama_cpp}' klasöründe {_quantize_name()} bulunamadı.")
+    if not (Path(hf_dir) / "config.json").is_file():
+        raise FileNotFoundError(f"'{hf_dir}' içinde config.json yok; dönüştürülecek safetensors klasörü eksik.")
     if out_file.exists():
         raise FileExistsError(f"'{out_file}' zaten var; üzerine yazılmaz.")
-    quantize = llama_cpp / _quantize_name()
     f16 = out_file.with_name(out_file.name + ".f16.tmp")
     qtmp = out_file.with_name(out_file.name + ".tmp")
     try:
@@ -310,12 +406,21 @@ def to_gguf(
     return out_file
 
 
+OLLAMA_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
 def ollama_create(name: str, gguf: Path) -> None:
-    if shutil.which("ollama") is None:
+    if not OLLAMA_NAME.fullmatch(name):
+        raise ValueError(
+            f"Geçersiz Ollama model adı {name!r}: harf/rakamla başlamalı; yalnızca harf, rakam, '.', '_', '-' (en çok 64)."
+        )
+    exe = shutil.which("ollama")
+    if exe is None:
         raise FileNotFoundError(
             "Ollama bulunamadı (PATH'te 'ollama' yok). Ollama'yı kurun ya da bu adımı atlayın."
         )
     gguf = Path(gguf)
     modelfile = gguf.parent / "Modelfile"
     modelfile.write_text(f"FROM {gguf.resolve()}\n", encoding="utf-8")
-    subprocess.run(["ollama", "create", name, "-f", str(modelfile)], check=True)
+    # Tam yol: Windows'ta CreateProcess çıplak adı önce çalışma klasöründe arar.
+    subprocess.run([exe, "create", name, "-f", str(modelfile)], check=True)
