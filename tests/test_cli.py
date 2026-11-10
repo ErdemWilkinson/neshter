@@ -237,3 +237,20 @@ def test_serve_tokens_are_fresh(served):
     first = served["token"]
     main(["--no-browser"])
     assert served["token"] != first
+
+
+# --- Fix wave: I9 (tedarik zinciri) ---------------------------------------------------------------
+
+
+def test_launcher_runs_checkout_not_pypi_and_deps_are_bounded():
+    import re
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    bat = (root / "neshter.bat").read_text(encoding="utf-8")
+    assert 'uvx --from "%~dp0." neshter %*' in bat
+    assert not re.search(r"^\s*uvx neshter", bat, re.MULTILINE)
+    deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    for d in deps:
+        assert "<" in d, f"üst sınır yok: {d}"
+    assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps

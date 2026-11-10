@@ -21,13 +21,20 @@ dosyası olarak kaydeder.
 
 ## Kurulum ve çalıştırma
 
+Neşter henüz PyPI'da yayımlanmadı; bu deponun bir klonundan çalıştır:
+
 ```
-uvx neshter
+git clone <repo-url> neshter
+cd neshter
+uvx --from . neshter
 ```
 
-Windows'ta `neshter.bat` dosyasını çift tıklayabilir ya da çalıştırabilirsin; `uv` yoksa
-[uv](https://docs.astral.sh/uv/) kurulur, ardından `uvx neshter` çalışır. Neşter yerel bir sunucu
-başlatır ve tarayıcını açar. Seçenekler: `--no-browser`, `--port N`.
+ya da klonlamadan `uvx --from git+<repo-url> neshter`. Çıplak `uvx neshter` çalıştırma: paket
+yayımlanana kadar PyPI'daki o ad bize ait değil. (Yayımlandıktan sonra `uvx neshter` de çalışacak.)
+
+Windows'ta klondaki `neshter.bat` dosyasını çift tıklayabilir ya da çalıştırabilirsin; `uv` yoksa
+[uv](https://docs.astral.sh/uv/) kurulur, ardından bu klon çalışır (`uvx --from <klon klasörü> neshter`).
+Neşter yerel bir sunucu başlatır ve tarayıcını açar. Seçenekler: `--no-browser`, `--port N`.
 
 Paylaşılan bir tarifi (`.nester.json`) arayüz olmadan uygulamak için:
 

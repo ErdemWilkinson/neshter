@@ -21,12 +21,21 @@ It is **100% local**: there is no cloud API in it, no account, and **no telemetr
 
 ## Install and run
 
+Neşter is not published on PyPI yet, so run it from a clone of this repository:
+
 ```
-uvx neshter
+git clone <repo-url> neshter
+cd neshter
+uvx --from . neshter
 ```
 
-On Windows you can double-click or run `neshter.bat`; it installs [uv](https://docs.astral.sh/uv/)
-if it is missing and then runs `uvx neshter`. Neşter starts a local server and opens your browser.
+or, without cloning, `uvx --from git+<repo-url> neshter`. Do not run a bare `uvx neshter`: until
+the package is published, that name on PyPI is not ours. (Once it is published, `uvx neshter` will
+work too.)
+
+On Windows you can double-click or run `neshter.bat` in the clone; it installs
+[uv](https://docs.astral.sh/uv/) if it is missing and then runs this checkout
+(`uvx --from <clone folder> neshter`). Neşter starts a local server and opens your browser.
 Options: `--no-browser`, `--port N`.
 
 Apply a shared recipe (`.nester.json`) without the UI:
