@@ -105,6 +105,20 @@ def test_gguf_unsupported_arch_message(tmp_path, monkeypatch):
         load_model(tmp_path / "x.gguf", device="cpu")
 
 
+def test_gguf_loading_prerequisite_accelerate_is_declared_and_installed():
+    """transformers 5.x, `gguf_file=` verildiğinde accelerate ister ("accelerate is required when loading a GGUF
+    file"); gerçek bir GGUF yüklemesi (Task 14 duman testi) bu yüzden temiz kurulumda çöküyordu."""
+    import tomllib
+    from pathlib import Path
+
+    from transformers.utils import is_accelerate_available
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    deps = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert any(d.startswith("accelerate") for d in deps), "accelerate bağımlılıklarda yok"
+    assert is_accelerate_available()
+
+
 def test_gguf_passes_gguf_file_and_safety_flags(tmp_path, monkeypatch):
     seen = {}
 
