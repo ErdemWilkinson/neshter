@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, NonNegativeInt, PositiveInt, model_validator
 
 import neshter
 from neshter.arch import ArchInfo
@@ -57,22 +57,25 @@ class DirectionOp(BaseModel, extra="forbid"):
         return self
 
 
+MAX_TEXT = 256  # görüntüleme amaçlı metin alanlarının üst sınırı
+
+
 class SourceRef(BaseModel, extra="forbid"):
-    name: str
+    name: str = Field(max_length=MAX_TEXT)
     sha256: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class Recipe(BaseModel, extra="forbid"):
     schema_version: Literal[1]
-    neshter_version: str
+    neshter_version: str = Field(max_length=MAX_TEXT)
     source_model: SourceRef
-    concept: str | None
-    method: str
+    concept: str | None = Field(max_length=MAX_TEXT)
+    method: str = Field(max_length=MAX_TEXT)
     seed: int
     dataset_sha256: str | None
     head_mode: Literal["zero"]
     interventions: list[Annotated[HeadOp | DirectionOp, Field(discriminator="type")]]
-    created_at: datetime
+    created_at: AwareDatetime
 
 
 @dataclass
@@ -148,17 +151,20 @@ def from_interventions(
 
 
 def load_recipe(path: Path) -> Recipe:
-    path = Path(path)
-    size = path.stat().st_size
-    if size > MAX_RECIPE_BYTES:
-        raise ValueError(
-            f"Tarif dosyası çok büyük ({size} bayt); sınır {MAX_RECIPE_BYTES} bayt."
-        )
-    return Recipe.model_validate_json(path.read_bytes())
+    # Boyut okurken sınırlanır (stat ile okuma arasında dosya büyüyemez).
+    with open(Path(path), "rb") as f:
+        data = f.read(MAX_RECIPE_BYTES + 1)
+    if len(data) > MAX_RECIPE_BYTES:
+        raise ValueError(f"Tarif dosyası çok büyük; sınır {MAX_RECIPE_BYTES} bayt.")
+    return Recipe.model_validate_json(data)
 
 
 def save_recipe(r: Recipe, path: Path) -> None:
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(r.model_dump_json(indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(r.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
