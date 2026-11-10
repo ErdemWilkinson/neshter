@@ -2,7 +2,9 @@ import dataclasses
 import json
 import re
 import shutil
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,15 @@ import neshter.export as export
 from neshter.compare import Summary
 from neshter.export import (
     GEMMA_NOTICE,
+    QUANT_BYTES_PER_PARAM,
+    DiskFull,
+    LlamaCppMissing,
     bake,
+    estimate_export_bytes,
+    export_gguf,
+    gguf_metadata,
+    modelfile_license,
+    write_modelfile,
     is_llama3,
     license_notices,
     find_llama_cpp,
@@ -25,6 +35,7 @@ from neshter.export import (
     verify_source_untouched,
 )
 from neshter.interventions import DirectionAblation, HeadAblation, apply
+from neshter.progress import Cancelled
 
 
 def _state(lm):
@@ -442,10 +453,21 @@ def test_ollama_create(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(export.shutil, "which", lambda name: r"C:\Araclar\ollama.exe")
     monkeypatch.setattr(export.subprocess, "run", lambda cmd, check: calls.append((cmd, check)))
-    ollama_create("benim-model", gguf)
+    ollama_create("benim-model", gguf, license_text="Apache-2.0 metni")
     modelfile = tmp_path / "Modelfile"
-    assert modelfile.read_text(encoding="utf-8").strip() == f"FROM {gguf.resolve()}"
+    text = modelfile.read_text(encoding="utf-8")
+    assert text.startswith(f"FROM {gguf.resolve()}\n")
+    assert 'LICENSE """' in text and "Apache-2.0 metni" in text
     assert calls == [([r"C:\Araclar\ollama.exe", "create", "benim-model", "-f", str(modelfile)], True)]
+
+
+def test_ollama_create_without_license_keeps_bare_modelfile(tmp_path, monkeypatch):
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x")
+    monkeypatch.setattr(export.shutil, "which", lambda name: "ollama")
+    monkeypatch.setattr(export.subprocess, "run", lambda cmd, check: None)
+    ollama_create("benim-model", gguf)
+    assert (tmp_path / "Modelfile").read_text(encoding="utf-8") == f"FROM {gguf.resolve()}\n"
 
 
 def test_ollama_missing(tmp_path, monkeypatch):
@@ -696,3 +718,289 @@ def test_copy_license_files_skips_real_symlink_outside(tmp_path, tiny_model_dir)
     m = load_model(src, device="cpu", dtype=torch.float32)
     out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
     assert not (out / "USE_POLICY.md").exists()
+
+
+# --- Task 10: GGUF/Ollama dışa aktarımı kartı, etiketi, tarifi ve lisansı korur ------------------
+
+
+def _fake_llama(tmp_path):
+    llama = tmp_path / "llama"
+    llama.mkdir()
+    (llama / "convert_hf_to_gguf.py").write_text("")
+    (llama / export._quantize_name()).write_text("")
+    return llama
+
+
+class _Tools:
+    """subprocess.run yerine geçer: dönüştürücü --outfile'ı, quantize çıktıyı yazar; argv'ler kaydedilir."""
+
+    def __init__(self, monkeypatch, on_convert=None):
+        self.calls: list[list[str]] = []
+        self.metadata: dict | None = None
+        self.on_convert = on_convert
+        monkeypatch.setattr(export.subprocess, "run", self)
+
+    def __call__(self, cmd, check=False, **kw):
+        assert isinstance(cmd, list) and check is True and not kw.get("shell")
+        self.calls.append(list(cmd))
+        if cmd[1].endswith("convert_hf_to_gguf.py"):
+            if "--metadata" in cmd:
+                self.metadata = json.loads(Path(cmd[cmd.index("--metadata") + 1]).read_text(encoding="utf-8"))
+            Path(cmd[cmd.index("--outfile") + 1]).write_bytes(b"GGUF-f16")
+            if self.on_convert:
+                self.on_convert()
+        else:
+            Path(cmd[2]).write_bytes(b"GGUF-q")
+
+
+def _no_space(monkeypatch, free=1):
+    monkeypatch.setattr(export.shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(10**12, 10**12 - free, free))
+
+
+def test_export_gguf_keeps_card_recipe_license_next_to_gguf(lm, tmp_path, monkeypatch):
+    tools = _Tools(monkeypatch)
+    out_dir = tmp_path / "o"
+    src_license = lm.license_text
+    lm.license_text = "Apache License text"
+    try:
+        out = export_gguf(
+            lm, recipe_for(lm, [HeadAblation(0, 1)], concept="refusal"), out_dir,
+            "m", "Q8_0", _fake_llama(tmp_path), safety=True,
+        )
+    finally:
+        lm.license_text = src_license
+    assert out == out_dir / "m.gguf"
+    names = {p.name for p in out_dir.iterdir()}
+    assert {"m.gguf", "README.md", "recipe.nester.json", "LICENSE"} <= names
+    assert "_hf" not in names and not any(n.endswith(".tmp") for n in names)
+    assert "safety-ablated" in (out_dir / "README.md").read_text(encoding="utf-8")
+    assert (out_dir / "LICENSE").read_text(encoding="utf-8") == "Apache License text"
+    assert len(tools.calls) == 2  # dönüştür + quantize
+    assert tools.metadata["general.tags"] == ["neshter", "safety-ablated", "abliterated"]
+
+
+def test_export_gguf_failure_removes_out_dir(lm, tmp_path, monkeypatch):
+    def boom(cmd, check=False, **kw):
+        raise subprocess.CalledProcessError(3, cmd)
+
+    monkeypatch.setattr(export.subprocess, "run", boom)
+    out_dir = tmp_path / "o"
+    with pytest.raises(RuntimeError, match="3"):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), out_dir, "m", "Q8_0", _fake_llama(tmp_path), safety=False)
+    assert not out_dir.exists()
+
+
+def test_export_gguf_refuses_existing_out_dir_and_bad_name(lm, tmp_path, monkeypatch):
+    _Tools(monkeypatch)
+    llama = _fake_llama(tmp_path)
+    existing = tmp_path / "var"
+    existing.mkdir()
+    (existing / "keep.txt").write_text("x")
+    recipe = recipe_for(lm, [HeadAblation(0, 1)])
+    with pytest.raises(FileExistsError):
+        export_gguf(lm, recipe, existing, "m", "Q8_0", llama, safety=False)
+    assert (existing / "keep.txt").exists()  # var olan klasöre dokunulmaz
+    with pytest.raises(ValueError):
+        export_gguf(lm, recipe, tmp_path / "o2", "../kacis", "Q8_0", llama, safety=False)
+    assert not (tmp_path / "o2").exists()
+
+
+def test_to_gguf_passes_metadata_file(tmp_path, monkeypatch):
+    llama = _fake_llama(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    out = tmp_path / "m.gguf"
+    tools = _Tools(monkeypatch)
+    meta = {"general.license": "apache-2.0", "general.tags": ["neshter", "safety-ablated"]}
+    to_gguf(hf, out, "Q4_K_M", llama, metadata=meta)
+    meta_file = Path(str(out) + ".metadata.json.tmp")
+    assert tools.calls[0] == [
+        sys.executable, str(llama / "convert_hf_to_gguf.py"), str(hf),
+        "--outtype", "f16", "--outfile", str(out) + ".f16.tmp", "--metadata", str(meta_file),
+    ]
+    assert tools.metadata["general.license"] == "apache-2.0"
+    assert "safety-ablated" in tools.metadata["general.tags"]
+    assert not meta_file.exists() and out.exists()  # çağrıdan sonra silinir
+
+
+def test_to_gguf_without_metadata_has_no_flag(tmp_path, monkeypatch):
+    llama = _fake_llama(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    tools = _Tools(monkeypatch)
+    to_gguf(hf, tmp_path / "m.gguf", "Q8_0", llama)
+    assert "--metadata" not in tools.calls[0]
+
+
+def test_to_gguf_cancel_between_convert_and_quantize(tmp_path, monkeypatch):
+    llama = _fake_llama(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    ev = threading.Event()
+    tools = _Tools(monkeypatch, on_convert=ev.set)
+    with pytest.raises(Cancelled):
+        to_gguf(hf, tmp_path / "m.gguf", "Q8_0", llama, metadata={"general.license": "mit"}, cancel=ev)
+    assert len(tools.calls) == 1  # quantize çalışmadı
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["hf", "llama"]  # f16, metadata, çıktı kalmadı
+
+
+def test_to_gguf_missing_quantize_is_llama_cpp_missing(tmp_path):
+    llama = tmp_path / "llama"
+    llama.mkdir()
+    (llama / "convert_hf_to_gguf.py").write_text("")
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    with pytest.raises(LlamaCppMissing) as ei:
+        to_gguf(hf, tmp_path / "m.gguf", "Q8_0", llama)
+    assert isinstance(ei.value, FileNotFoundError)
+
+
+def test_gguf_metadata_fields(lm):
+    safe = gguf_metadata(lm, recipe_for(lm, [HeadAblation(0, 1), DirectionAblation(torch.randn(64))]), safety=True)
+    assert safe["general.license"] == (lm.license or "other")
+    assert safe["general.tags"] == ["neshter", "safety-ablated", "abliterated"]
+    assert "1 heads" in safe["general.description"] and "1 directions" in safe["general.description"]
+    plain = gguf_metadata(lm, recipe_for(lm, [HeadAblation(0, 1)]), safety=False)
+    assert plain["general.tags"] == ["neshter"]
+
+
+def test_gguf_metadata_license_other_when_unknown(lm):
+    old = lm.license
+    lm.license = None
+    try:
+        assert gguf_metadata(lm, recipe_for(lm, [HeadAblation(0, 1)]), safety=False)["general.license"] == "other"
+    finally:
+        lm.license = old
+
+
+def test_modelfile_has_license(tmp_path):
+    mf = write_modelfile(tmp_path / "m.gguf", 'Apache """x"""').read_text(encoding="utf-8")
+    assert 'LICENSE """' in mf and mf.count('"""') == 2
+    assert "'''x'''" in mf
+
+
+def test_modelfile_without_license(tmp_path):
+    gguf = tmp_path / "m.gguf"
+    path = write_modelfile(gguf, None)
+    assert path == tmp_path / "Modelfile"
+    assert path.read_text(encoding="utf-8") == f"FROM {gguf.resolve()}\n"
+
+
+def test_modelfile_license_prefers_file_then_lm_then_notices(lm, tmp_path):
+    old = lm.license_text
+    try:
+        (tmp_path / "LICENSE").write_text("dosyadaki", encoding="utf-8")
+        lm.license_text = "bellekteki"
+        assert modelfile_license(lm, tmp_path) == "dosyadaki"
+        (tmp_path / "LICENSE").unlink()
+        assert modelfile_license(lm, tmp_path) == "bellekteki"
+        lm.license_text = None
+        assert modelfile_license(lm, tmp_path) == "\n\n".join(export.license_notices(lm))
+    finally:
+        lm.license_text = old
+
+
+def test_export_gguf_cancel_cleans_up(lm, tmp_path, monkeypatch):
+    tools = _Tools(monkeypatch)
+    before = _state(lm)
+    ev = threading.Event()
+    ev.set()
+    out_dir = tmp_path / "o"
+    with pytest.raises(Cancelled):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), out_dir, "m", "Q8_0", _fake_llama(tmp_path),
+                    safety=False, cancel=ev)
+    assert not out_dir.exists() and tools.calls == []
+    after = _state(lm)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_export_gguf_cancel_mid_run_leaves_nothing(lm, tmp_path, monkeypatch):
+    ev = threading.Event()
+    tools = _Tools(monkeypatch, on_convert=ev.set)  # dönüştürücü bitince iptal gelir
+    before = _state(lm)
+    out_dir = tmp_path / "o"
+    with pytest.raises(Cancelled):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), out_dir, "m", "Q8_0", _fake_llama(tmp_path),
+                    safety=False, cancel=ev)
+    assert len(tools.calls) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["llama"]  # ne klasör ne .tmp
+    after = _state(lm)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_export_gguf_reports_monotonic_progress(lm, tmp_path, monkeypatch):
+    _Tools(monkeypatch)
+    seen = []
+    export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", "m", "Q8_0", _fake_llama(tmp_path),
+                safety=False, progress=lambda p, msg: seen.append(p))
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0) and len(seen) >= 4
+
+
+def test_save_safetensors_cancel_restores(lm, tmp_path, monkeypatch):
+    before = _state(lm)
+    ev = threading.Event()
+    real = type(lm.model).save_pretrained
+
+    def save_then_cancel(self, *a, **k):
+        real(self, *a, **k)
+        ev.set()  # kayıt bittikten hemen sonra iptal
+
+    monkeypatch.setattr(type(lm.model), "save_pretrained", save_then_cancel)
+    with pytest.raises(Cancelled):
+        save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", cancel=ev)
+    assert list(tmp_path.iterdir()) == []  # ne çıktı ne <out_dir>.tmp
+    after = _state(lm)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_save_safetensors_preset_cancel_does_nothing(lm, tmp_path):
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", cancel=ev)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_safetensors_reports_progress(lm, tmp_path):
+    seen = []
+    save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", progress=lambda p, m: seen.append(p))
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0)
+
+
+def test_disk_full_raises_diskfull(lm, tmp_path, monkeypatch):
+    _no_space(monkeypatch)
+    with pytest.raises(DiskFull) as ei:
+        save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o")
+    assert isinstance(ei.value, OSError)
+    assert not (tmp_path / "o").exists()
+
+
+def test_export_gguf_disk_full_before_any_write(lm, tmp_path, monkeypatch):
+    tools = _Tools(monkeypatch)
+    _no_space(monkeypatch)
+    with pytest.raises(DiskFull):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", "m", "Q8_0", _fake_llama(tmp_path),
+                    safety=False)
+    assert not (tmp_path / "o").exists() and tools.calls == []
+
+
+def test_disk_check_uses_gguf_peak(lm, tmp_path, monkeypatch):
+    # safetensors için yeter (1.5x), ama GGUF tepe kullanımı (st + 2n + q·n) sığmaz → DiskFull
+    _Tools(monkeypatch)
+    llama = _fake_llama(tmp_path)
+    _no_space(monkeypatch, free=int(export._estimate_bytes(lm, False) * 1.5))
+    with pytest.raises(DiskFull):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", "m", "Q8_0", llama, safety=False)
+
+
+def test_estimate_export_bytes_gguf(lm):
+    n = sum(p.numel() for p in lm.model.parameters())
+    st = export._estimate_bytes(lm, False)
+    assert estimate_export_bytes(lm, "safetensors", False) == st
+    assert estimate_export_bytes(lm, "gguf_q8_0", False) == int(st + 2 * n + 1.07 * n)
+    assert estimate_export_bytes(lm, "gguf_q4_k_m", False) == int(st + 2 * n + 0.6 * n)
+    assert QUANT_BYTES_PER_PARAM == {"Q4_K_M": 0.6, "Q8_0": 1.07}

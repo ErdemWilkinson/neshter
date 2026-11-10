@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from neshter.licenses import (
     read_gguf_license,
     read_license,  # noqa: F401  (loader.read_license: geriye uyumlu yeniden dışa aktarım)
 )
+from neshter.progress import ProgressFn, check_cancel, sub_progress
 
 SUPPORTED_FAMILIES = ("llama", "qwen2", "gemma2")
 _CHUNK = 1024 * 1024
@@ -52,24 +54,51 @@ class LoadedModel:
     license_text: str | None = None
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, on_bytes=None, cancel: threading.Event | None = None) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(_CHUNK):
+            check_cancel(cancel)
             h.update(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
     return h.hexdigest()
 
 
-def sha256_path(path: Path) -> str:
-    """Dosya: içerik SHA-256. Klasör: sıralı (göreli yol + dosya hash'i) birleşiminin SHA-256'sı."""
+def sha256_path(
+    path: Path, progress: ProgressFn | None = None, cancel: threading.Event | None = None
+) -> str:
+    """Dosya: içerik SHA-256. Klasör: sıralı (göreli yol + dosya hash'i) birleşiminin SHA-256'sı.
+
+    `progress` bayt oranıyla (0..1) çağrılır; `cancel` kurulursa Cancelled yükselir.
+    """
     path = Path(path)
+    check_cancel(cancel)
     if path.is_file():
-        return _file_sha256(path)
-    h = hashlib.sha256()
-    files = sorted((p for p in path.rglob("*") if p.is_file()), key=lambda p: p.relative_to(path).as_posix())
-    for p in files:
-        h.update(f"{p.relative_to(path).as_posix()}\0{_file_sha256(p)}\n".encode())
-    return h.hexdigest()
+        files = [path]
+        rel = None
+    else:
+        files = sorted((p for p in path.rglob("*") if p.is_file()), key=lambda p: p.relative_to(path).as_posix())
+        rel = path
+    total = sum(p.stat().st_size for p in files) or 1
+    done = 0
+
+    def on_bytes(n: int) -> None:
+        nonlocal done
+        done += n
+        if progress is not None:
+            progress(min(1.0, done / total), "SHA-256 hesaplanıyor")
+
+    if rel is None:
+        digest = _file_sha256(path, on_bytes, cancel)
+    else:
+        h = hashlib.sha256()
+        for p in files:
+            h.update(f"{p.relative_to(rel).as_posix()}\0{_file_sha256(p, on_bytes, cancel)}\n".encode())
+        digest = h.hexdigest()
+    if progress is not None:
+        progress(1.0, "SHA-256 hazır")
+    return digest
 
 
 def _unsupported(family: str) -> UnsupportedArchitecture:
@@ -221,7 +250,12 @@ def _pick_device(model, device: str) -> tuple[str, str | None]:
 
 
 def load_model(
-    path: Path, device: str = "auto", dtype: torch.dtype | None = None, name: str | None = None
+    path: Path,
+    device: str = "auto",
+    dtype: torch.dtype | None = None,
+    name: str | None = None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> LoadedModel:
     """Modeli yükler. `dtype=None` hesaplama politikasıdır (`pick_compute_dtype`): GPU'da bf16; yerel bf16'sı
     olmayan CPU'da RAM yeterse float32, değilse bf16 (+ yavaşlık notu). Açık dtype aynen uygulanır.
@@ -229,8 +263,14 @@ def load_model(
     Ağırlıklar doğrudan hedef dtype'ta okunur (bf16'ya yuvarlayıp yükseltmek yok). Kayıt dtype'ı bundan
     bağımsızdır (`export.save_dtype`). `name` verilirse görünen ad odur (ör. Ollama'nın "qwen2.5:7b"si);
     yoksa dosya/klasör adı. Uzantısız dosyalar (Ollama blob'ları) GGUF sihirli baytlarıyla tanınır.
+
+    İlerleme: ağırlık okuma 0.1 → 0.6, dtype/cihaz 0.7, SHA-256 0.75 → 1.0. Her aşamadan sonra iptal denetlenir;
+    iptalde model bırakılıp Cancelled yükseltilir.
     """
     path = Path(path)
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.1, "Ağırlıklar okunuyor")
     is_dir = path.is_dir()
     is_gguf_file = not is_dir and (path.suffix.lower() == ".gguf" or (path.is_file() and is_gguf(path)))
     is_pt = not is_dir and not is_gguf_file and path.suffix.lower() == ".pt"
@@ -270,6 +310,14 @@ def load_model(
         default_name = path.stem
         license_, license_text = folder_license(path.parent)
 
+    if progress is not None:
+        progress(0.6, "Ağırlıklar okundu")
+    try:
+        check_cancel(cancel)
+    except BaseException:
+        del model, tokenizer
+        raise
+
     _check_family(model.config.model_type)
     if not (is_dir or is_pt):  # GGUF: iskelet yok, cihaz yüklemeden sonra seçilir
         device, device_note = _pick_device(model, device)
@@ -280,13 +328,21 @@ def load_model(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    if progress is not None:
+        progress(0.7, "Dtype ve cihaz ayarlandı")
+    try:
+        check_cancel(cancel)
+        sha = sha256_path(path, sub_progress(progress, 0.75, 1.0), cancel)
+    except BaseException:
+        del model, tokenizer
+        raise
 
     return LoadedModel(
         model=model,
         tokenizer=tokenizer,
         arch=arch_info(model),
         source_path=path,
-        source_sha256=sha256_path(path),
+        source_sha256=sha,
         license=license_,
         name=name or default_name,
         device_note=device_note,

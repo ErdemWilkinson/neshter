@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import recipe_for
+from neshter import export as export_module
 from neshter.server import app as app_module
 from neshter.server.app import create_app
 from neshter.server.jobs import JobManager
@@ -534,25 +535,50 @@ def test_export_gguf_without_llama_cpp_is_job_error(ready, tmp_path, monkeypatch
 def test_export_gguf_pipeline_with_stubbed_tools(ready, tmp_path, monkeypatch):
     calls = {}
 
-    def fake_to_gguf(hf_dir, out_file, quant, llama_cpp):
-        calls.update(hf=(hf_dir / "model.safetensors").is_file(), out=out_file, quant=quant)
+    def fake_to_gguf(hf_dir, out_file, quant, llama_cpp, metadata=None, cancel=None):
+        calls.update(hf=(hf_dir / "model.safetensors").is_file(), out=out_file, quant=quant, metadata=metadata)
         out_file.write_bytes(b"GGUF")
         return out_file
 
-    def fake_ollama(name, gguf):
-        calls["ollama"] = (name, gguf)
+    def fake_ollama(name, gguf, license_text=None):
+        calls["ollama"] = (name, gguf, license_text)
 
     monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
-    monkeypatch.setattr(app_module, "to_gguf", fake_to_gguf)
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
     monkeypatch.setattr(app_module, "ollama_create", fake_ollama)
     c, a = ready
     out = tmp_path / "g2"
-    body = _export_body(out, format="gguf_q4_k_m", ollama=True)
+    body = _export_body(out, format="gguf_q4_k_m", ollama=True, concept="refusal")
     res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
     assert calls["hf"] and calls["quant"] == "Q4_K_M"
-    assert calls["ollama"][0] == "kesik"
-    assert (out / "kesik.gguf").is_file() and not (out / "_hf").exists()
-    assert res["path"] == str(out / "kesik.gguf")
+    assert calls["metadata"]["general.tags"] == ["neshter", "safety-ablated", "abliterated"]
+    assert calls["ollama"][0] == "kesik" and calls["ollama"][1] == out / "kesik.gguf"
+    assert calls["ollama"][2]  # Modelfile'a lisans metni gider (dosya, bellek ya da bildirim)
+    names = {p.name for p in out.iterdir()}
+    assert {"kesik.gguf", "README.md", "recipe.nester.json"} <= names and "_hf" not in names
+    assert res["path"] == str(out / "kesik.gguf") and res["safety_ablated"] is True
+
+
+def test_export_gguf_cancel_leaves_no_folder(ready, tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_to_gguf(hf_dir, out_file, quant, llama_cpp, metadata=None, cancel=None):
+        entered.set()
+        assert release.wait(10)
+        out_file.write_bytes(b"GGUF")
+        return out_file
+
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
+    monkeypatch.setattr(export_module, "to_gguf", slow_to_gguf)
+    c, a = ready
+    out = tmp_path / "iptal"
+    job = c.post("/api/export", json=_export_body(out, format="gguf_q8_0"), headers=a).json()["job_id"]
+    assert entered.wait(30)
+    c.post(f"/api/jobs/{job}/cancel", headers=a)
+    release.set()
+    wait_done(c, a, job, timeout=30, expect="cancelled")
+    assert not out.exists()
+    assert not list(tmp_path.glob("iptal*"))
 
 
 # --- Tarif --------------------------------------------------------------------------------------
@@ -752,7 +778,7 @@ def test_load_rejects_unknown_dtype(client, auth, tiny_model_dir):
 def test_cancel_during_load_leaves_session_empty(client, auth, lm, monkeypatch, tiny_model_dir):
     entered, release = threading.Event(), threading.Event()
 
-    def slow_load(path, dtype, name):
+    def slow_load(path, dtype, name, progress=None, cancel=None):
         entered.set()
         assert release.wait(10)
         return lm
@@ -764,6 +790,31 @@ def test_cancel_during_load_leaves_session_empty(client, auth, lm, monkeypatch, 
     release.set()
     wait_done(client, auth, job, expect="cancelled")
     assert client.app.state.session.lm is None
+
+
+def test_load_job_passes_progress_and_cancel_to_loader(client, auth, monkeypatch, tiny_model_dir):
+    from neshter.progress import check_cancel
+
+    entered = threading.Event()
+    seen = {}
+
+    def fake_load_model(path, device="auto", dtype=None, name=None, progress=None, cancel=None):
+        seen.update(progress=progress, cancel=cancel)
+        progress(0.3, "okunuyor")
+        entered.set()
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            check_cancel(cancel)  # iptal gelince Cancelled
+            time.sleep(0.02)
+        raise AssertionError("iptal gelmedi")
+
+    monkeypatch.setattr(app_module, "load_model", fake_load_model)
+    job = client.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=auth).json()["job_id"]
+    assert entered.wait(10)
+    assert client.get(f"/api/jobs/{job}", headers=auth).json()["progress"] == pytest.approx(0.3)
+    client.post(f"/api/jobs/{job}/cancel", headers=auth)
+    wait_done(client, auth, job, expect="cancelled")
+    assert seen["cancel"] is not None and client.app.state.session.lm is None
 
 
 def test_unexpected_load_error_is_wrapped_in_turkish(client, auth, monkeypatch, tiny_model_dir):
