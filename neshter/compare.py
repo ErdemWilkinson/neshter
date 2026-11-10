@@ -20,24 +20,29 @@ import torch
 import yaml
 from pydantic import BaseModel
 
-from neshter.concepts.detectors import _lower, detect_code, detect_refusal
+from neshter.concepts.detectors import DETECTORS, _lower, is_broken
 from neshter.interventions import Intervention, apply
 from neshter.loader import LoadedModel
-from neshter.metrics import Diff, rate_diff, wilson
+from neshter.metrics import ALPHA, Diff, holm, min_detectable_drop, paired_diff, wilson
 
 # --- Üretim -----------------------------------------------------------------------------------
+
+
+def _prompt_text(lm: LoadedModel, prompt: str) -> tuple[str, bool]:
+    """(modele verilecek metin, sohbet şablonlu mu)."""
+    tok = lm.tokenizer
+    if getattr(tok, "chat_template", None):
+        text = tok.apply_chat_template(
+            [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True
+        )
+        return text, True
+    return prompt, False
 
 
 def _encode(lm: LoadedModel, prompt: str, copies: int):
     """Sohbet şablonlu (tek kullanıcı mesajı) ya da ham girdi; `copies` kopya, sola dolgulu."""
     tok = lm.tokenizer
-    templated = bool(getattr(tok, "chat_template", None))
-    if templated:
-        text = tok.apply_chat_template(
-            [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True
-        )
-    else:
-        text = prompt
+    text, templated = _prompt_text(lm, prompt)
     device = next(lm.model.parameters()).device
     # Şablon BOS gibi özel token'ları zaten yazar; ikinci kez eklenmesin.
     return tok([text] * copies, return_tensors="pt", padding=True, add_special_tokens=not templated).to(device)
@@ -91,6 +96,26 @@ def generate_pair(
     return a, b, "sequential"
 
 
+def answer_nll(lm: LoadedModel, prompt: str, answer: str) -> float | None:
+    """Cevap token'larının, (şablonlu) istemden sonra, token başına ortalama NLL'i (nat).
+
+    Orijinal modelle ölçülür: çağıran, müdahale kancaları/gömülü ağırlıklar geri alınmışken (apply ve
+    bake dışında) çağırmalıdır. Cevap 0 token ise None.
+    """
+    tok = lm.tokenizer
+    text, templated = _prompt_text(lm, prompt)
+    p_ids = tok(text, add_special_tokens=not templated)["input_ids"]
+    a_ids = tok(answer, add_special_tokens=False)["input_ids"]
+    if not a_ids:
+        return None
+    device = next(lm.model.parameters()).device
+    ids = torch.tensor([p_ids + a_ids], device=device)
+    with torch.no_grad():
+        logits = lm.model(input_ids=ids, use_cache=False, logits_to_keep=len(a_ids) + 1).logits[0, :-1]
+    target = torch.tensor(a_ids, device=device)
+    return torch.nn.functional.cross_entropy(logits.to(torch.float32), target).item()
+
+
 # --- Test seti --------------------------------------------------------------------------------
 
 
@@ -116,10 +141,19 @@ def load_suite(path: Path | None = None) -> list[SuiteItem]:
 
 @dataclass
 class CategoryResult:
+    """Kategori başına eşli sonuç. a = ikisi de geçti, b = yalnız orijinal, c = yalnız müdahaleli,
+    d = ikisi de kaldı (k_orig = a + b, k_int = a + c). broken_*: bozuk cevap sayısı."""
+
     category: str
     n: int
     k_orig: int
     k_int: int
+    a: int
+    b: int
+    c: int
+    d: int
+    broken_orig: int
+    broken_int: int
     diff: Diff
     orig_ci: tuple[float, float] = field(init=False)  # Wilson %95 (orijinal oran)
     int_ci: tuple[float, float] = field(init=False)  # Wilson %95 (müdahaleli oran)
@@ -152,14 +186,27 @@ def answer_matches(answer: str, text: str) -> bool:
 
 
 def _passes(item: SuiteItem, answer: str) -> bool:
-    if item.check == "code":
-        return detect_code(answer)
-    if item.check == "refusal":
-        return detect_refusal(answer)
+    if item.check in DETECTORS:
+        return DETECTORS[item.check](answer)
     accepted = item.accepted()
     if not accepted:
         raise ValueError(f"'contains' öğesinde answer eksik: {item.prompt!r}")
     return any(answer_matches(a, answer) for a in accepted)
+
+
+def _outcome(item: SuiteItem, answer: str, broken: bool, is_target: bool) -> bool:
+    """Bozuk cevap asla ablasyon başarısı sayılmaz: hedefte geçti (davranış sürüyor), diğerlerinde kaldı."""
+    if broken:
+        return is_target
+    return _passes(item, answer)
+
+
+def _apply_holm(results: list[CategoryResult], target: str | None) -> None:
+    """Hedef dışı kategorilerde Holm düzeltmeli p'yi (p_adj) ve belirsizliği doldurur; hedefe dokunmaz."""
+    others = [r for r in results if r.category != target]
+    for r, p_adj in zip(others, holm([r.diff.p_value for r in others])):
+        r.diff.p_adj = p_adj
+        r.diff.uncertain = p_adj >= ALPHA
 
 
 def run_suite(
@@ -169,26 +216,39 @@ def run_suite(
     progress: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
     max_new_tokens: int = 200,
+    target: str | None = None,
 ) -> list[CategoryResult]:
-    """Kategori başına orijinal/müdahaleli başarı sayıları. İptalde kısmi sonuç atılır ([] döner)."""
-    counts: dict[str, list[int]] = {}  # kategori -> [n, k_orig, k_int]; ekleme sırası = ilk görünüş
+    """Kategori başına eşli (orijinal, müdahaleli) sonuç tablosu. İptalde kısmi sonuç atılır ([] döner).
+
+    `progress(done, total)`: tamamlanan prompt sayısı. Bozukluk için NLL, generate_pair döndükten sonra
+    (müdahale kancaları kalkmışken) orijinal modelle ölçülür. Holm düzeltmesi hedef dışı kategorilere
+    uygulanır (hedef yoksa tümüne).
+    """
+    cells: dict[str, list[int]] = {}  # kategori -> [a, b, c, d, bozuk_orig, bozuk_int]; sıra = ilk görünüş
     total = len(items)
     for done, item in enumerate(items):
         if cancel is not None and cancel.is_set():
             return []
         orig, mod, _ = generate_pair(lm, item.prompt, interventions, max_new_tokens=max_new_tokens)
-        c = counts.setdefault(item.category, [0, 0, 0])
-        c[0] += 1
-        c[1] += _passes(item, orig)
-        c[2] += _passes(item, mod)
+        broken_o = is_broken(orig, answer_nll(lm, item.prompt, orig))
+        broken_m = is_broken(mod, answer_nll(lm, item.prompt, mod))
+        is_target = item.category == target
+        pass_o = _outcome(item, orig, broken_o, is_target)
+        pass_m = _outcome(item, mod, broken_m, is_target)
+        cell = cells.setdefault(item.category, [0, 0, 0, 0, 0, 0])
+        cell[(0 if pass_m else 1) if pass_o else (2 if pass_m else 3)] += 1
+        cell[4] += broken_o
+        cell[5] += broken_m
         if progress is not None:
             progress(done + 1, total)
     if cancel is not None and cancel.is_set():
         return []
-    return [
-        CategoryResult(cat, n, k_orig, k_int, rate_diff(k_orig, n, k_int, n))
-        for cat, (n, k_orig, k_int) in counts.items()
+    results = [
+        CategoryResult(cat, a + b + c + d, a + b, a + c, a, b, c, d, bo, bi, paired_diff(a, b, c, d))
+        for cat, (a, b, c, d, bo, bi) in cells.items()
     ]
+    _apply_holm(results, target)
+    return results
 
 
 # --- Özet -------------------------------------------------------------------------------------
@@ -199,6 +259,7 @@ class Summary:
     level: Literal["good", "mixed", "bad"]
     tr: str
     en: str
+    mde_points: int  # testin görebileceği en küçük düşüş (puan): hedef dışı en küçük n, m = hedef dışı sayısı
 
 
 def _points(r: CategoryResult) -> float:
@@ -206,7 +267,10 @@ def _points(r: CategoryResult) -> float:
 
 
 def _significant_decrease(r: CategoryResult) -> bool:
-    return not r.diff.uncertain and r.diff.hi < 0
+    """Anlamlı düşüş: kullanılan p < 0.05 ve fark negatif. Hedef dışı kategoride p = Holm düzeltmeli p_adj
+    (run_suite doldurur), hedefte ham McNemar p."""
+    p_used = r.diff.p_adj if r.diff.p_adj is not None else r.diff.p_value
+    return p_used is not None and p_used < ALPHA and r.diff.diff < 0
 
 
 def _names(rs: list[CategoryResult]) -> str:
@@ -214,20 +278,35 @@ def _names(rs: list[CategoryResult]) -> str:
 
 
 def summarize(results: list[CategoryResult], target: str) -> Summary:
+    """Düz dilde özet. Anlamlılık run_suite'in doldurduğu p / p_adj değerlerinden okunur."""
     by_name = {r.category: r for r in results}
     if target not in by_name:
         raise ValueError(f"Hedef kategori '{target}' sonuçlarda yok.")
-    if not _significant_decrease(by_name[target]):
-        return Summary(
+    tgt = by_name[target]
+    others = [r for r in results if r.category != target]
+    min_n = min((r.n for r in others), default=tgt.n)
+    mde = round(100 * min_detectable_drop(min_n, m=len(others)))
+    mde_tr = f"Bu test yaklaşık {mde} puandan küçük düşüşleri göremez."
+    mde_en = f"This test cannot detect drops smaller than about {mde} points."
+    broken_tr = broken_en = ""
+    if tgt.broken_int > tgt.broken_orig:
+        k = tgt.broken_int
+        broken_tr = f" Hedef kategoride {k} cevap bozuk çıktı (bozuk cevaplar başarı sayılmaz)."
+        broken_en = f" {k} answers in the target category were broken (broken answers never count as success)."
+
+    def out(level: Literal["good", "mixed", "bad"], tr: str, en: str) -> Summary:
+        return Summary(level, tr + broken_tr, en + broken_en, mde)
+
+    if not _significant_decrease(tgt):
+        return out(
             "bad",
             "Hedef davranış belirgin şekilde azalmadı; bu müdahale istenen etkiyi vermedi.",
             "The target behavior did not drop clearly; this change did not have the intended effect.",
         )
-    others = [r for r in results if r.category != target]
     hard = [r for r in others if _significant_decrease(r)]
     if hard:
         names = _names(hard)
-        return Summary(
+        return out(
             "bad",
             f"Hedef davranış azaldı, ama şu kategorilerde de belirgin düşüş var: {names}.",
             f"The target behavior dropped, but these categories also dropped clearly: {names}.",
@@ -235,15 +314,15 @@ def summarize(results: list[CategoryResult], target: str) -> Summary:
     soft = [r for r in others if _points(r) < -2]
     if soft:
         names = _names(soft)
-        return Summary(
+        return out(
             "mixed",
             f"Hedef davranış belirgin şekilde azaldı. Bazı kategorilerde hafif düşüş var ama "
-            f"hata payı içinde: {names}. Daha fazla test önerilir.",
+            f"hata payı içinde: {names}. Daha fazla test önerilir. {mde_tr}",
             f"The target behavior dropped clearly. Some categories dropped slightly but within "
-            f"the margin of error: {names}. More tests are advised.",
+            f"the margin of error: {names}. More tests are advised. {mde_en}",
         )
-    return Summary(
+    return out(
         "good",
-        "Hedef davranış belirgin şekilde azaldı, genel yetenekte anlamlı bir kayıp görünmüyor.",
-        "The target behavior dropped clearly, with no meaningful loss in general ability.",
+        f"Hedef davranış belirgin şekilde azaldı; diğer kategorilerde anlamlı bir düşüş görülmedi. {mde_tr}",
+        f"The target behavior dropped clearly; no other category dropped significantly. {mde_en}",
     )

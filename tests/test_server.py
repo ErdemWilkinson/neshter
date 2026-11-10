@@ -377,14 +377,14 @@ def fast_metrics(monkeypatch):
 
 def test_suite_job_with_stub_runner(ready, monkeypatch, fast_metrics):
     from neshter.compare import CategoryResult
-    from neshter.metrics import rate_diff
+    from neshter.metrics import paired_diff
 
-    def fake(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200):
+    def fake(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200, **kw):
         progress(1, 2)
         progress(2, 2)
         return [
-            CategoryResult("code", 10, 10, 2, rate_diff(10, 10, 2, 10)),
-            CategoryResult("general", 10, 9, 9, rate_diff(9, 10, 9, 10)),
+            CategoryResult("code", 10, 10, 2, 2, 8, 0, 0, 0, 0, paired_diff(2, 8, 0, 0)),
+            CategoryResult("general", 10, 9, 9, 9, 0, 0, 1, 0, 0, paired_diff(9, 0, 0, 1)),
         ]
 
     monkeypatch.setattr(app_module, "run_suite", fake)
@@ -404,7 +404,7 @@ def test_suite_rejects_unknown_target(ready):
 def test_cancel_job(ready, monkeypatch):
     started = threading.Event()
 
-    def slow(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200):
+    def slow(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200, **kw):
         started.set()
         for _ in range(400):  # en çok ~20 sn; iptalde hemen çıkar
             if cancel is not None and cancel.is_set():
@@ -769,13 +769,17 @@ def test_unexpected_load_error_is_wrapped_in_turkish(client, auth, monkeypatch, 
 # --- Fix wave: I3/I4 (tarif metrikleri, nötr set) ---------------------------------------------------
 
 
-def _stub_suite(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200):
-    from neshter.compare import CategoryResult
-    from neshter.metrics import rate_diff
+_STUB_SUITE_CALLS: list[dict] = []
 
+
+def _stub_suite(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200, **kw):
+    from neshter.compare import CategoryResult
+    from neshter.metrics import paired_diff
+
+    _STUB_SUITE_CALLS.append(kw)
     return [
-        CategoryResult("code", 10, 10, 2, rate_diff(10, 10, 2, 10)),
-        CategoryResult("general", 10, 9, 9, rate_diff(9, 10, 9, 10)),
+        CategoryResult("code", 10, 10, 2, 2, 8, 0, 0, 0, 1, paired_diff(2, 8, 0, 0)),
+        CategoryResult("general", 10, 9, 9, 9, 0, 0, 1, 0, 0, paired_diff(9, 0, 0, 1)),
     ]
 
 
@@ -792,6 +796,12 @@ def test_suite_job_returns_recipe_metrics_and_wilson(ready, monkeypatch, fast_me
     assert m["perplexity_orig"] > 1 and m["perplexity_int"] > 1
     assert m["n_prompts"] == len(load_neutral())
     assert res["categories"][0]["orig_ci"] == list(wilson(10, 10)[1:])
+    code = res["categories"][0]
+    assert (code["a"], code["b"], code["c"], code["d"]) == (2, 8, 0, 0)
+    assert (code["broken_orig"], code["broken_int"]) == (0, 1)
+    assert code["diff"]["p_value"] == pytest.approx(2 * 0.5**8) and code["diff"]["p_adj"] is None
+    assert _STUB_SUITE_CALLS[-1].get("target") == "code"  # sunucu hedefi run_suite'e iletir
+    assert isinstance(res["summary"]["mde_points"], int)
 
 
 def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
