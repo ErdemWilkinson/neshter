@@ -19,7 +19,7 @@ import uvicorn
 
 from neshter.export import export_gguf, find_llama_cpp, save_safetensors, verify_source_untouched
 from neshter.loader import load_model
-from neshter.recipe import check_against, load_recipe, to_interventions
+from neshter.recipe import HeadOp, check_against, load_recipe, to_interventions
 from neshter.server.app import create_app
 
 HOST = "127.0.0.1"
@@ -81,6 +81,15 @@ def _apply(args: argparse.Namespace) -> int:
         _err(f"Tarif okunamadı: {e}")
         return EXIT_RECIPE
 
+    heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    dirs = len(recipe.interventions) - heads
+    print(f"Tarif: {heads} head, {dirs} yön, kavram={recipe.concept or '-'}")
+    if dirs and recipe.concept != "refusal" and not args.label_safety:
+        _err(
+            "Uyarı: bu tarif yön silme içeriyor; Neşter tarifin iddia ettiği kavramı doğrulayamaz. "
+            "Bir reddetme yönüyse --label-safety ile etiketleyin."
+        )
+
     quant = _QUANT.get(args.format)
     llama_cpp = None
     if quant:
@@ -120,13 +129,12 @@ def _apply(args: argparse.Namespace) -> int:
 
     try:
         count = len(to_interventions(recipe))
-        # Kayıt tarifin kendisinden yapılır: recipe.concept == "refusal" ise metadata ve model kartı işlenir.
+        # Etiket: tarifin kavramı "refusal" ya da --label-safety (kayıt katmanı ikisini de zorlar).
+        safety = args.label_safety or recipe.concept == "refusal"
         if quant is None:
-            result = save_safetensors(lm, recipe, out)
+            result = save_safetensors(lm, recipe, out, safety_ablated=safety)
         else:
-            result = export_gguf(
-                lm, recipe, out, out.name, quant, llama_cpp, safety=recipe.concept == "refusal"
-            )
+            result = export_gguf(lm, recipe, out, out.name, quant, llama_cpp, safety=safety)
         if not verify_source_untouched(lm):
             _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor).")
             return EXIT_ERROR
@@ -156,6 +164,10 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--out", type=Path, required=True, help="çıktı klasörü (var olmamalı)")
     apply.add_argument("--format", choices=_FORMATS, default="safetensors")
     apply.add_argument("--force", action="store_true", help="SHA-256 uyuşmazlığına rağmen uygula")
+    apply.add_argument(
+        "--label-safety", action="store_true",
+        help="çıktıyı güvenlik-ablasyonu olarak etiketle (tarifteki yön bir reddetme yönüyse)",
+    )
     apply.set_defaults(func=_apply)
     return p
 
