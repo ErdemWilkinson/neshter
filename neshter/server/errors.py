@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from neshter.compare import _is_oom
-from neshter.export import DiskFull, LlamaCppMissing
+from neshter.export import DiskFull, LlamaCppMissing, SourceModified
 from neshter.loader import UnsafeModelFile, UnsupportedArchitecture
 from neshter.progress import Cancelled
 
@@ -52,6 +52,8 @@ def _code_of(exc: BaseException) -> str | None:
         return "llama_cpp_missing"
     if isinstance(exc, DiskFull):
         return "disk_full"
+    if isinstance(exc, SourceModified):
+        return "source_modified"
     if isinstance(exc, FileExistsError):
         return "exists"
     if isinstance(exc, MemoryError) or _is_oom(exc):

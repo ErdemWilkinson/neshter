@@ -572,13 +572,12 @@ def test_export_validation(ready, tmp_path):
     assert c.post("/api/export", json=_export_body(x, ekstra=1), headers=a).status_code == 422
 
 
-def test_export_gguf_without_llama_cpp_is_job_error(ready, tmp_path, monkeypatch):
+def test_export_gguf_without_llama_cpp_is_rejected_before_the_job(ready, tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "find_llama_cpp", lambda: None)
     c, a = ready
     out = tmp_path / "g"
-    job = c.post("/api/export", json=_export_body(out, format="gguf_q8_0"), headers=a).json()["job_id"]
-    st = wait_done(c, a, job, expect="error")
-    assert "llama.cpp" in st["error"]
+    r = c.post("/api/export", json=_export_body(out, format="gguf_q8_0"), headers=a)  # M2: uzun kayıttan önce
+    assert r.status_code == 422 and r.json()["error_code"] == "llama_cpp_missing" and "llama.cpp" in r.json()["detail"]
     assert not out.exists()
 
 
@@ -593,7 +592,8 @@ def test_export_gguf_pipeline_with_stubbed_tools(ready, tmp_path, monkeypatch):
     def fake_ollama(name, gguf, license_text=None):
         calls["ollama"] = (name, gguf, license_text)
 
-    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: _fake_converter_dir(tmp_path))
+    monkeypatch.setattr(app_module, "_ollama_available", lambda: True)
     monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
     monkeypatch.setattr(app_module, "ollama_create", fake_ollama)
     c, a = ready
@@ -618,7 +618,8 @@ def test_export_gguf_cancel_leaves_no_folder(ready, tmp_path, monkeypatch):
         out_file.write_bytes(b"GGUF")
         return out_file
 
-    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: _fake_converter_dir(tmp_path))
+    monkeypatch.setattr(app_module, "_ollama_available", lambda: True)
     monkeypatch.setattr(export_module, "to_gguf", slow_to_gguf)
     c, a = ready
     out = tmp_path / "iptal"
@@ -955,12 +956,12 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
 
 
 def test_export_fails_when_source_sha_changes(ready, tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "verify_source_untouched", lambda lm: False)
+    monkeypatch.setattr(export_module, "verify_source_untouched", lambda lm, progress=None, cancel=None: False)
     c, a = ready
     out = tmp_path / "sha"
     st = wait_done(c, a, c.post("/api/export", json=_export_body(out), headers=a).json()["job_id"], timeout=120, expect="error")
     assert "SHA-256" in st["error"]
-    assert out.exists()  # çıktı silinmez
+    assert not out.exists()  # M1: değişmiş kaynaktan çıkan çıktı bırakılmaz
 
 
 def _hunt_direction(c, a, concept_id, seed):
@@ -1388,7 +1389,8 @@ def test_default_name_is_used_for_gguf_and_ollama(unlabelled, tmp_path, monkeypa
         out_file.write_bytes(b"GGUF")
         return out_file
 
-    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: _fake_converter_dir(tmp_path))
+    monkeypatch.setattr(app_module, "_ollama_available", lambda: True)
     monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
     monkeypatch.setattr(app_module, "ollama_create", lambda name, gguf, license_text=None: calls.update(name=name, gguf=gguf))
     c, a = unlabelled
@@ -2088,3 +2090,63 @@ def test_models_memory_bf16_when_ram_short_for_fp32(tmp_path, auth, monkeypatch)
     c = _make({"huggingface": [_hf_root_with_model(tmp_path)]})
     (entry,) = c.get("/api/models", headers=auth).json()
     assert entry["memory_bytes"] == estimate_memory_bytes(1000, 2)
+
+
+# --- Final fix wave: M1, M2, M3, M8, M9 -------------------------------------------------------------------
+
+
+def _fake_converter_dir(tmp_path):
+    d = tmp_path / "llama"
+    d.mkdir(exist_ok=True)
+    (d / "convert_hf_to_gguf.py").write_text("# sahte", encoding="utf-8")
+    return d
+
+
+def test_export_source_modified_removes_output_with_code(ready, tmp_path, monkeypatch):
+    monkeypatch.setattr(export_module, "verify_source_untouched", lambda lm, progress=None, cancel=None: False)
+    c, a = ready
+    out = tmp_path / "sha2"
+    st = wait_done(c, a, c.post("/api/export", json=_export_body(out), headers=a).json()["job_id"], timeout=120, expect="error")
+    assert st["error_code"] == "source_modified" and "SHA-256" in st["error"]
+    assert not out.exists()
+
+
+def test_export_ollama_missing_is_rejected_up_front(ready, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: _fake_converter_dir(tmp_path))
+    monkeypatch.setattr(app_module, "_ollama_available", lambda: False)
+    c, a = ready
+    r = c.post("/api/export", json=_export_body(tmp_path / "o", format="gguf_q8_0", ollama=True), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "ollama_missing"
+    assert not (tmp_path / "o").exists()
+
+
+def test_export_llama_cpp_without_converter_is_rejected_up_front(ready, tmp_path, monkeypatch):
+    c, a = ready
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)  # llama-quantize var, dönüştürücü yok
+    r = c.post("/api/export", json=_export_body(tmp_path / "o", format="gguf_q8_0"), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "llama_cpp_missing"
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: None)
+    r = c.post("/api/export", json=_export_body(tmp_path / "o", format="gguf_q8_0"), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "llama_cpp_missing"
+    assert not (tmp_path / "o").exists()
+
+
+@pytest.mark.parametrize("name", ["CON", "nul", "COM1", "lpt3.gguf", "ad."])
+def test_export_name_rejects_windows_reserved(ready, tmp_path, name):
+    c, a = ready
+    r = c.post("/api/export", json=_export_body(tmp_path / "o", name=name), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+@pytest.mark.parametrize("bad", ["a\nFROM x", "a\tb", "a\x00b", "a\rb"])
+def test_export_out_dir_rejects_control_characters(ready, tmp_path, bad):
+    c, a = ready
+    r = c.post("/api/export", json=_export_body(str(tmp_path) + "\\" + bad), headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_export_capitalised_refusal_concept_is_labelled(unlabelled, tmp_path):
+    c, a = unlabelled
+    body = _export_body(tmp_path / "cap", concept="Refusal")
+    res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["safety_ablated"] is True
