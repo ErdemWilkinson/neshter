@@ -48,7 +48,7 @@ from neshter.loader import (
     read_license,
 )
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
-from neshter.progress import sub_progress
+from neshter.progress import ProgressFn, check_cancel, sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import model_arch, scan_all
 from neshter.server.jobs import TERMINAL, JobManager
@@ -290,26 +290,42 @@ def _default_effect_prompts() -> list[str]:
     return load_neutral()
 
 
-def _recipe_metrics(lm: LoadedModel, interventions: list, n_random: int = DEFAULT_N_RANDOM) -> dict:
+def _recipe_metrics(
+    lm: LoadedModel,
+    interventions: list,
+    n_random: int = DEFAULT_N_RANDOM,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> dict:
     """Tarif düzeyi metrikler (nötr set): KL + aynı biçimde rastgele kontrol, perplexity önce/sonra.
 
     Hedef davranış ORANI için rastgele kontrol v0.2'de (test setini ikinci kez koşturmak gerekir).
+    İlerleme 0..1 aralığındadır (çağıran sub_progress ile eşler); iptal çekilişler arasında kontrol edilir.
     """
     neutral = load_neutral()
     out: dict = {"n_prompts": len(neutral), "kl_random_note": None}
     try:
-        eff = recipe_effect(lm, interventions, neutral, n_random=n_random)
+        eff = recipe_effect(
+            lm, interventions, neutral, n_random=n_random, progress=sub_progress(progress, 0.0, 0.9), cancel=cancel
+        )
         out.update(
-            kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl, kl_random_p=eff.p_value, kl_percentile=eff.percentile
+            kl=eff.kl, kl_std=eff.kl_std, kl_random=eff.random_kl, kl_random_p=eff.p_value, kl_percentile=eff.percentile,
+            direction_control=eff.direction_control,
         )
     except ValueError as e:  # ör. neredeyse tüm head'ler seçili: aynı sayıda rastgele kontrol yok
         values = kl_effect(lm, neutral, interventions)
         out.update(
             kl=sum(values) / len(values), kl_std=None, kl_random=None, kl_random_p=None, kl_percentile=None,
-            kl_random_note=str(e),
+            direction_control=None, kl_random_note=str(e),
         )
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.9, "Perplexity ölçülüyor")
     out["perplexity_orig"] = perplexity(lm, neutral)
+    check_cancel(cancel)
     out["perplexity_int"] = perplexity(lm, neutral, interventions)
+    if progress is not None:
+        progress(1.0, "Metrikler hazır")
     return out
 
 
@@ -627,14 +643,14 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     lm,
                     items,
                     interventions,
-                    progress=lambda done, total: report(done / total, f"{done}/{total} test"),
+                    progress=lambda done, total: report(0.95 * done / total, f"{done}/{total} test"),
                     cancel=cancel,
                     max_new_tokens=body.max_new_tokens,
                 )
                 if cancel.is_set():
                     return None
-                report(0.97, "KL ve perplexity ölçülüyor")
-                metrics = _recipe_metrics(lm, interventions)
+                report(0.95, "KL ve perplexity ölçülüyor")
+                metrics = _recipe_metrics(lm, interventions, progress=sub_progress(report, 0.95, 1.0), cancel=cancel)
             if cancel.is_set():
                 return None
             return {
