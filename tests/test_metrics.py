@@ -204,6 +204,7 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
         assert not torch.allclose(dirs[0].direction, d.direction)
     again = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
     assert again == r  # tohumlu
+    assert r.direction_control == "isotropic" and r.layer_matched  # yön var: etiket dürüst, head'ler yine eşleşmiş
     ctrl, matched = m.random_control(lm, [d, HeadAblation(0, 1)], random.Random(0), torch.Generator().manual_seed(0))
     assert matched and len(ctrl) == 2  # artık (kontrol, eşleşti_mi) çifti döner
 
@@ -279,6 +280,7 @@ def test_effect_percentile_and_p_value(lm, monkeypatch):
     assert r.p_value == pytest.approx(3 / 21) and r.percentile == pytest.approx(90.0)
     assert r.random_p05 == pytest.approx(0.1) and r.random_p95 == pytest.approx(0.605)
     assert r.n_random == 20 and len(r.random_kls) == 20 and r.random_kl == pytest.approx(sum(r.random_kls) / 20)
+    assert r.layer_matched and r.direction_control is None  # yalnız head tarifi
     assert r.kl_se == pytest.approx(r.kl_std / math.sqrt(r.n_prompts))
 
 

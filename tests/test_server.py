@@ -1,6 +1,7 @@
 """Yerel API sunucusu: güvenlik katmanı, iş kuyruğu ve uçlar (TestClient; gerçek sunucu/ağ yok)."""
 
 import base64
+import functools
 import json
 import threading
 import time
@@ -249,10 +250,11 @@ def test_effect_job(ready):
     res = wait_done(c, a, job)["result"]
     assert set(res) == {
         "kl", "kl_std", "kl_se", "n_prompts", "random_kl", "random_kls", "random_p05", "random_p95",
-        "percentile", "p_value", "n_random", "layer_matched",
+        "percentile", "p_value", "n_random", "layer_matched", "direction_control",
     }
     assert res["n_prompts"] == 2 and res["n_random"] == 30 and len(res["random_kls"]) == 30
     assert 0 <= res["percentile"] <= 100 and 0 < res["p_value"] <= 1
+    assert res["layer_matched"] is True and res["direction_control"] is None
 
 
 def test_effect_n_random_bounds(ready):
@@ -267,7 +269,7 @@ def test_effect_n_random_bounds(ready):
 def test_recipe_metrics_adds_percentile_and_p(lm):
     from neshter.interventions import HeadAblation
 
-    out = app_module._recipe_metrics(lm, [HeadAblation(0, 1)], n_random=20)
+    out = app_module._recipe_metrics(lm, [HeadAblation(0, 1)], n_random=3)
     assert 0 <= out["kl_percentile"] <= 100 and 0 < out["kl_random_p"] <= 1
     assert out["kl_random"] >= 0 and out["kl_random_note"] is None
 
@@ -365,7 +367,15 @@ def test_compare_rejects_bad_ops(ready):
     assert c.post("/api/compare", json={"prompt": "a", "recipe_ops": wrong_dim}, headers=a).status_code == 422
 
 
-def test_suite_job_with_stub_runner(ready, monkeypatch):
+@pytest.fixture
+def fast_metrics(monkeypatch):
+    """Suite işlerinde tarif metriklerini 2 çekilişle koşturur (kapsam aynı, test hızlı)."""
+    monkeypatch.setattr(
+        app_module, "_recipe_metrics", functools.partial(app_module._recipe_metrics, n_random=2)
+    )
+
+
+def test_suite_job_with_stub_runner(ready, monkeypatch, fast_metrics):
     from neshter.compare import CategoryResult
     from neshter.metrics import rate_diff
 
@@ -769,7 +779,7 @@ def _stub_suite(lm, items, interventions, progress=None, cancel=None, max_new_to
     ]
 
 
-def test_suite_job_returns_recipe_metrics_and_wilson(ready, monkeypatch):
+def test_suite_job_returns_recipe_metrics_and_wilson(ready, monkeypatch, fast_metrics):
     from neshter.metrics import load_neutral, wilson
 
     monkeypatch.setattr(app_module, "run_suite", _stub_suite)
@@ -793,7 +803,7 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
         from neshter.metrics import EffectResult
 
         seen["prompts"] = prompts
-        return EffectResult(0.0, 0.0, 0.0, len(prompts), 0.0, [0.0] * 20, 0.0, 0.0, 0.0, 1.0, 20, True)
+        return EffectResult(0.0, 0.0, 0.0, len(prompts), 0.0, [0.0] * 20, 0.0, 0.0, 0.0, 1.0, 20, True, None)
 
     monkeypatch.setattr(app_module, "real_effect", fake)
     c, a = ready
@@ -1016,15 +1026,38 @@ def test_concepts_endpoint(client, auth):
     assert len(by["code"]["positive"]) >= 40
 
 
+def test_suite_cancel_during_recipe_metrics_is_cancelled_and_monotone(ready, monkeypatch):
+    monkeypatch.setattr(app_module, "run_suite", _stub_suite)
+    real = app_module._recipe_metrics
+    seen: list[float] = []
+
+    def spy(lm, interventions, n_random=2, progress=None, cancel=None):
+        def prog(p, msg=""):
+            seen.append(p)
+            progress(p, msg)
+            if len(seen) == 2:  # ilk çekilişten sonra iptal
+                cancel.set()
+
+        return real(lm, interventions, n_random=30, progress=prog, cancel=cancel)
+
+    monkeypatch.setattr(app_module, "_recipe_metrics", spy)
+    c, a = ready
+    job = c.post("/api/suite", json={"recipe_ops": HEAD_OPS, "target": "code"}, headers=a).json()["job_id"]
+    st = wait_done(c, a, job, timeout=120, expect="cancelled")
+    assert st["result"] is None
+    assert len(seen) >= 2 and seen == sorted(seen) and 0.0 <= seen[0] and seen[-1] <= 1.0
+    assert seen[-1] < 0.9  # perplexity aşamasına hiç geçilmedi
+
+
 def test_suite_without_target_has_no_summary(ready, monkeypatch):
     monkeypatch.setattr(app_module, "run_suite", _stub_suite)
-    monkeypatch.setattr(app_module, "_recipe_metrics", lambda lm, iv: {"kl": 0.0})
+    monkeypatch.setattr(app_module, "_recipe_metrics", lambda lm, iv, **kw: {"kl": 0.0})
     c, a = ready
     res = wait_done(c, a, c.post("/api/suite", json={"recipe_ops": HEAD_OPS}, headers=a).json()["job_id"])["result"]
     assert res["summary"] is None and len(res["categories"]) == 2
 
 
-def test_end_to_end_hunt_compare_suite_export(ready, tmp_path, monkeypatch, tiny_model_dir):
+def test_end_to_end_hunt_compare_suite_export(ready, tmp_path, monkeypatch, tiny_model_dir, fast_metrics):
     """load → hunt(refusal yönü) → compare → suite (sahte koşucu) → export (concept yok):
     SHA doğrulaması, güvenlik etiketi ve bf16 çıktı birlikte."""
     from safetensors import safe_open

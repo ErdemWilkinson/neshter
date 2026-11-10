@@ -12,6 +12,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import Literal
 
 import numpy as np
 import torch
@@ -132,7 +133,8 @@ class EffectResult:
     percentile: float  # 100 * #{rastgele < kl} / N
     p_value: float  # (1 + #{rastgele >= kl}) / (1 + N): permütasyon p
     n_random: int
-    layer_matched: bool  # False: bir katmanda havuz yetmedi, kalan en yakın katmanlardan alındı
+    layer_matched: bool  # tüm HEAD kontrolleri katman eşleşmeli mi (False: havuz yetmedi, en yakın katmanlardan tamamlandı)
+    direction_control: Literal["isotropic"] | None  # yön içeren tarifte "isotropic" (katman eşleşmez); aksi halde None
 
 
 def _dedupe(interventions: Sequence[Intervention]) -> list[Intervention]:
@@ -268,6 +270,7 @@ def recipe_effect(
         p_value=(1 + sum(r >= kl for r in random_kls)) / (1 + n_random),
         n_random=n_random,
         layer_matched=layer_matched,
+        direction_control="isotropic" if any(isinstance(iv, DirectionAblation) for iv in interventions) else None,
     )
 
 
