@@ -2,10 +2,13 @@
 
 Bu modüldeki matematik, kayıt (export) aşamasında ağırlıklara işlenecek olanla birebir aynı olmalıdır:
   - HeadAblation: o_proj girdisinin ilgili head dilimi 0 (ya da ortalama) -> o_proj sütunlarını sıfırlamaya denk.
-  - DirectionAblation: rezidüel akıma YAZAN her modülün çıktısında x <- x - (x . r) r:
-    embed, her katmanda o_proj ve down_proj (gemma2: post_attention_layernorm ve
-    post_feedforward_layernorm). Böylece katman içi ara rezidüel (MLP girdisi) dahil rezidüel akım
-    her noktada r'ye diktir ve sonuç ağırlık dikleştirmesiyle birebir aynıdır.
+  - DirectionAblation: tüm yönler TEK izdüşümle silinir. Q = direction_basis(r_1..r_k), yönlerin
+    gerdiği uzayın dik birim tabanıdır (SVD; kopya/bağımlı yönler tabanı büyütmez). Rezidüel akıma
+    YAZAN her modülün çıktısında x <- x - (x Q) Q^T: embed, her katmanda o_proj ve down_proj
+    (gemma2: post_attention_layernorm ve post_feedforward_layernorm). Böylece katman içi ara
+    rezidüel (MLP girdisi) dahil rezidüel akım her noktada HER r_i'ye diktir; yönlerin sırası önemsiz
+    (eski "liste sırasında sıralı bileşim" kuralının yerini alır: ilintili yönlerde sıralı izdüşüm
+    önceki yönü geri getirebiliyordu). Sonuç ağırlık dikleştirmesiyle birebir aynıdır.
     Son norm çıktısına dokunulmaz.
 """
 
@@ -33,6 +36,50 @@ def residual_writers(model, family: str) -> list[nn.Module]:
         else:
             mods += [o_proj(model, i), down_proj(model, i)]
     return mods
+
+
+def direction_basis(directions: Sequence[torch.Tensor], rtol: float = 1e-6) -> torch.Tensor:
+    """Yönlerin gerdiği uzayın dik birim tabanı Q [d, k'] (float32, sütunlar ortonormal).
+
+    Girdiler önce birim uzunluğa getirilir (normalize edilmemiş vektör kabul edilir); normu sıfır
+    olanlar atlanır (k' = 0 olabilir). Ayrıştırma float64'te SVD ile yapılır: S_j > rtol · max(S)
+    olan tekil vektörler tutulur, böylece kopya ve doğrusal bağımlı yönler tabanı büyütmez ve
+    sıralarından bağımsız olarak sonraki yönler kaybolmaz.
+    """
+    if not directions:
+        raise ValueError("En az bir yön vektörü gerekli.")
+    cols: list[torch.Tensor] = []
+    size: int | None = None
+    for v in directions:
+        v = torch.as_tensor(v).detach().to(device="cpu", dtype=torch.float64)
+        if v.ndim != 1:
+            raise ValueError(f"Yön vektörü tek boyutlu olmalı, şekil: {tuple(v.shape)}.")
+        if size is None:
+            size = v.numel()
+        elif v.numel() != size:
+            raise ValueError(f"Yön vektörlerinin uzunlukları farklı: {size} ve {v.numel()}.")
+        norm = v.norm()
+        if not torch.isfinite(norm):
+            raise ValueError("Yön vektörünün normu sonlu değil.")
+        if norm > 0:
+            cols.append(v / norm)
+    if not cols:
+        return torch.zeros(size, 0, dtype=torch.float32)
+    U, S, _ = torch.linalg.svd(torch.stack(cols, dim=1), full_matrices=False)
+    keep = S > rtol * S.max()
+    return U[:, keep].to(torch.float32).contiguous()
+
+
+def writer_bases(
+    model, family: str, directions: Sequence[torch.Tensor]
+) -> list[tuple[nn.Module, torch.Tensor]]:
+    """residual_writers(model, family) içindeki her modül için (modül, taban) çiftleri.
+
+    Kanca (apply) ve gömme (export.bake) aynı listeyi kullanır; böylece ikisi birebir eşdeğer kalır.
+    Şimdilik her modül aynı direction_basis(directions) tabanını alır.
+    """
+    basis = direction_basis(directions)
+    return [(module, basis) for module in residual_writers(model, family)]
 
 
 @dataclass(frozen=True)
@@ -63,24 +110,25 @@ def _check_batch(x: torch.Tensor, batch_index: int) -> None:
         raise ValueError(f"batch_index={batch_index}, ancak yığın boyutu {x.shape[0]}.")
 
 
-def _project_out(x: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-    # float32'de hesaplanır, girdinin dtype'ına döndürülür.
+def _project_out(x: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    # x <- x - (x Q) Q^T; float32'de hesaplanır, girdinin dtype'ına döndürülür.
     xf = x.to(torch.float32)
-    r = r.to(device=x.device, dtype=torch.float32)
-    return (xf - (xf @ r).unsqueeze(-1) * r).to(x.dtype)
+    q = basis.to(device=x.device, dtype=torch.float32)
+    return (xf - (xf @ q) @ q.T).to(x.dtype)
 
 
-def _direction_hook(direction: torch.Tensor, batch_index: int | None):
-    """Forward hook: çıktı Tensor ya da tuple (ilk eleman gizli durum) olabilir; aynı tip döner."""
+def _direction_hook(basis: torch.Tensor, batch_index: int | None):
+    """Forward hook (basis: [d, k'] dik birim taban). Çıktı Tensor ya da tuple (ilk eleman gizli
+    durum) olabilir; aynı tip döner."""
 
     def hook(module, args, output):
         h = output[0] if isinstance(output, tuple) else output
         if batch_index is None:
-            new = _project_out(h, direction)
+            new = _project_out(h, basis)
         else:
             _check_batch(h, batch_index)
             new = h.clone()
-            new[batch_index] = _project_out(h[batch_index], direction)
+            new[batch_index] = _project_out(h[batch_index], basis)
         if isinstance(output, tuple):
             return (new, *output[1:])
         return new
@@ -180,11 +228,10 @@ def apply(
                     _head_pre_hook(replacements, arch.head_dim, batch_index)
                 )
             )
-        writers = residual_writers(model, arch.family) if directions else []
-        for direction in directions:  # her modülde kayıt sırası = liste sırası (sıralı bileşim)
-            hook = _direction_hook(direction, batch_index)
-            for module in writers:
-                handles.append(module.register_forward_hook(hook))
+        bases = writer_bases(model, arch.family, directions) if directions else []
+        for module, basis in bases:  # yazıcı başına tek kanca: tüm yönlerin gerdiği uzay silinir
+            if basis.shape[1]:
+                handles.append(module.register_forward_hook(_direction_hook(basis, batch_index)))
         yield
     finally:
         for h in handles:
