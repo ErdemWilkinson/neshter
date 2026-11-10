@@ -1,7 +1,11 @@
+import threading
+
 import pytest
 import torch
 from pydantic import ValidationError
 
+import neshter.concepts.hunt as hunt_mod
+from neshter.arch import decoder_layers, o_proj
 from neshter.compare import load_suite
 from neshter.concepts.detectors import detect_code, detect_refusal
 from neshter.concepts.hunt import (
@@ -14,6 +18,7 @@ from neshter.concepts.hunt import (
     layer_scores,
 )
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset, split
+from neshter.progress import Cancelled
 
 
 def _small(c: Concept, n: int = 8) -> Concept:
@@ -120,8 +125,9 @@ def test_last_token_resid_matches_hf_hidden_states_with_chat_template(tiny_model
     finally:
         handle.remove()
     # 0..L−1: HF hidden_states ile aynı; L: son katman çıktısı (norm ÖNCESİ, HF'nin L'si norm sonrası).
-    assert torch.allclose(r[:2, 1], torch.stack([h[0, -1] for h in out.hidden_states[:2]]), atol=1e-5)
-    assert torch.allclose(r[2, 1], last["x"][0, -1], atol=1e-5)
+    # r yığınlı (sola dolgulu) hesaplanır; HF değerleri tek istek: sayısal fark 1e-4'e kadar kabul.
+    assert torch.allclose(r[:2, 1], torch.stack([h[0, -1] for h in out.hidden_states[:2]]), atol=1e-4)
+    assert torch.allclose(r[2, 1], last["x"][0, -1], atol=1e-4)
     assert not torch.allclose(r[2, 1], out.hidden_states[2][0, -1], atol=1e-3)
 
 
@@ -239,3 +245,96 @@ def test_hunt_all_presets_all_methods(lm, cid):
             assert r.direction.dtype == torch.float32 and r.direction.device.type == "cpu"
         else:
             assert r.direction is None and r.direction_layer is None
+
+
+# --- v0.1.1: yığınlama, erken durdurma, z yeniden kullanımı, ilerleme/iptal --------------------
+
+
+def _reference_last_token_z(lm, prompts):
+    """Eski tek tek (yığınsız) `_last_token_z`: [N, n_layers, n_heads, head_dim] o_proj girdisi, son token."""
+    arch = lm.arch
+    out = []
+    for p in prompts:
+        zs = {}
+
+        def make_hook(layer):
+            def hook(module, args):
+                zs[layer] = args[0].detach()[0, -1].reshape(arch.n_heads, arch.head_dim).to("cpu", torch.float32)
+
+            return hook
+
+        handles = [o_proj(lm.model, l).register_forward_pre_hook(make_hook(l)) for l in range(arch.n_layers)]
+        try:
+            with torch.no_grad():
+                lm.model.model(**hunt_mod._encode(lm, p), use_cache=False)
+        finally:
+            for h in handles:
+                h.remove()
+        out.append(torch.stack([zs[l] for l in range(arch.n_layers)]))
+    return torch.stack(out)
+
+
+def test_batched_resid_matches_unbatched(lm):
+    prompts = ["a", "merhaba dünya, bugün hava çok güzel ve kediler çatıda uyuyor", "hello world"]
+    batched, _ = hunt_mod._last_token_states(lm, prompts)
+    single = torch.cat([hunt_mod._last_token_states(lm, [p])[0] for p in prompts], dim=1)
+    assert torch.allclose(batched, single, atol=1e-4)
+
+
+def test_hidden_states_stop_at_skips_later_layers(lm):
+    calls = []
+    h = decoder_layers(lm.model)[1].register_forward_hook(lambda *a: calls.append(1))
+    try:
+        states = hunt_mod._hidden_states(lm, hunt_mod._encode_batch(lm, ["merhaba"]), stop_at=1)
+    finally:
+        h.remove()
+    assert len(states) == 2 and calls == []
+
+
+def test_captured_z_matches_last_token_z(lm):
+    ps = ["merhaba dünya", "hello world, this is a test"]
+    _, z = hunt_mod._last_token_states(lm, ps, capture_z=True)
+    assert z.shape == (2, 2, 4, 16) and z.dtype == torch.float32
+    assert torch.allclose(z, _reference_last_token_z(lm, ps), atol=1e-5)
+
+
+def test_attribution_hunt_reuses_negative_z(lm, monkeypatch):
+    real, captured = hunt_mod._last_token_states, []
+
+    def spy(lm_, prompts, capture_z=False, **k):
+        captured.append(capture_z)
+        return real(lm_, prompts, capture_z=capture_z, **k)
+
+    monkeypatch.setattr(hunt_mod, "_last_token_states", spy)
+    hunt_mod.hunt(lm, load_preset("code"), "attribution")
+    assert captured.count(True) == 1  # yalnızca negatifler; z için ikinci geçiş yok
+
+
+def test_hunt_reports_progress_and_cancels(lm):
+    seen = []
+    hunt_mod.hunt(lm, load_preset("code"), "activation_diff", progress=lambda p, m: seen.append(p))
+    assert seen == sorted(seen) and seen[-1] >= 0.9
+    ev = threading.Event()
+    with pytest.raises(Cancelled):
+        hunt_mod.hunt(lm, load_preset("code"), "activation_diff", progress=lambda p, m: ev.set(), cancel=ev)
+
+
+def test_hunt_attribution_progress_monotonic_and_cancels(lm):
+    seen = []
+    hunt_mod.hunt(lm, load_preset("code"), "attribution", progress=lambda p, m: seen.append(p))
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0)
+    ev = threading.Event()
+    with pytest.raises(Cancelled):
+        hunt_mod.hunt(lm, load_preset("code"), "attribution", progress=lambda p, m: ev.set(), cancel=ev)
+
+
+def test_default_method_cpu_is_activation_diff(lm):
+    assert hunt_mod.default_method(lm) == "activation_diff"
+
+
+def test_batched_activation_diff_matches_unbatched(lm, monkeypatch):
+    c = _small(load_preset("tone"), n=10)  # 10 > HUNT_BATCH: iki yığın
+    batched = activation_diff(lm, c)
+    monkeypatch.setattr(hunt_mod, "HUNT_BATCH", 1)
+    single = activation_diff(lm, c)
+    assert torch.allclose(batched, single, atol=1e-4)

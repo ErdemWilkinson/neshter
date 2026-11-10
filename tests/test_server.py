@@ -275,6 +275,33 @@ def test_hunt_without_direction_has_null_direction(ready):
     assert res["direction"] is None and res["direction_shape"] is None
 
 
+def test_hunt_method_defaults_to_activation_diff_on_cpu(ready):
+    c, a = ready
+    st = wait_done(c, a, c.post("/api/hunt", json={"concept_id": "code"}, headers=a).json()["job_id"], timeout=120)
+    assert st["result"]["method"] == "activation_diff"
+
+
+def test_hunt_cancel_mid_run_ends_cancelled(ready, monkeypatch):
+    from neshter.progress import check_cancel
+
+    started = threading.Event()
+
+    def slow_hunt(lm, concept, method, seed=0, progress=None, cancel=None):
+        progress(0.2, "başladı")
+        started.set()
+        for _ in range(400):  # en çok ~20 sn; iptalde Cancelled fırlatır
+            check_cancel(cancel)
+            time.sleep(0.05)
+
+    monkeypatch.setattr(app_module, "hunt", slow_hunt)
+    c, a = ready
+    job = c.post("/api/hunt", json={"concept_id": "code"}, headers=a).json()["job_id"]
+    assert started.wait(10)
+    assert c.get(f"/api/jobs/{job}", headers=a).json()["progress"] == pytest.approx(0.2)
+    assert c.post(f"/api/jobs/{job}/cancel", headers=a).status_code == 200
+    wait_done(c, a, job, timeout=10, expect="cancelled")
+
+
 def test_hunt_validation(ready):
     c, a = ready
     assert c.post("/api/hunt", json={"method": "attribution"}, headers=a).status_code == 422  # kavram yok

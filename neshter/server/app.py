@@ -34,7 +34,7 @@ import neshter
 from neshter.activity import head_output_power, normalize_global, normalize_per_layer, tokens, top_mlp_neurons
 from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
-from neshter.concepts.hunt import hunt
+from neshter.concepts.hunt import default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
 from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf, verify_source_untouched
 from neshter.hardware import system_info
@@ -91,7 +91,7 @@ class EffectReq(_Req):
 class HuntReq(_Req):
     concept_id: str | None = None
     concept: Concept | None = None
-    method: Literal["attribution", "activation_diff", "direction"]
+    method: Literal["attribution", "activation_diff", "direction"] | None = None  # None: default_method(lm)
     seed: int = 0
 
     @model_validator(mode="after")
@@ -567,13 +567,15 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 lm = require_model()
                 if cancel.is_set():
                     return None
-                report(0.1, "Kavram aranıyor")
-                r = hunt(lm, concept, body.method, seed=body.seed)
+                method = body.method or default_method(lm)
+                report(0.0, "Kavram aranıyor")
+                r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel)
                 if concept.safety_ablation and r.direction is not None:
                     # Bu yön kaydedilirse etiket istemciye bağlı kalmasın (bkz. _is_safety).
                     d = r.direction.detach().to("cpu", torch.float32)
                     session.safety_dirs.append(d / d.norm())
             return {
+                "method": method,
                 "layer_scores": r.layer_scores,
                 "heads": [{"layer": layer, "head": head, "score": score} for layer, head, score in r.heads],
                 "direction": None if r.direction is None else _b64_f32(r.direction),
