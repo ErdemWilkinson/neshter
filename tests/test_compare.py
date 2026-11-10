@@ -106,11 +106,11 @@ def test_summarize_levels():
     s = summarize(good, "code")
     assert s.level == "good" and s.mde_points == 24
     assert s.tr == (
-        "Hedef davranış belirgin şekilde azaldı; diğer kategorilerde anlamlı bir düşüş görülmedi. "
-        "Bu test yaklaşık 24 puandan küçük düşüşleri göremez."
+        "Hedef davranış belirgin şekilde azaldı; kontrol edilen diğer kategorilerde (general) anlamlı bir düşüş "
+        "görülmedi. Bu test yaklaşık 24 puandan küçük düşüşleri göremez."
     )
     assert s.en == (
-        "The target behavior dropped clearly; no other category dropped significantly. "
+        "The target behavior dropped clearly; no other checked category (general) dropped significantly. "
         "This test cannot detect drops smaller than about 24 points."
     )
     assert "genel yetenekte" not in s.tr
@@ -221,7 +221,7 @@ def test_run_suite_counts_and_progress(lm, monkeypatch):
     prompts = []
 
     def fake_pair(lm_, prompt, interventions, max_new_tokens=200, seed=42, **kw):
-        assert kw == {}  # baked yolu yok: generate_pair'e ek argüman gitmez
+        assert kw == {"baked": False}  # kancalı yol açıkça kancalı ister (M4: yön tarifinde de gömmez)
         prompts.append((prompt, max_new_tokens))
         return (*outputs[prompt], "batch")
 
@@ -259,7 +259,7 @@ def test_run_suite_pairs_and_broken(lm, monkeypatch):
     calls = []
 
     def fake_pair(lm_, prompt, interventions, max_new_tokens, seed=42, **kw):
-        assert kw == {}
+        assert kw == {"baked": False}
         return (*script[prompt], "batch")
 
     def fake_nll(lm_, prompt, answer):
@@ -285,7 +285,7 @@ def test_run_suite_pairs_and_broken(lm, monkeypatch):
 
 
 def _run_scripted(lm, monkeypatch, script, items, target):
-    monkeypatch.setattr(compare, "generate_pair", lambda lm_, p, iv, max_new_tokens, seed=42: (*script[p], "batch"))
+    monkeypatch.setattr(compare, "generate_pair", lambda lm_, p, iv, max_new_tokens, seed=42, baked=None: (*script[p], "batch"))
     monkeypatch.setattr(compare, "answer_nll", lambda lm_, prompt, answer: 1.0)
     return {r.category: r for r in run_suite(lm, items, [], target=target)}
 
@@ -316,7 +316,7 @@ def test_run_suite_holm_over_non_target(lm, monkeypatch):
     script = {f"t{i}": ("```x```", "prose") for i in range(10)}
     script |= {f"g{i}": ("Ankara", "yok") for i in range(6)} | {"g6": ("Ankara", "Ankara")}
     script |= {f"m{i}": ("Ankara", "yok") for i in range(2)}
-    monkeypatch.setattr(compare, "generate_pair", lambda lm_, p, iv, max_new_tokens, seed=42: (*script[p], "batch"))
+    monkeypatch.setattr(compare, "generate_pair", lambda lm_, p, iv, max_new_tokens, seed=42, baked=None: (*script[p], "batch"))
     monkeypatch.setattr(compare, "answer_nll", lambda lm_, prompt, answer: 1.0)
     items = [SuiteItem(category="code", prompt=f"t{i}", check="code") for i in range(10)]
     items += [SuiteItem(category="general", prompt=f"g{i}", check="contains", answer="Ankara") for i in range(7)]
@@ -584,3 +584,52 @@ def test_suite_head_only_stays_on_hook_path(lm, monkeypatch):
         lm, load_suite()[:2], [HeadAblation(0, 0)], progress=lambda d, t: seen.append((d, t)), max_new_tokens=3
     )
     assert calls == [] and seen == [(1, 2), (2, 2)] and res[0].n == 2
+
+
+# --- Final fix wave I7: hızlı (quick) kipte özet yalnızca denetlenen kategorileri iddia eder -------------
+
+
+def test_summarize_good_names_checked_control_categories():
+    quick = [_cr("code", 2, 20, 0, 3), _cr("general", 20, 1, 1, 3)]  # quick: hedef + general
+    compare._apply_holm(quick, "code")
+    s = summarize(quick, "code")
+    assert s.level == "good"
+    assert "(general)" in s.tr and "(general)" in s.en
+    assert "diğer kategorilerde anlamlı" not in s.tr  # listesiz genel iddia yok
+    assert "no other category" not in s.en
+    full = quick + [_cr("math", 20, 1, 1, 3)]
+    compare._apply_holm(full, "code")
+    s = summarize(full, "code")
+    assert "(general, math)" in s.tr and "(general, math)" in s.en
+
+
+def test_summarize_without_control_categories_says_so():
+    only = [_cr("code", 2, 20, 0, 3)]
+    compare._apply_holm(only, "code")
+    s = summarize(only, "code")
+    assert "Kontrol kategorisi denetlenmedi." in s.tr and "No control category was checked." in s.en
+    assert "diğer kategorilerde" not in s.tr
+
+
+def test_summarize_mixed_names_checked_categories():
+    target = _cr("code", 10, 83, 1, 6)
+    slight = _cr("general", 70, 7, 1, 22)
+    flat = _cr("math", 90, 0, 0, 10)
+    compare._apply_holm([target, slight, flat], "code")
+    s = summarize([target, slight, flat], "code")
+    assert s.level == "mixed" and "(general, math)" in s.tr and "(general, math)" in s.en
+
+
+# --- Final fix wave M4: run_suite(baked=False) yön tarifinde de hiç gömmez -----------------------------
+
+
+def test_run_suite_hooked_never_bakes_direction_recipe(lm, monkeypatch):
+    import neshter.export as export
+    from neshter.interventions import DirectionAblation
+
+    calls = []
+    monkeypatch.setattr(export, "bake", lambda *a, **k: calls.append(1) or (lambda: None))
+    items = [SuiteItem(category="general", prompt="merhaba", check="contains", answer="x")] * 2
+    d = [DirectionAblation(torch.ones(lm.arch.d_model))]
+    compare.run_suite(lm, items, d, max_new_tokens=2, baked=False)
+    assert calls == []
