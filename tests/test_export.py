@@ -1,4 +1,7 @@
+import dataclasses
 import json
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -10,7 +13,10 @@ from transformers import AutoModelForCausalLM
 import neshter.export as export
 from neshter.compare import Summary
 from neshter.export import (
+    GEMMA_NOTICE,
     bake,
+    is_llama3,
+    license_notices,
     find_llama_cpp,
     model_card,
     ollama_create,
@@ -275,10 +281,112 @@ def test_model_card_contents(lm):
     assert "safety-ablated" not in plain
 
 
-def test_model_card_llama_notice(lm, monkeypatch):
-    monkeypatch.setattr(lm, "arch", lm.arch.__class__(**{**lm.arch.__dict__, "family": "llama"}))
-    card = model_card(lm, recipe_for(lm, [HeadAblation(0, 0)]), None, safety_ablated=False)
-    assert "Llama" in card
+def _with(lm, license=None, family=None, name=None, license_text=None):
+    arch = dataclasses.replace(lm.arch, family=family) if family else lm.arch
+    kw = {"arch": arch, "license": license}
+    if name:
+        kw["name"] = name
+    if license_text is not None:
+        kw["license_text"] = license_text
+    return dataclasses.replace(lm, **kw)
+
+
+def _card(m, ivs=None):
+    return model_card(m, recipe_for(m, ivs or []), None, False)
+
+
+def test_llama3_notice_only_for_llama3(lm):
+    l3 = _with(lm, "llama3.1", "llama")
+    smol = dataclasses.replace(l3, license="apache-2.0", name="SmolLM2-135M-Instruct")
+    assert "Built with Llama" in _card(l3)
+    assert 'start with "Llama"' in _card(l3) and "başlamalı" in _card(l3)
+    assert "Built with Llama" not in _card(smol)
+    assert "Llama lisansı, türetilmiş model adlarının" not in _card(smol)  # eski her-Llama cümlesi yok
+
+
+def test_is_llama3_rules(lm):
+    assert is_llama3(_with(lm, "llama3.2", "llama"))
+    assert is_llama3(_with(lm, "other", "llama", name="Meta-Llama-3-8B"))
+    assert is_llama3(_with(lm, None, "llama", name="llama_3.1-8b"))
+    assert not is_llama3(_with(lm, "llama3.1", "qwen2"))  # aile llama değil
+    assert not is_llama3(_with(lm, "mit", "llama", name="TinyLlama-1.1B"))
+    big = _with(lm, None, "llama")
+    big.model.config.vocab_size = 128256
+    try:
+        assert is_llama3(big)
+    finally:
+        big.model.config.vocab_size = 512
+
+
+def test_gemma_notice_and_notice_file(gemma_lm, tmp_path):
+    g = dataclasses.replace(gemma_lm, license="gemma")
+    notices = "\n".join(license_notices(g))
+    assert GEMMA_NOTICE in notices and "ai.google.dev/gemma/prohibited_use_policy" in notices
+    assert "ai.google.dev/gemma/terms" in _card(g)
+    out = save_safetensors(g, recipe_for(g, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert "ai.google.dev/gemma/terms" in (out / "NOTICE").read_text(encoding="utf-8")
+    assert "ai.google.dev/gemma/terms" in (out / "README.md").read_text(encoding="utf-8")
+
+
+def test_existing_notice_file_is_kept(gemma_lm, tmp_path):
+    src = tmp_path / "src"
+    shutil.copytree(gemma_lm.source_path, src)
+    (src / "NOTICE").write_text("kaynağın kendi NOTICE'i", encoding="utf-8")
+    from neshter.loader import load_model
+
+    m = load_model(src, device="cpu", dtype=torch.float32)
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "NOTICE").read_text(encoding="utf-8") == "kaynağın kendi NOTICE'i"
+
+
+def test_qwen_non_apache_warning(lm):
+    warn = "Apache-2.0 değil"
+    assert warn in "\n".join(license_notices(_with(lm, "qwen-research")))
+    assert "qwen-research" in _card(_with(lm, "qwen-research"))
+    assert "is not Apache-2.0" in "\n".join(license_notices(_with(lm, "qwen")))
+    assert warn not in "\n".join(license_notices(_with(lm, "apache-2.0")))
+    assert license_notices(_with(lm, "apache-2.0")) == []
+    assert "bilinmiyor" in "\n".join(license_notices(_with(lm, None)))
+
+
+def test_unknown_license_card(lm):
+    card = _card(_with(lm, None))
+    assert "license: other" in card and "license_name: unknown" in card and "lisansı bulunamadı" in card
+    assert "not found" in card
+    known = _card(_with(lm, "apache-2.0"))
+    assert "license: apache-2.0" in known and "license_name" not in known and "bulunamadı" not in known
+
+
+def test_untrusted_license_id_is_limited_in_card(lm):
+    evil = "x]\n# SAHTE BAŞLIK <script>alert(1)</script> [a](http://e.vil) `" + "A" * 500
+    card = _card(_with(lm, evil))
+    assert "<script>" not in card and "[a](" not in card and "\n# SAHTE" not in card
+    assert "A" * 100 not in card
+
+
+def test_license_text_written_when_no_license_file(lm, tmp_path):
+    m = _with(lm, "mit", license_text="X")
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "LICENSE").read_text(encoding="utf-8") == "X"
+    assert not (out / "NOTICE").exists()  # qwen2: NOTICE yazılmaz
+
+
+def test_source_license_file_not_overwritten_by_license_text(tmp_path, tiny_model_dir):
+    from neshter.loader import load_model
+
+    src = tmp_path / "src"
+    shutil.copytree(tiny_model_dir, src)
+    (src / "LICENSE.txt").write_text("kaynağın lisansı", encoding="utf-8")
+    m = load_model(src, device="cpu", dtype=torch.float32)
+    assert m.license_text == "kaynağın lisansı"
+    out = save_safetensors(m, recipe_for(m, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "LICENSE.txt").read_text(encoding="utf-8") == "kaynağın lisansı"
+    assert not (out / "LICENSE").exists()
+
+
+def test_card_has_modification_line(lm):
+    card = _card(lm, [HeadAblation(0, 1), DirectionAblation(torch.randn(64))])
+    assert re.search(r"Modified with Neşter \S+ on \d{4}-\d{2}-\d{2}: 1 heads silenced, 1 directions removed\.", card)
 
 
 def test_find_llama_cpp_env(tmp_path, monkeypatch):

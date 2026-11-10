@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +19,13 @@ from transformers import (
 
 from neshter.arch import ArchInfo, arch_info
 from neshter.hardware import available_ram_bytes, cpu_has_native_bf16
+from neshter.licenses import (
+    folder_license,
+    license_id_from_text,
+    ollama_license_text,
+    read_gguf_license,
+    read_license,  # noqa: F401  (loader.read_license: geriye uyumlu yeniden dışa aktarım)
+)
 
 SUPPORTED_FAMILIES = ("llama", "qwen2", "gemma2")
 _CHUNK = 1024 * 1024
@@ -43,6 +49,7 @@ class LoadedModel:
     license: str | None
     name: str
     device_note: str | None = None
+    license_text: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -88,25 +95,6 @@ def _check_config_family(folder: Path) -> None:
 def _load_config(folder: Path):
     _check_config_family(folder)
     return AutoConfig.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
-
-
-def read_license(folder: Path) -> str | None:
-    try:
-        value = json.loads((folder / "config.json").read_text(encoding="utf-8")).get("license")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    except (OSError, ValueError, AttributeError):
-        pass
-    try:
-        text = (folder / "README.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    front = re.match(r"\A---\r?\n(.*?)\r?\n---", text, re.DOTALL)
-    if front:
-        m = re.search(r"^license:\s*['\"]?([^'\"\r\n#]+?)['\"]?\s*$", front.group(1), re.MULTILINE)
-        if m:
-            return m.group(1).strip()
-    return None
 
 
 _read_license = read_license  # geriye uyumluluk (testler)
@@ -268,13 +256,19 @@ def load_model(
 
     if is_dir:
         model, tokenizer = _load_dir(path, dtype)
-        default_name, license_ = path.name, read_license(path)
+        default_name = path.name
+        license_, license_text = folder_license(path)
     elif is_gguf_file:
         model, tokenizer = _load_gguf(path, dtype)
-        default_name, license_ = path.stem, None
+        default_name = path.stem
+        license_text = ollama_license_text(path)  # Ollama blob'u değilse None
+        license_ = read_gguf_license(path)
+        if license_ is None and license_text and license_text.strip():
+            license_ = license_id_from_text(license_text)
     else:
         model, tokenizer = _load_pt(path, dtype)
-        default_name, license_ = path.stem, read_license(path.parent)
+        default_name = path.stem
+        license_, license_text = folder_license(path.parent)
 
     _check_family(model.config.model_type)
     if not (is_dir or is_pt):  # GGUF: iskelet yok, cihaz yüklemeden sonra seçilir
@@ -296,4 +290,5 @@ def load_model(
         license=license_,
         name=name or default_name,
         device_note=device_note,
+        license_text=license_text,
     )

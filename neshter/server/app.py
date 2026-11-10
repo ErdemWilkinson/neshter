@@ -45,7 +45,6 @@ from neshter.loader import (
     UnsafeModelFile,
     UnsupportedArchitecture,
     load_model,
-    read_license,
 )
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.progress import ProgressFn, check_cancel, sub_progress
@@ -424,7 +423,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "size_bytes": e.size_bytes,
                     "memory_bytes": mem,
                     "badge": fit_badge(mem, info.vram_bytes, info.ram_bytes),
-                    "license": read_license(e.path) if e.path.is_dir() else None,
+                    "license": e.license,
                     "arch": (arch := model_arch(e.path, e.fmt)),
                     "supported": arch is not None and arch["family"] in SUPPORTED_FAMILIES,
                 }
