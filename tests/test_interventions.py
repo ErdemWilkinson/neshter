@@ -1,15 +1,19 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 from conftest import logits
+from torch import nn
 
 from neshter import interventions
-from neshter.arch import decoder_layers, embed, o_proj
+from neshter.arch import decoder_layers, down_proj, embed, o_proj
 from neshter.interventions import DirectionAblation, HeadAblation, apply, head_means
 
 
 def _hook_count(lm):
     mods = [embed(lm.model)] + list(decoder_layers(lm.model))
     mods += [o_proj(lm.model, i) for i in range(lm.arch.n_layers)]
+    mods += [down_proj(lm.model, i) for i in range(lm.arch.n_layers)]
     return sum(len(m._forward_hooks) + len(m._forward_pre_hooks) for m in mods)
 
 
@@ -103,6 +107,58 @@ def test_direction_ablation_on_embedding_and_every_layer(lm):
     assert len(seen) == 1 + lm.arch.n_layers
     for h in seen:
         assert (h @ r_hat).abs().max() < 1e-4
+
+
+def test_direction_ablation_mid_layer_residual_and_writers(lm):
+    """Katman içi ara rezidüel (MLP'den önceki norm'un girdisi) ve her yazıcının çıktısı r'ye dik."""
+    torch.manual_seed(4)
+    r = torch.randn(lm.arch.d_model)
+    r_hat = r / r.norm()
+    mid, writers = [], []
+
+    def grab_input(module, args):
+        mid.append(args[0].detach().clone())
+
+    with apply(lm, [DirectionAblation(r)]):
+        handles = [
+            layer.post_attention_layernorm.register_forward_pre_hook(grab_input)
+            for layer in decoder_layers(lm.model)
+        ]
+        for i in range(lm.arch.n_layers):
+            for m in (o_proj(lm.model, i), down_proj(lm.model, i)):
+                handles.append(m.register_forward_hook(_grab_first(writers)))
+        try:
+            logits(lm, "merhaba dünya")
+        finally:
+            for h in handles:
+                h.remove()
+    assert len(mid) == lm.arch.n_layers and len(writers) == 2 * lm.arch.n_layers
+    for h in mid + writers:
+        assert (h @ r_hat).abs().max() < 1e-4
+    assert _hook_count(lm) == 0
+
+
+def test_residual_writers_gemma2_uses_post_norms():
+    layers = [
+        SimpleNamespace(
+            post_attention_layernorm=nn.Identity(),
+            post_feedforward_layernorm=nn.Identity(),
+            self_attn=SimpleNamespace(o_proj=nn.Identity()),
+            mlp=SimpleNamespace(down_proj=nn.Identity()),
+        )
+        for _ in range(2)
+    ]
+    model = SimpleNamespace(model=SimpleNamespace(embed_tokens=nn.Identity(), layers=layers))
+    got = interventions.residual_writers(model, "gemma2")
+    want = [model.model.embed_tokens]
+    for layer in layers:
+        want += [layer.post_attention_layernorm, layer.post_feedforward_layernorm]
+    assert [id(m) for m in got] == [id(m) for m in want]
+    got = interventions.residual_writers(model, "qwen2")
+    want = [model.model.embed_tokens]
+    for layer in layers:
+        want += [layer.self_attn.o_proj, layer.mlp.down_proj]
+    assert [id(m) for m in got] == [id(m) for m in want]
 
 
 def test_direction_constructor_normalizes():

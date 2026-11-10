@@ -2,7 +2,10 @@
 
 Bu modüldeki matematik, kayıt (export) aşamasında ağırlıklara işlenecek olanla birebir aynı olmalıdır:
   - HeadAblation: o_proj girdisinin ilgili head dilimi 0 (ya da ortalama) -> o_proj sütunlarını sıfırlamaya denk.
-  - DirectionAblation: embed çıktısında ve her decoder katmanı çıktısında x <- x - (x . r) r.
+  - DirectionAblation: rezidüel akıma YAZAN her modülün çıktısında x <- x - (x . r) r:
+    embed, her katmanda o_proj ve down_proj (gemma2: post_attention_layernorm ve
+    post_feedforward_layernorm). Böylece katman içi ara rezidüel (MLP girdisi) dahil rezidüel akım
+    her noktada r'ye diktir ve sonuç ağırlık dikleştirmesiyle birebir aynıdır.
     Son norm çıktısına dokunulmaz.
 """
 
@@ -15,8 +18,21 @@ from typing import Literal
 
 import torch
 
-from neshter.arch import decoder_layers, embed, o_proj
+from torch import nn
+
+from neshter.arch import decoder_layers, down_proj, embed, o_proj
 from neshter.loader import LoadedModel
+
+
+def residual_writers(model, family: str) -> list[nn.Module]:
+    """Çıktısı doğrudan rezidüel akıma eklenen modüller (yön silme kancalarının yeri)."""
+    mods: list[nn.Module] = [embed(model)]
+    for i, layer in enumerate(decoder_layers(model)):
+        if family == "gemma2":
+            mods += [layer.post_attention_layernorm, layer.post_feedforward_layernorm]
+        else:
+            mods += [o_proj(model, i), down_proj(model, i)]
+    return mods
 
 
 @dataclass(frozen=True)
@@ -164,11 +180,11 @@ def apply(
                     _head_pre_hook(replacements, arch.head_dim, batch_index)
                 )
             )
-        for direction in directions:
+        writers = residual_writers(model, arch.family) if directions else []
+        for direction in directions:  # her modülde kayıt sırası = liste sırası (sıralı bileşim)
             hook = _direction_hook(direction, batch_index)
-            handles.append(embed(model).register_forward_hook(hook))
-            for layer_module in decoder_layers(model):
-                handles.append(layer_module.register_forward_hook(hook))
+            for module in writers:
+                handles.append(module.register_forward_hook(hook))
         yield
     finally:
         for h in handles:
