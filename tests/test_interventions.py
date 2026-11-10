@@ -1,9 +1,7 @@
-from types import SimpleNamespace
 
 import pytest
 import torch
 from conftest import logits
-from torch import nn
 
 from neshter import interventions
 from neshter.arch import decoder_layers, down_proj, embed, o_proj
@@ -145,27 +143,95 @@ def test_direction_ablation_mid_layer_residual_and_writers(lm):
     assert _hook_count(lm) == 0
 
 
-def test_residual_writers_gemma2_uses_post_norms():
-    layers = [
-        SimpleNamespace(
-            post_attention_layernorm=nn.Identity(),
-            post_feedforward_layernorm=nn.Identity(),
-            self_attn=SimpleNamespace(o_proj=nn.Identity()),
-            mlp=SimpleNamespace(down_proj=nn.Identity()),
-        )
-        for _ in range(2)
+def test_residual_writers_are_projections_for_all_families(lm, gemma_lm):
+    for m in (lm, gemma_lm):
+        w = interventions.residual_writers(m.model, m.arch.family)
+        expected = [embed(m.model)] + [
+            x for i in range(m.arch.n_layers) for x in (o_proj(m.model, i), down_proj(m.model, i))
+        ]
+        assert [id(x) for x in w] == [id(x) for x in expected]
+
+
+# --- Gemma2: γ-ölçekli tabanlar (post-norm öncesi izdüşüm) ----------------------------------------
+
+
+def _gemma_dirs(d_model: int, seed: int = 11) -> list[torch.Tensor]:
+    """Birbirine dik OLMAYAN üç yön (ikisi aynı eksene yakın)."""
+    g = torch.Generator().manual_seed(seed)
+    a, b = torch.randn(d_model, generator=g), torch.randn(d_model, generator=g)
+    return [a, a + 0.3 * b, b - 0.5 * a]
+
+
+def test_tiny_gemma2_loads(gemma_lm):
+    assert gemma_lm.arch.family == "gemma2" and gemma_lm.model.config.tie_word_embeddings
+    gammas = [
+        1 + norm.weight
+        for layer in decoder_layers(gemma_lm.model)
+        for norm in (layer.post_attention_layernorm, layer.post_feedforward_layernorm)
     ]
-    model = SimpleNamespace(model=SimpleNamespace(embed_tokens=nn.Identity(), layers=layers))
-    got = interventions.residual_writers(model, "gemma2")
-    want = [model.model.embed_tokens]
-    for layer in layers:
-        want += [layer.post_attention_layernorm, layer.post_feedforward_layernorm]
-    assert [id(m) for m in got] == [id(m) for m in want]
-    got = interventions.residual_writers(model, "qwen2")
-    want = [model.model.embed_tokens]
-    for layer in layers:
-        want += [layer.self_attn.o_proj, layer.mlp.down_proj]
-    assert [id(m) for m in got] == [id(m) for m in want]
+    assert all(not torch.allclose(g, torch.ones_like(g)) for g in gammas)  # γ = 1 değil
+    assert gammas[0][0] == 0  # katman 0 post-attn γ girdisi tam sıfır
+
+
+def test_gemma2_hook_residual_orthogonal_to_r(gemma_lm):
+    """Gömme çıktısı, her katmanın ara rezidüeli (MLP öncesi) ve çıktısı span(R)'ye dik (head ile birlikte)."""
+    m = gemma_lm
+    dirs = _gemma_dirs(m.arch.d_model)
+    Q = direction_basis(dirs)
+    assert Q.shape[1] == 2  # üç yön, iki boyutlu span
+    ivs = [DirectionAblation(r) for r in dirs] + [HeadAblation(0, 1), HeadAblation(1, 3)]
+    seen = []
+
+    def grab_input(module, args):
+        seen.append(args[0].detach().clone())
+
+    with apply(m, ivs):
+        handles = [embed(m.model).register_forward_hook(_grab_first(seen))]
+        for layer in decoder_layers(m.model):
+            handles.append(layer.pre_feedforward_layernorm.register_forward_pre_hook(grab_input))
+            handles.append(layer.register_forward_hook(_grab_first(seen)))
+        try:
+            logits(m, "merhaba dünya, bugün hava çok güzel")
+        finally:
+            for h in handles:
+                h.remove()
+    assert len(seen) == 1 + 2 * m.arch.n_layers
+    for h in seen:
+        h = h.reshape(-1, m.arch.d_model)
+        for r in dirs:
+            assert ((h @ (r / r.norm())).abs() <= 1e-4 * h.norm(dim=-1)).all()
+        assert ((h @ Q).norm(dim=-1) <= 1e-4 * h.norm(dim=-1)).all()
+    assert _hook_count(m) == 0
+
+
+def test_gemma2_writer_bases_are_gamma_scaled(gemma_lm):
+    m = gemma_lm
+    dirs = _gemma_dirs(m.arch.d_model)
+    bases = writer_bases(m.model, "gemma2", dirs)
+    assert [id(x) for x, _ in bases] == [id(x) for x in interventions.residual_writers(m.model, "gemma2")]
+    assert torch.allclose(bases[0][1] @ bases[0][1].T, direction_basis(dirs) @ direction_basis(dirs).T, atol=1e-5)
+    for i, layer in enumerate(decoder_layers(m.model)):
+        for module, norm in (
+            (o_proj(m.model, i), layer.post_attention_layernorm),
+            (down_proj(m.model, i), layer.post_feedforward_layernorm),
+        ):
+            (mod, S), = [(x, S) for x, S in bases if x is module]
+            want = direction_basis([(1 + norm.weight.detach().float()) * r for r in dirs])
+            assert torch.allclose(S @ S.T, want @ want.T, atol=1e-5)  # aynı izdüşüm
+
+
+def test_gemma2_basis_handles_zero_gamma(gemma_lm):
+    torch.manual_seed(0)
+    bases = writer_bases(gemma_lm.model, "gemma2", [torch.randn(64)])
+    assert len(bases) == 1 + 2 * gemma_lm.arch.n_layers
+    for _, S in bases:
+        assert torch.isfinite(S).all() and torch.allclose(S.T @ S, torch.eye(S.shape[1]), atol=1e-5)
+    # Yalnızca γ'nın sıfır olduğu eksendeki yön: o yazıcı için taban boş (k' = 0), diğerleri değil.
+    e0 = torch.zeros(64)
+    e0[0] = 1.0
+    bases = writer_bases(gemma_lm.model, "gemma2", [e0])
+    assert bases[1][1].shape == (64, 0)
+    assert all(S.shape == (64, 1) for i, (_, S) in enumerate(bases) if i != 1)
 
 
 def test_direction_constructor_normalizes():

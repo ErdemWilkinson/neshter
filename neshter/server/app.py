@@ -638,12 +638,6 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         lm = require_model()
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops, body.concept)
-        if lm.arch.family == "gemma2" and any(isinstance(op, DirectionOp) for op in body.recipe_ops):
-            raise HTTPException(
-                422,
-                "gemma2 için yön silme ağırlıklara gömülemiyor (post-attention/post-feedforward normları "
-                "yüzünden kanca ile aynı sonucu vermez). Head susturma desteklenir.",
-            )
 
         def fn(report, cancel):
             with session.lock:

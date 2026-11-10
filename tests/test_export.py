@@ -67,12 +67,55 @@ def test_undo_restores_direction_exactly(lm):
     assert all(torch.equal(before[k], after[k]) for k in before)
 
 
-def test_bake_direction_gemma2_not_implemented(lm, monkeypatch):
-    monkeypatch.setattr(lm, "arch", lm.arch.__class__(**{**lm.arch.__dict__, "family": "gemma2"}))
+def _gemma_ivs(d_model: int):
+    """Birbirine dik olmayan üç yön + iki head (γ-ölçekli tabanlar gerçekten sınansın)."""
+    g = torch.Generator().manual_seed(7)
+    a, b = torch.randn(d_model, generator=g), torch.randn(d_model, generator=g)
+    return [
+        DirectionAblation(a),
+        DirectionAblation(a + 0.4 * b),
+        DirectionAblation(b),
+        HeadAblation(0, 2),
+        HeadAblation(1, 0),
+    ]
+
+
+GEMMA_TEXT = "merhaba dünya, bugün hava çok güzel"
+
+
+def test_gemma2_bake_matches_hook(gemma_lm):
+    lm = gemma_lm
+    iv = _gemma_ivs(lm.arch.d_model)
     before = _state(lm)
-    with pytest.raises(NotImplementedError, match="gemma2"):
-        bake(lm, [DirectionAblation(torch.ones(lm.arch.d_model))])
-    assert all(torch.equal(before[k], v) for k, v in lm.model.state_dict().items())
+    base = logits(lm, GEMMA_TEXT)
+    with apply(lm, iv):
+        hooked = logits(lm, GEMMA_TEXT)
+    undo = bake(lm, iv)
+    assert lm.model.get_output_embeddings().weight is not lm.model.get_input_embeddings().weight
+    baked = logits(lm, GEMMA_TEXT)
+    undo()
+    assert not torch.allclose(hooked, base, atol=1e-3)  # müdahale gerçekten etkili
+    assert torch.allclose(hooked, baked, atol=1e-4)
+    after = lm.model.state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    assert lm.model.get_output_embeddings().weight is lm.model.get_input_embeddings().weight
+    assert lm.model.config.tie_word_embeddings is True
+    assert torch.equal(logits(lm, GEMMA_TEXT), base)
+
+
+def test_gemma2_save_reload_direction_equivalent(gemma_lm, tmp_path):
+    from neshter.loader import load_model
+
+    lm = gemma_lm
+    iv = _gemma_ivs(lm.arch.d_model)
+    with apply(lm, iv):
+        hooked = logits(lm, GEMMA_TEXT)
+    out = save_safetensors(lm, recipe_for(lm, iv), tmp_path / "out", dtype=torch.float32)
+    assert verify_source_untouched(lm)
+    assert lm.model.get_output_embeddings().weight is lm.model.get_input_embeddings().weight
+    m2 = load_model(out, device="cpu", dtype=torch.float32)
+    assert m2.arch.family == "gemma2"
+    assert torch.allclose(logits(m2, GEMMA_TEXT), hooked, atol=1e-4)
 
 
 @pytest.fixture(scope="module")

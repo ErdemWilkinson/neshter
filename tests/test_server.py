@@ -842,17 +842,23 @@ def test_export_out_dir_must_be_absolute_and_local(ready):
     assert c.post("/api/export", json=_export_body("//sunucu/paylasim/m"), headers=a).status_code == 422
 
 
-def test_export_gemma2_direction_is_rejected_upfront(ready, tmp_path, monkeypatch):
-    import dataclasses
+def test_export_gemma2_direction_is_accepted(ready, gemma_lm, tmp_path, monkeypatch):
+    import numpy as np
+    import torch
 
     c, a = ready
     s = c.app.state.session
-    gemma = dataclasses.replace(s.lm, arch=dataclasses.replace(s.lm.arch, family="gemma2"))
-    monkeypatch.setattr(s, "lm", gemma)
-    vec = base64.b64encode(b"\x00\x00\x80\x3f" * 64).decode()
+    monkeypatch.setattr(s, "lm", gemma_lm)
+    r_vec = torch.randn(64, generator=torch.Generator().manual_seed(3))
+    vec = base64.b64encode(np.asarray(r_vec.numpy(), dtype="<f4").tobytes()).decode()
     ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
-    r = c.post("/api/export", json=_export_body(tmp_path / "g", recipe_ops=ops), headers=a)
-    assert r.status_code == 422 and "gemma2" in r.json()["detail"]
+    out = tmp_path / "g"
+    r = c.post("/api/export", json=_export_body(out, recipe_ops=ops), headers=a)
+    assert r.status_code == 200, r.text
+    res = wait_done(c, a, r.json()["job_id"], timeout=120)["result"]
+    assert (out / "model.safetensors").is_file() and res["source_untouched"] is True
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["model_type"] == "gemma2" and cfg["tie_word_embeddings"] is False
 
 
 # --- Fix wave: I5 (SSE + meşgul kilit), I8 (yapı, kavramlar), Minor 8/15/16 ------------------------

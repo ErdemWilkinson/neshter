@@ -1,5 +1,4 @@
 import base64
-import dataclasses
 import json
 import socket
 import threading
@@ -135,21 +134,19 @@ def test_apply_unsupported_format_is_usage_error(tmp_path, tiny_model_dir, lm):
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "onnx") == 2
 
 
-def test_apply_gemma2_direction_recipe_fails_with_clear_message(
-    tmp_path, tiny_model_dir, lm, monkeypatch, capsys
-):
-    real_load = cli.load_model
+def test_apply_gemma2_direction_recipe_saves(tmp_path, tiny_gemma2_dir, gemma_lm):
+    from neshter.loader import load_model
 
-    def as_gemma2(path, **kw):
-        loaded = real_load(path, **kw)
-        return dataclasses.replace(loaded, arch=dataclasses.replace(loaded.arch, family="gemma2"))
-
-    monkeypatch.setattr(cli, "load_model", as_gemma2)
-    direction = DirectionAblation(torch.ones(lm.arch.d_model))
-    r = _recipe_file(tmp_path, lm, [direction])
-    assert _apply(r, tiny_model_dir, tmp_path / "o") == 1
-    assert "gemma2" in capsys.readouterr().err
-    assert not (tmp_path / "o").exists()
+    r_vec = torch.randn(gemma_lm.arch.d_model, generator=torch.Generator().manual_seed(2))
+    r = _recipe_file(tmp_path, gemma_lm, [DirectionAblation(r_vec), HeadAblation(0, 1)])
+    out = tmp_path / "o"
+    assert _apply(r, tiny_gemma2_dir, out) == 0
+    assert (out / "model.safetensors").is_file()
+    m = load_model(out, device="cpu", dtype=torch.float32)
+    assert m.arch.family == "gemma2"
+    w = m.model.get_input_embeddings().weight
+    proj = (w @ (r_vec / r_vec.norm())).abs()
+    assert (proj <= 2e-2 * w.norm(dim=-1)).all()  # bf16 kayıt: gömme r'ye (yuvarlama payıyla) dik
 
 
 # --- serve ------------------------------------------------------------------------------------
