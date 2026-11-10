@@ -18,9 +18,11 @@ from transformers import (
     PreTrainedTokenizerBase,
 )
 
-from neshter.arch import ArchInfo, arch_info
+from neshter.arch import ArchInfo, arch_info, estimate_memory_bytes
+from neshter.gguf_header import GGUFInvalid, validate_gguf
 from neshter.hardware import available_ram_bytes, cpu_has_native_bf16
 from neshter.licenses import (
+    _read_folder_file,
     folder_license,
     license_id_from_text,
     ollama_license_text,
@@ -206,11 +208,48 @@ GPU_FALLBACK_NOTE = "GPU belleği yetmedi; CPU'da çalışıyor (yavaş)."
 SLOW_BF16_NOTE = "Bu işlemcide bf16 hesaplama yavaş ve float32 için RAM yetmiyor; işlemler uzun sürebilir."
 
 
+FP32_RAM_FACTOR = 2.0  # fp32 modeli + yön kaydının tepe kopyaları (anlık görüntü + kayıt dtype'ı kopyası)
+
+
 def pick_compute_dtype(device: str, n_params: int, available_ram: int, native_bf16: bool) -> torch.dtype:
-    """Hesaplama dtype'ı: yerel bf16'sı olmayan CPU'da (7-54x yavaş) RAM yeterse float32, aksi halde bf16."""
-    if device == "cpu" and not native_bf16 and n_params * 4 * 1.2 < 0.7 * available_ram:
+    """Hesaplama dtype'ı: yerel bf16'sı olmayan CPU'da (7-54x yavaş) RAM yeterse float32, aksi halde bf16.
+
+    "Yeterse": fp32 model × FP32_RAM_FACTOR (2.0) < boş RAM'in %70'i. Çarpan, yön içeren bir tarifin
+    kaydındaki tepeyi de (dokunulan parametrelerin fp32 anlık görüntüsü + bf16 kayıt kopyası) kapsar.
+    """
+    if device == "cpu" and not native_bf16 and n_params * 4 * FP32_RAM_FACTOR < 0.7 * available_ram:
         return torch.float32
     return torch.bfloat16
+
+
+def planned_device(device: str, n_params: int) -> str:
+    """Ağırlıklar okunmadan cihaz tahmini (`_pick_device` ile aynı kural, bf16 boyutuyla)."""
+    if device != "auto":
+        return device
+    if not torch.cuda.is_available():
+        return "cpu"
+    free, _total = torch.cuda.mem_get_info()
+    return "cpu" if estimate_memory_bytes(n_params, 2) > 0.9 * free else "cuda"
+
+
+def auto_compute_dtype(device: str, n_params: int, source_fp16: bool = False) -> torch.dtype:
+    """`dtype=None` politikası: pick_compute_dtype; kaynak float16 ise bf16 yerine float16 (I5: fp16 bir
+    kaynak bf16'dan geçirilip kaydedilirse dokunulmayan her ağırlık da değişirdi)."""
+    dtype = pick_compute_dtype(device, n_params, available_ram_bytes(), cpu_has_native_bf16())
+    if dtype == torch.bfloat16 and source_fp16:
+        return torch.float16
+    return dtype
+
+
+def _source_is_fp16(folder: Path) -> bool:
+    """config.json (sınırlı okuma) kaynak dtype'ı float16 mı diyor?"""
+    text = _read_folder_file(folder, "config.json", 1024 * 1024)
+    try:
+        cfg = json.loads(text) if text else {}
+        src = cfg.get("dtype") or cfg.get("torch_dtype")
+    except (ValueError, AttributeError, RecursionError):
+        return False
+    return src == "float16"
 
 
 def _probe_model(path: Path, dtype: torch.dtype):
@@ -238,8 +277,6 @@ def _pick_device(model, device: str) -> tuple[str, str | None]:
         return device, None
     if not torch.cuda.is_available():
         return "cpu", None
-    from neshter.arch import estimate_memory_bytes
-
     n_params = sum(p.numel() for p in model.parameters())
     dtype_bytes = next(model.parameters()).element_size()
     need = estimate_memory_bytes(n_params, dtype_bytes)
@@ -260,6 +297,10 @@ def load_model(
     """Modeli yükler. `dtype=None` hesaplama politikasıdır (`pick_compute_dtype`): GPU'da bf16; yerel bf16'sı
     olmayan CPU'da RAM yeterse float32, değilse bf16 (+ yavaşlık notu). Açık dtype aynen uygulanır.
 
+    GGUF da aynı politikayı izler (parametre sayısı `validate_gguf`un tensör tablosundan). Kaynak float16 ise
+    bf16 yerine float16 kullanılır. GGUF dosyası transformers'a verilmeden önce sınırlı doğrulanır; geçmezse
+    UnsupportedArchitecture.
+
     Ağırlıklar doğrudan hedef dtype'ta okunur (bf16'ya yuvarlayıp yükseltmek yok). Kayıt dtype'ı bundan
     bağımsızdır (`export.save_dtype`). `name` verilirse görünen ad odur (ör. Ollama'nın "qwen2.5:7b"si);
     yoksa dosya/klasör adı. Uzantısız dosyalar (Ollama blob'ları) GGUF sihirli baytlarıyla tanınır.
@@ -279,20 +320,33 @@ def load_model(
             f"'{path.suffix}' dosya biçimi desteklenmiyor. Klasör (safetensors), .gguf veya .pt kullanın."
         )
 
-    # Klasör/.pt: cihaz ve dtype ağırlıklar okunmadan, meta iskeletinden seçilir.
+    # GGUF: transformers'ın (sınırsız) ayrıştırıcısından ÖNCE tüm başlık + tensör tablosu sınırlı doğrulanır.
+    gguf_info = None
+    if is_gguf_file:
+        try:
+            gguf_info = validate_gguf(path)
+        except GGUFInvalid as e:
+            raise UnsupportedArchitecture(str(e)) from e
+
+    # Cihaz ve dtype ağırlıklar okunmadan seçilir: klasör/.pt meta iskeletinden, GGUF tensör tablosundan.
+    auto_dtype = dtype is None
     probe = _probe_model(path, dtype or torch.bfloat16)
     device_note = None
     if probe is not None:
         device, device_note = _pick_device(probe, device)
-        if dtype is None:
-            n_params = sum(p.numel() for p in probe.parameters())
-            native = cpu_has_native_bf16()
-            dtype = pick_compute_dtype(device, n_params, available_ram_bytes(), native)
-            if device == "cpu" and dtype == torch.bfloat16 and not native:
-                device_note = f"{device_note} {SLOW_BF16_NOTE}" if device_note else SLOW_BF16_NOTE
+        n_params = sum(p.numel() for p in probe.parameters())
         del probe
-    elif dtype is None:
-        dtype = torch.bfloat16  # GGUF: bf16'ya açılır
+        planned = device
+    elif gguf_info is not None:
+        n_params = gguf_info.n_params
+        planned = planned_device(device, n_params)
+    else:  # config.json'suz .pt: _load_pt anlaşılır bir hatayla reddeder
+        n_params, planned = None, device
+    if auto_dtype and n_params is None:
+        dtype = torch.bfloat16
+    elif auto_dtype:
+        folder = path if is_dir else path.parent
+        dtype = auto_compute_dtype(planned, n_params, source_fp16=not is_gguf_file and _source_is_fp16(folder))
 
     if is_dir:
         model, tokenizer = _load_dir(path, dtype)
@@ -321,6 +375,8 @@ def load_model(
     _check_family(model.config.model_type)
     if not (is_dir or is_pt):  # GGUF: iskelet yok, cihaz yüklemeden sonra seçilir
         device, device_note = _pick_device(model, device)
+    if auto_dtype and device == "cpu" and dtype != torch.float32 and not cpu_has_native_bf16():
+        device_note = f"{device_note} {SLOW_BF16_NOTE}" if device_note else SLOW_BF16_NOTE
     model = model.to(device)
     model.eval()
     model.requires_grad_(False)

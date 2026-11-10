@@ -212,3 +212,136 @@ def test_reader_is_never_used(monkeypatch, tmp_path):
     w.write_tensors_to_file()
     w.close()
     assert read_gguf_license(p) == "mit" and gguf_info(p)[1]["family"] == "llama"
+
+
+# --- I1: validate_gguf — tüm üst veri + tensör bilgi tablosu, transformers'ın ayrıştırıcısından ÖNCE ---------
+
+
+def ti(name: bytes, dims, gtype: int = 0, offset: int = 0) -> bytes:
+    """Tensör bilgisi: ad, n_dims, boyutlar, ggml türü, veri bölgesine göre konum."""
+    return s(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims) + struct.pack(
+        "<IQ", gtype, offset
+    )
+
+
+def kv_u32(key: bytes, val: int) -> bytes:
+    return s(key) + struct.pack("<I", 4) + struct.pack("<I", val)
+
+
+def tensor_cases() -> dict[str, bytes]:
+    pad = b"\0" * 256
+    return {
+        "t_count_huge": hdr(2**40, 0) + pad,
+        "t_count_over_cap": hdr(70_000, 0) + ti(b"t", [1]) * 70_000 + pad,
+        "t_count_over_remaining": hdr(1000, 0) + ti(b"t", [1]) * 3 + pad,
+        "t_info_truncated": hdr(2, 0) + ti(b"a", [4]),
+        "t_ndims_9": hdr(1, 0) + ti(b"t", [1] * 9) + pad,
+        "t_ndims_0": hdr(1, 0) + ti(b"t", []) + pad,
+        "t_dim_zero": hdr(1, 0) + ti(b"t", [0]) + pad,
+        "t_dims_overflow": hdr(1, 0) + ti(b"t", [2**32, 2**32]) + pad,
+        "t_unknown_type": hdr(1, 0) + ti(b"t", [4], gtype=99) + pad,
+        "t_name_too_long": hdr(1, 0) + ti(b"n" * 300, [4]) + pad,
+        "t_name_len_huge": hdr(1, 0) + struct.pack("<Q", 2**62) + pad,
+        "t_offset_past_eof": hdr(1, 0) + ti(b"t", [4], offset=2**40) + pad,
+        "t_data_past_eof": hdr(1, 0) + ti(b"t", [1000]) + pad,  # f32 x 1000 = 4000 bayt; dosyada ~250
+        "t_quant_not_block_multiple": hdr(1, 0) + ti(b"t", [33], gtype=2) + pad,  # Q4_0 blok 32
+        "t_bad_alignment": hdr(1, 1) + kv_u32(b"general.alignment", 3) + ti(b"t", [1]) + pad,
+        "t_zero_alignment": hdr(1, 1) + kv_u32(b"general.alignment", 0) + ti(b"t", [1]) + pad,
+    }
+
+
+_VALIDATE_RUNNER = r"""
+import json, sys, time
+from pathlib import Path
+from neshter.gguf_header import GGUFInvalid, validate_gguf
+out = {}
+for p in sys.argv[1:]:
+    t = time.perf_counter()
+    try:
+        info = validate_gguf(Path(p))
+        r = {"ok": True, "n_params": info.n_params, "n_tensors": info.n_tensors, "arch": info.architecture}
+    except GGUFInvalid as e:
+        r = {"ok": False, "msg": str(e)}
+    except BaseException as e:
+        r = {"ok": False, "unexpected": repr(e)}
+    r["secs"] = time.perf_counter() - t
+    out[Path(p).stem] = r
+print(json.dumps(out))
+"""
+
+_STRUCTURALLY_VALID = {"bad_utf8_value", "bad_utf8_key", "array_u8_1M", "array_u8_4M", "array_str_zero_len_1M"}
+
+
+@pytest.fixture(scope="module")
+def validate_results(tmp_path_factory):
+    d = tmp_path_factory.mktemp("validate")
+    paths = []
+    for name, data in {**crafted_cases(), **tensor_cases()}.items():
+        p = d / f"{name}.gguf"
+        p.write_bytes(data)
+        paths.append(str(p))
+    proc = subprocess.run(
+        [sys.executable, "-c", _VALIDATE_RUNNER, *paths], cwd=REPO, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("name", [n for n in crafted_cases() if n not in _STRUCTURALLY_VALID] + list(tensor_cases()))
+def test_validate_rejects_crafted_files_fast(validate_results, name):
+    r = validate_results[name]
+    assert r["ok"] is False and "unexpected" not in r, r
+    assert "GGUF dosyası bozuk ya da desteklenmeyen biçimde" in r["msg"]
+    assert r["secs"] < 2.0, f"{name}: {r['secs']:.2f}s"
+
+
+@pytest.mark.parametrize("name", sorted(_STRUCTURALLY_VALID))
+def test_validate_accepts_structurally_valid_headers(validate_results, name):
+    r = validate_results[name]
+    assert r["ok"] is True and r["n_tensors"] == 0 and r["n_params"] == 0, r
+    assert r["secs"] < 2.0
+
+
+def _tiny_gguf(path, arch="llama", alignment=None):
+    import numpy as np
+
+    w = gguf.GGUFWriter(str(path), arch)
+    if alignment is not None:
+        w.data_alignment = alignment
+        w.add_custom_alignment(alignment)
+    w.add_block_count(1)
+    w.add_tensor("token_embd.weight", np.zeros((16, 8), dtype=np.float32))
+    w.add_tensor("blk.0.attn_q.weight", np.ones((8, 8), dtype=np.float16))
+    w.add_tensor("output_norm.weight", np.ones(8, dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    return path
+
+
+def test_validate_accepts_writer_output_and_counts_params(tmp_path):
+    from neshter.gguf_header import validate_gguf
+
+    info = validate_gguf(_tiny_gguf(tmp_path / "m.gguf"))
+    assert info.architecture == "llama"
+    assert info.n_tensors == 3 and info.n_params == 16 * 8 + 8 * 8 + 8
+    info64 = validate_gguf(_tiny_gguf(tmp_path / "a.gguf", alignment=64))
+    assert info64.n_params == info.n_params and info64.data_start % 64 == 0
+
+
+def test_validate_rejects_writer_output_truncated_in_tensor_data(tmp_path):
+    from neshter.gguf_header import GGUFInvalid, validate_gguf
+
+    p = _tiny_gguf(tmp_path / "m.gguf")
+    data = p.read_bytes()
+    p.write_bytes(data[:-40])  # son tensörün verisi eksik
+    with pytest.raises(GGUFInvalid):
+        validate_gguf(p)
+
+
+def test_validate_missing_file_is_invalid(tmp_path):
+    from neshter.gguf_header import GGUFInvalid, validate_gguf
+
+    with pytest.raises(GGUFInvalid):
+        validate_gguf(tmp_path / "yok.gguf")
