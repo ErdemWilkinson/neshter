@@ -15,8 +15,8 @@ It is **100% local**: there is no cloud API in it, no account, and **no telemetr
   - **Head ablation:** silence a query attention head (its `o_proj` columns are zeroed).
   - **Direction orthogonalization:** remove a behavior direction from the weights.
 - Both keep tensor shapes, so the result is GGUF compatible. Structural pruning is not in v0.1.
-- **Verified on real weights:** Qwen2 (Qwen2.5-0.5B). Llama and Gemma2 run on tiny random models in
-  the tests.
+- **Verified on real weights:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) and GGUF loading
+  (SmolLM2-135M Q8_0). Gemma2 runs on tiny random models in the tests.
 - The real effect of a cut is measured as KL divergence against 30 layer-matched random head sets,
   reported as a percentile and a permutation p-value. Single rates carry Wilson 95% intervals. Test
   suite differences use McNemar's exact test with Holm adjustment across categories, and are reported
