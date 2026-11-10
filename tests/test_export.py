@@ -29,8 +29,10 @@ from neshter.export import (
     license_notices,
     find_llama_cpp,
     model_card,
+    OLLAMA_NAME,
     ollama_create,
     save_safetensors,
+    suggest_export_name,
     to_gguf,
     verify_source_untouched,
 )
@@ -1004,3 +1006,27 @@ def test_estimate_export_bytes_gguf(lm):
     assert estimate_export_bytes(lm, "gguf_q8_0", False) == int(st + 2 * n + 1.07 * n)
     assert estimate_export_bytes(lm, "gguf_q4_k_m", False) == int(st + 2 * n + 0.6 * n)
     assert QUANT_BYTES_PER_PARAM == {"Q4_K_M": 0.6, "Q8_0": 1.07}
+
+
+@pytest.mark.parametrize("name,family,lic,safety,expected", [
+    ("Qwen2.5:0.5b", "qwen2", "apache-2.0", False, "Qwen2.5-0.5b-neshter"),
+    ("Meta-Llama-3.1-8B", "llama", "llama3.1", True, "Llama-Meta-Llama-3.1-8B-neshter-abliterated"),
+    ("SmolLM2-135M", "llama", "apache-2.0", False, "SmolLM2-135M-neshter"),
+])
+def test_suggest_export_name(lm, name, family, lic, safety, expected):
+    m = dataclasses.replace(lm, name=name, arch=dataclasses.replace(lm.arch, family=family), license=lic)
+    assert suggest_export_name(m, safety) == expected
+
+
+def test_suggest_export_name_long_llama3_name_fits_ollama_limit(lm):  # önek + 40 karakter sınırı + sonek <= 64
+    m = dataclasses.replace(lm, name="x" * 60, arch=dataclasses.replace(lm.arch, family="llama"), license="llama3.1")
+    name = suggest_export_name(m, True)
+    assert name.startswith("Llama-") and len(name) <= 64 and OLLAMA_NAME.fullmatch(name)
+    assert name == "Llama-" + "x" * 34 + "-neshter-abliterated"
+
+
+@pytest.mark.parametrize("raw", ["", "...", "---", "ağ çöp", "a/b\\c:d"])
+def test_suggest_export_name_always_matches_ollama_name(lm, raw):
+    m = dataclasses.replace(lm, name=raw)
+    for safety in (False, True):
+        assert OLLAMA_NAME.fullmatch(suggest_export_name(m, safety))

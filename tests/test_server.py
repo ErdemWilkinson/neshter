@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+import torch
 from fastapi.testclient import TestClient
 
 from conftest import recipe_for
@@ -477,8 +478,19 @@ def _export_body(out_dir, **kw):
     return {**base, **kw}
 
 
-def test_export_safetensors(ready, tmp_path):
-    c, a = ready
+@pytest.fixture
+def unlabelled(ready):
+    """`ready` + boş güvenlik etiketleri (önceki avlar modül boyunca paylaşılan oturumda iz bırakmasın)."""
+    s = ready[0].app.state.session
+    s.safety_dirs.clear()
+    s.safety_heads.clear()
+    yield ready
+    s.safety_dirs.clear()
+    s.safety_heads.clear()
+
+
+def test_export_safetensors(unlabelled, tmp_path):
+    c, a = unlabelled
     out = tmp_path / "cikti"
     job = c.post("/api/export", json=_export_body(out), headers=a).json()["job_id"]
     res = wait_done(c, a, job, timeout=120)["result"]
@@ -1172,3 +1184,186 @@ def test_models_endpoint_reads_each_gguf_header_once(tmp_path, auth, monkeypatch
     (entry,) = _make({"lmstudio": [tmp_path]}).get("/api/models", headers=auth).json()
     assert entry["license"] == "mit" and entry["arch"]["n_layers"] == 2 and entry["supported"] is True
     assert len(calls) == 1
+
+
+# --- Güvenlik etiketi: head'ler, ad, yarış (Task 11) -------------------------------------------------
+
+
+def _hunt(c, a, concept_id, method="activation_diff", seed=0):
+    body = {"concept_id": concept_id, "method": method, "seed": seed}
+    return wait_done(c, a, c.post("/api/hunt", json=body, headers=a).json()["job_id"], timeout=180)["result"]
+
+
+def _export(c, a, out, **kw):
+    return wait_done(c, a, c.post("/api/export", json=_export_body(out, **kw), headers=a).json()["job_id"], timeout=120)["result"]
+
+
+def _head_op(h):
+    return {"type": "head", "layer": h["layer"], "head": h["head"]}
+
+
+def test_refusal_hunt_heads_are_labelled(unlabelled, tmp_path):
+    c, a = unlabelled
+    top = _hunt(c, a, "refusal", seed=1)["heads"][0]  # tiny modelde refusal seed=1 ister (kural)
+    out = tmp_path / "ret-head"
+    res = _export(c, a, out, recipe_ops=[_head_op(top)])  # istemci kavram vermiyor
+    assert res["safety_ablated"] is True
+    assert json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]["abliterated"] == "refusal"
+    assert json.loads((out / "recipe.nester.json").read_text(encoding="utf-8"))["concept"] == "refusal"
+
+
+def test_code_hunt_heads_are_not_labelled(unlabelled, tmp_path):
+    c, a = unlabelled
+    top = _hunt(c, a, "code")["heads"][0]
+    out = tmp_path / "kod"
+    res = _export(c, a, out, recipe_ops=[_head_op(top)])
+    assert res["safety_ablated"] is False
+    assert "abliterated" not in json.loads((out / "config.json").read_text(encoding="utf-8"))["neshter"]
+
+
+def test_client_cannot_remove_head_label(unlabelled, tmp_path):
+    c, a = unlabelled
+    top = _hunt(c, a, "refusal", seed=1)["heads"][0]
+    out = tmp_path / "etiket"
+    res = _export(c, a, out, recipe_ops=[_head_op(top)], concept="code")  # istemci başka bir kavram iddia ediyor
+    assert res["safety_ablated"] is True
+    assert json.loads((out / "recipe.nester.json").read_text(encoding="utf-8"))["concept"] == "refusal"
+
+
+def test_label_is_forced_when_any_op_matches(unlabelled, tmp_path):
+    """Yön eşleşmiyor ama head eşleşiyor: karışık tarif yine de etiketlenir."""
+    c, a = unlabelled
+    refusal_head = _hunt(c, a, "refusal", seed=1)["heads"][0]
+    code_dir = _hunt_direction(c, a, "code", seed=0)
+    c.app.state.session.safety_dirs.clear()  # yalnızca head eşleşmesi kalsın
+    res = _export(c, a, tmp_path / "karisik", recipe_ops=[*code_dir, _head_op(refusal_head)], concept="code")
+    assert res["safety_ablated"] is True
+
+
+def _fake_result(n_heads=25, with_dir=True):
+    from neshter.concepts.hunt import HuntResult
+
+    d = torch.randn(64, generator=torch.Generator().manual_seed(3)) if with_dir else None
+    heads = [(i % 2, i % 4, 1.0 - i / 100) for i in range(n_heads)]
+    return HuntResult(
+        layer_scores=[0.0, 0.0], heads=heads, direction=d, direction_layer=0 if with_dir else None, ref_layer=1,
+        val_correct=1, val_n=1, val_accuracy=1.0, val_ci=(0.2, 1.0), measured=[],
+    )
+
+
+def test_hunt_records_only_top_measure_k_heads(unlabelled, monkeypatch):
+    from neshter.concepts.hunt import MEASURE_TOP_K
+
+    r = _fake_result(n_heads=25)
+    r.heads = [(i, 0, 1.0 - i / 100) for i in range(25)]  # tiny modelin 8 head'inden çok: ilk K'yı ayırt eder
+    monkeypatch.setattr(app_module, "hunt", lambda *a, **k: r)
+    c, a = unlabelled
+    wait_done(c, a, c.post("/api/hunt", json={"concept_id": "refusal"}, headers=a).json()["job_id"])
+    s = c.app.state.session
+    assert s.safety_heads == {(i, 0) for i in range(MEASURE_TOP_K)}
+    assert len(s.safety_dirs) == 1
+
+
+def test_late_cancel_records_no_safety_label(unlabelled, monkeypatch):
+    """Av tamamlanmış ama iş iptal edilmiş: ne yön ne head etiketi oturuma girer."""
+    r = _fake_result()
+
+    def late_cancel_hunt(lm, concept, method, seed=0, progress=None, cancel=None):
+        cancel.set()  # hunt döndükten hemen önce gelen iptal
+        return r
+
+    monkeypatch.setattr(app_module, "hunt", late_cancel_hunt)
+    c, a = unlabelled
+    job = c.post("/api/hunt", json={"concept_id": "refusal"}, headers=a).json()["job_id"]
+    wait_done(c, a, job, timeout=30, expect="cancelled")
+    s = c.app.state.session
+    assert s.safety_dirs == [] and s.safety_heads == set()
+
+
+def test_non_safety_hunt_records_nothing(unlabelled, monkeypatch):
+    monkeypatch.setattr(app_module, "hunt", lambda *a, **k: _fake_result())
+    c, a = unlabelled
+    wait_done(c, a, c.post("/api/hunt", json={"concept_id": "code"}, headers=a).json()["job_id"])
+    s = c.app.state.session
+    assert s.safety_dirs == [] and s.safety_heads == set()
+
+
+def test_is_safety_matches_heads_and_free_clears_them():
+    s = app_module.Session()
+    s.safety_heads.add((1, 2))
+
+    def hop(layer, head):
+        return app_module.HeadOp(type="head", layer=layer, head=head)
+
+    assert app_module._is_safety(s, [hop(1, 2)], None)
+    assert app_module._is_safety(s, [hop(0, 0), hop(1, 2)], "code")
+    assert not app_module._is_safety(s, [hop(2, 1)], None)
+    assert app_module._is_safety(s, [hop(2, 1)], "refusal")
+    s.free()
+    assert s.safety_heads == set() and not app_module._is_safety(s, [hop(1, 2)], None)
+
+
+def test_export_name_defaults_with_abliterated_suffix(unlabelled, tmp_path):
+    c, a = unlabelled
+    body = _export_body(tmp_path / "ad1", concept="refusal")
+    del body["name"]
+    res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["name"].endswith("-neshter-abliterated") and len(res["name"]) <= 64
+
+
+def test_export_name_default_without_safety_has_no_suffix(unlabelled, tmp_path):
+    c, a = unlabelled
+    body = _export_body(tmp_path / "ad2")
+    del body["name"]
+    res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["name"].endswith("-neshter") and "abliterated" not in res["name"]
+
+
+def test_export_explicit_name_is_kept(unlabelled, tmp_path):
+    c, a = unlabelled
+    assert _export(c, a, tmp_path / "ad3", name="kesik", concept="refusal")["name"] == "kesik"
+
+
+def test_default_name_is_used_for_gguf_and_ollama(unlabelled, tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_to_gguf(hf_dir, out_file, quant, llama_cpp, metadata=None, cancel=None):
+        out_file.write_bytes(b"GGUF")
+        return out_file
+
+    monkeypatch.setattr(app_module, "find_llama_cpp", lambda: tmp_path)
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    monkeypatch.setattr(app_module, "ollama_create", lambda name, gguf, license_text=None: calls.update(name=name, gguf=gguf))
+    c, a = unlabelled
+    body = _export_body(tmp_path / "ad4", format="gguf_q8_0", ollama=True, concept="refusal")
+    del body["name"]
+    res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
+    assert calls["name"] == res["name"] and res["name"].endswith("-abliterated")
+    assert calls["gguf"].name == res["name"] + ".gguf"
+
+
+@pytest.mark.parametrize("bad", ["a b", "x" * 65, "<b>", "refusal\n", ""])
+def test_export_rejects_bad_concept_and_name(unlabelled, tmp_path, bad):
+    c, a = unlabelled
+    for kw in ({"concept": bad}, {"name": bad}):
+        r = c.post("/api/export", json=_export_body(tmp_path / "x", **kw), headers=a)
+        assert r.status_code == 422, kw
+
+
+def test_late_cancel_records_no_safety_direction(ready, monkeypatch):
+    """Parked Task 2 note: a cancel arriving after hunt() returned must not leave a direction behind."""
+    c, a = ready
+    s = c.app.state.session
+    s.safety_dirs.clear()
+
+    def late_cancel_hunt(lm, concept, method, seed=0, progress=None, cancel=None):
+        cancel.set()
+        return _fake_result()
+
+    monkeypatch.setattr(app_module, "hunt", late_cancel_hunt)
+    job = c.post("/api/hunt", json={"concept_id": "refusal"}, headers=a).json()["job_id"]
+    wait_done(c, a, job, timeout=30, expect="cancelled")
+    try:
+        assert s.safety_dirs == []
+    finally:
+        s.safety_dirs.clear()

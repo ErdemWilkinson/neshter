@@ -256,3 +256,59 @@ def test_launcher_runs_checkout_not_pypi_and_deps_are_bounded():
     for d in deps:
         assert "<" in d, f"üst sınır yok: {d}"
     assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps
+
+
+# --- Güvenlik etiketi (Task 11) ---------------------------------------------------------------
+
+
+def test_apply_prints_intervention_summary(tmp_path, tiny_model_dir, lm, capsys):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert "Tarif: 1 head, 0 yön, kavram=code" in capsys.readouterr().out
+
+
+def _dir_recipe(tmp_path, lm, concept):
+    v = torch.randn(lm.arch.d_model, generator=torch.Generator().manual_seed(0))
+    return _recipe_file(tmp_path, lm, [DirectionAblation(v)], concept=concept)
+
+
+def test_apply_warns_on_unlabelled_direction_recipe(tmp_path, tiny_model_dir, lm, capsys):
+    r = _dir_recipe(tmp_path, lm, "code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    cap = capsys.readouterr()
+    assert "Tarif: 0 head, 1 yön, kavram=code" in cap.out
+    assert "yön silme" in cap.err and "--label-safety" in cap.err
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert "abliterated" not in cfg["neshter"]  # uyarı etiketlemez
+
+
+def test_apply_no_warning_for_refusal_or_head_only_or_flag(tmp_path, tiny_model_dir, lm, capsys):
+    assert _apply(_dir_recipe(tmp_path, lm, "refusal"), tiny_model_dir, tmp_path / "o1") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    assert _apply(_recipe_file(tmp_path, lm, [HeadAblation(1, 0)]), tiny_model_dir, tmp_path / "o2") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    assert _apply(_dir_recipe(tmp_path, lm, "code"), tiny_model_dir, tmp_path / "o3", "--label-safety") == 0
+    assert "yön silme" not in capsys.readouterr().err
+
+
+def test_apply_label_safety_sets_metadata(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--label-safety") == 0
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["neshter"]["abliterated"] == "refusal"
+    assert "safety-ablated" in (tmp_path / "o" / "README.md").read_text(encoding="utf-8")
+
+
+def test_apply_label_safety_reaches_gguf_metadata(tmp_path, tiny_model_dir, lm, monkeypatch):
+    calls = {}
+
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        calls["metadata"] = metadata
+        Path(out_file).write_bytes(b"GGUF")
+        return Path(out_file)
+
+    monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path / "llama")
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0", "--label-safety") == 0
+    assert "safety-ablated" in calls["metadata"]["general.tags"]

@@ -34,7 +34,7 @@ import neshter
 from neshter.activity import head_output_power, normalize_global, normalize_per_layer, tokens, top_mlp_neurons
 from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
-from neshter.concepts.hunt import default_method, hunt
+from neshter.concepts.hunt import MEASURE_TOP_K, default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
 from neshter.export import (
     LlamaCppMissing,
@@ -43,6 +43,7 @@ from neshter.export import (
     modelfile_license,
     ollama_create,
     save_safetensors,
+    suggest_export_name,
     verify_source_untouched,
 )
 from neshter.hardware import system_info
@@ -56,7 +57,7 @@ from neshter.loader import (
 )
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
-from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
+from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
 from neshter.server.jobs import TERMINAL, JobManager
 
@@ -124,11 +125,11 @@ class SuiteReq(_Req):
 
 class ExportReq(_Req):
     recipe_ops: list[Op] = Field(min_length=1)
-    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # None: suggest_export_name
     format: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"]
     ollama: bool
     out_dir: str = Field(min_length=1)
-    concept: str | None = Field(default=None, max_length=64)  # "refusal" ise güvenlik-ablasyonu işareti
+    concept: str | None = Field(default=None, pattern=RECIPE_TEXT)  # "refusal" ise güvenlik-ablasyonu işareti
 
     @model_validator(mode="after")
     def _ollama_needs_gguf(self) -> ExportReq:
@@ -161,6 +162,8 @@ class Session:
         self.lm: LoadedModel | None = None
         # Bu modelde safety_ablation'lı kavramlardan (ör. refusal) bulunan birim yönler (CPU float32).
         self.safety_dirs: list[torch.Tensor] = []
+        # Aynı kavramlardan bulunmuş (katman, head) çiftleri (avın ölçülen ilk MEASURE_TOP_K head'i).
+        self.safety_heads: set[tuple[int, int]] = set()
 
     def require(self) -> LoadedModel:
         if self.lm is None:
@@ -170,6 +173,7 @@ class Session:
     def free(self) -> None:
         self.lm = None
         self.safety_dirs = []
+        self.safety_heads = set()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -204,8 +208,11 @@ SAFETY_COS = 0.99
 
 def _is_safety(session: Session, ops: list, concept: str | None) -> bool:
     """Kayıt güvenlik-ablasyonu sayılır mı? İstemcinin "refusal" demesi YA DA sunucu tarafı eşleşme:
-    tarifteki herhangi bir yön, bu oturumda güvenlik kavramından bulunmuş bir yöne |cos| ≥ 0.99."""
+    tarifteki herhangi bir head, bu oturumda güvenlik kavramından bulunmuş bir head'dir YA DA herhangi bir
+    yön, bulunmuş bir yöne |cos| ≥ 0.99. Tek bir eşleşme yeter; istemci etiketi kaldıramaz."""
     if concept == "refusal":
+        return True
+    if any(isinstance(op, HeadOp) and (op.layer, op.head) in session.safety_heads for op in ops):
         return True
     if not session.safety_dirs:
         return False
@@ -611,10 +618,13 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 method = body.method or default_method(lm)
                 report(0.0, "Kavram aranıyor")
                 r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel)
-                if concept.safety_ablation and r.direction is not None:
-                    # Bu yön kaydedilirse etiket istemciye bağlı kalmasın (bkz. _is_safety).
-                    d = r.direction.detach().to("cpu", torch.float32)
-                    session.safety_dirs.append(d / d.norm())
+                # Etiketler yalnızca av tamamen bittiyse ve iş iptal edilmediyse oturuma girer (geç iptal
+                # edilen av iz bırakmaz). Bu yön/head'ler kaydedilirse etiket istemciye bağlı kalmaz.
+                if concept.safety_ablation and not cancel.is_set():
+                    if r.direction is not None:
+                        d = r.direction.detach().to("cpu", torch.float32)
+                        session.safety_dirs.append(d / d.norm())
+                    session.safety_heads.update((layer, head) for layer, head, _ in r.heads[:MEASURE_TOP_K])
             measured = {(m.layer, m.head): m for m in r.measured}
 
             def _measured(layer: int, head: int):
@@ -687,6 +697,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 safety = _is_safety(session, body.recipe_ops, body.concept)
                 concept = "refusal" if safety else body.concept  # istemci etiketi kaldıramaz
                 recipe = _recipe_from_ops(lm, body.recipe_ops, concept)
+                name = body.name or suggest_export_name(lm, safety)
                 out_dir = Path(body.out_dir)
                 if body.format == "safetensors":
                     path = save_safetensors(
@@ -701,7 +712,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                             "klasörüne ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
                         )
                     path = export_gguf(
-                        lm, recipe, out_dir, body.name, _QUANT[body.format], llama_cpp, safety,
+                        lm, recipe, out_dir, name, _QUANT[body.format], llama_cpp, safety,
                         progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
                     )
                 report(0.9, "Kaynak model doğrulanıyor")
@@ -715,7 +726,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 if body.ollama:
                     report(0.95, "Ollama'ya ekleniyor")
                     try:
-                        ollama_create(body.name, path, license_text=modelfile_license(lm, out_dir))
+                        ollama_create(name, path, license_text=modelfile_license(lm, out_dir))
                     except subprocess.CalledProcessError as e:
                         raise RuntimeError(
                             f"Ollama'ya ekleme başarısız oldu ('ollama create' {e.returncode} koduyla çıktı)."
@@ -725,6 +736,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "source_sha256": lm.source_sha256,
                 "source_untouched": True,
                 "safety_ablated": safety,
+                "name": name,
             }
 
         return start(fn)

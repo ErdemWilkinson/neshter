@@ -651,6 +651,18 @@ def modelfile_license(lm: LoadedModel, out_dir: Path) -> str | None:
 OLLAMA_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
+def suggest_export_name(lm: LoadedModel, safety: bool) -> str:
+    """Varsayılan dışa aktarım adı: `<ad>-neshter[-abliterated]`; her zaman OLLAMA_NAME'e (en çok 64) uyar.
+
+    Llama 3.x lisansı türev modelin adının "Llama" ile başlamasını ister; ad zaten öyle değilse önek eklenir.
+    `base` önek dahil en çok 40 karakterdir; en uzun sonuç 40 + len("-neshter-abliterated") = 60'tır.
+    """
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", lm.name).strip("-._")
+    prefix = "Llama-" if is_llama3(lm) and not clean.lower().startswith("llama") else ""
+    base = prefix + (clean[: 40 - len(prefix)].strip("-._") or "model")
+    return f"{base}-neshter" + ("-abliterated" if safety else "")
+
+
 def write_modelfile(gguf: Path, license_text: str | None) -> Path:
     """gguf'un yanına Modelfile yazar: `FROM <mutlak yol>` ve lisans metni varsa üç tırnaklı LICENSE bloğu."""
     gguf = Path(gguf)
