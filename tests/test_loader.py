@@ -475,3 +475,57 @@ def test_read_license_does_not_follow_files_outside_folder(tmp_path, monkeypatch
     (tmp_path / "README.md").write_text("---\nlicense: mit\n---\n", encoding="utf-8")
     monkeypatch.setattr(licenses, "inside_model", lambda folder, f: False)
     assert loader.read_license(tmp_path) is None
+
+
+# --- Task 10: yükleme ilerlemesi ve iptali ------------------------------------------------------
+
+
+def test_load_model_reports_progress_and_cancel(tiny_model_dir):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    seen = []
+    load_model(tiny_model_dir, device="cpu", dtype=torch.float32, progress=lambda p, msg: seen.append(p))
+    assert seen == sorted(seen) and seen[0] >= 0.1 and seen[-1] == pytest.approx(1.0)
+    assert len(seen) >= 4  # okuma, cihaz, SHA-256 aşamaları
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        load_model(tiny_model_dir, device="cpu", dtype=torch.float32, cancel=ev)
+
+
+def test_load_model_cancel_during_sha_drops_model(tiny_model_dir, monkeypatch):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    ev = threading.Event()
+    real = loader.sha256_path
+
+    def sha_then_cancel(path, progress=None, cancel=None):
+        ev.set()  # SHA-256 aşamasına gelindiğinde iptal
+        return real(path, progress, cancel)
+
+    monkeypatch.setattr(loader, "sha256_path", sha_then_cancel)
+    with pytest.raises(Cancelled):
+        load_model(tiny_model_dir, device="cpu", dtype=torch.float32, cancel=ev)
+
+
+def test_sha256_path_progress_and_cancel(tmp_path):
+    import threading
+
+    from neshter.progress import Cancelled
+
+    (tmp_path / "a.bin").write_bytes(b"a" * 3_000_000)
+    (tmp_path / "b.bin").write_bytes(b"b" * 1_000_000)
+    seen = []
+    digest = sha256_path(tmp_path, progress=lambda p, m: seen.append(p))
+    assert digest == sha256_path(tmp_path)  # ilerleme özeti değiştirmez
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0) and len(seen) >= 3
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        sha256_path(tmp_path, cancel=ev)
+    with pytest.raises(Cancelled):
+        sha256_path(tmp_path / "a.bin", cancel=ev)

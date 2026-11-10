@@ -9,6 +9,7 @@ import torch
 from conftest import recipe_for
 
 from neshter import cli
+from neshter import export as export_module
 from neshter.cli import main
 from neshter.interventions import HeadAblation
 from neshter.interventions import DirectionAblation
@@ -99,15 +100,15 @@ def test_apply_gguf_uses_safetensors_then_converter(
     fake_cpp = tmp_path / "llama"
     calls = {}
 
-    def fake_to_gguf(hf_dir, out_file, q, llama_cpp):
-        calls.update(hf=Path(hf_dir), out=Path(out_file), quant=q, cpp=Path(llama_cpp))
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        calls.update(hf=Path(hf_dir), out=Path(out_file), quant=q, cpp=Path(llama_cpp), metadata=metadata)
         assert (Path(hf_dir) / "model.safetensors").exists()
         Path(out_file).write_bytes(b"GGUF")
         return Path(out_file)
 
     monkeypatch.setattr(cli, "find_llama_cpp", lambda: fake_cpp)
-    monkeypatch.setattr(cli, "to_gguf", fake_to_gguf)
-    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="refusal")
     out = tmp_path / "o"
     assert _apply(r, tiny_model_dir, out, "--format", fmt) == 0
     assert calls["quant"] == quant
@@ -115,6 +116,10 @@ def test_apply_gguf_uses_safetensors_then_converter(
     assert calls["out"].parent == out
     assert calls["out"].exists()
     assert not calls["hf"].exists()  # ara safetensors klasörü silinir
+    assert "safety-ablated" in calls["metadata"]["general.tags"]  # tarifin kavramı refusal
+    names = {p.name for p in out.iterdir()}
+    assert {"o.gguf", "README.md", "recipe.nester.json"} <= names  # kart ve tarif GGUF'un yanında kalır
+    assert "safety-ablated" in (out / "README.md").read_text(encoding="utf-8")
 
 
 def test_apply_gguf_failure_removes_partial_out(tmp_path, tiny_model_dir, lm, monkeypatch, capsys):
@@ -122,7 +127,7 @@ def test_apply_gguf_failure_removes_partial_out(tmp_path, tiny_model_dir, lm, mo
         raise RuntimeError("dönüştürme patladı")
 
     monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path)
-    monkeypatch.setattr(cli, "to_gguf", boom)
+    monkeypatch.setattr(export_module, "to_gguf", boom)
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0") == 1
     assert "dönüştürme patladı" in capsys.readouterr().err

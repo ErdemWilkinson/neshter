@@ -36,7 +36,15 @@ from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
 from neshter.concepts.hunt import default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
-from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf, verify_source_untouched
+from neshter.export import (
+    LlamaCppMissing,
+    export_gguf,
+    find_llama_cpp,
+    modelfile_license,
+    ollama_create,
+    save_safetensors,
+    verify_source_untouched,
+)
 from neshter.hardware import system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import (
@@ -47,7 +55,7 @@ from neshter.loader import (
     load_model,
 )
 from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
-from neshter.progress import ProgressFn, check_cancel, sub_progress
+from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
 from neshter.server.jobs import TERMINAL, JobManager
@@ -274,11 +282,17 @@ def _memory_bytes(fmt: str, size_bytes: int) -> int:
     return estimate_memory_bytes(int(n_params), 2)
 
 
-def _load(path: Path, dtype: torch.dtype | None, name: str | None) -> LoadedModel:
+def _load(
+    path: Path,
+    dtype: torch.dtype | None,
+    name: str | None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> LoadedModel:
     """load_model; beklenmeyen (çoğu İngilizce) hatalar Türkçe bir öneke sarılır."""
     try:
-        return load_model(path, device="auto", dtype=dtype, name=name)
-    except (UnsupportedArchitecture, UnsafeModelFile):
+        return load_model(path, device="auto", dtype=dtype, name=name, progress=progress, cancel=cancel)
+    except (UnsupportedArchitecture, UnsafeModelFile, Cancelled):
         raise
     except Exception as e:
         raise RuntimeError(f"Model yüklenemedi: {type(e).__name__}: {e}") from e
@@ -490,7 +504,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 if cancel.is_set():
                     return None
                 report(0.1, "Model yükleniyor")
-                lm = _load(path, _DTYPES[body.dtype], body.name)
+                lm = _load(path, _DTYPES[body.dtype], body.name, report, cancel)
                 if cancel.is_set():  # yükleme sürerken iptal edildi: durum "cancelled", oturum boş kalsın
                     del lm
                     session.free()
@@ -675,15 +689,37 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 recipe = _recipe_from_ops(lm, body.recipe_ops, concept)
                 out_dir = Path(body.out_dir)
                 if body.format == "safetensors":
-                    report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-                    path = save_safetensors(lm, recipe, out_dir, safety_ablated=safety)
+                    path = save_safetensors(
+                        lm, recipe, out_dir, safety_ablated=safety,
+                        progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
+                    )
                 else:
-                    path = _export_gguf(lm, recipe, out_dir, body, report, safety)
-                report(0.95, "Kaynak model doğrulanıyor")
+                    llama_cpp = find_llama_cpp()
+                    if llama_cpp is None:
+                        raise LlamaCppMissing(
+                            "llama.cpp bulunamadı. GGUF için NESHTER_LLAMA_CPP ortam değişkenini llama.cpp "
+                            "klasörüne ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
+                        )
+                    path = export_gguf(
+                        lm, recipe, out_dir, body.name, _QUANT[body.format], llama_cpp, safety,
+                        progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
+                    )
+                report(0.9, "Kaynak model doğrulanıyor")
                 if not verify_source_untouched(lm):
                     raise RuntimeError(
                         "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor)."
                     )
+                if cancel.is_set():  # son adımda gelen iptal de çıktıyı bırakmaz (out_dir bu işte oluştu)
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    return None
+                if body.ollama:
+                    report(0.95, "Ollama'ya ekleniyor")
+                    try:
+                        ollama_create(body.name, path, license_text=modelfile_license(lm, out_dir))
+                    except subprocess.CalledProcessError as e:
+                        raise RuntimeError(
+                            f"Ollama'ya ekleme başarısız oldu ('ollama create' {e.returncode} koduyla çıktı)."
+                        ) from e
             return {
                 "path": str(path),
                 "source_sha256": lm.source_sha256,
@@ -731,37 +767,3 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             return _PLACEHOLDER_HTML
 
     return app
-
-
-def _export_gguf(
-    lm: LoadedModel, recipe: Recipe, out_dir: Path, body: ExportReq, report, safety: bool = False
-) -> Path:
-    """safetensors ara klasörü → GGUF (→ Ollama). out_dir yeni olmalı; ara klasör işin sonunda silinir."""
-    llama_cpp = find_llama_cpp()
-    if llama_cpp is None:
-        raise FileNotFoundError(
-            "llama.cpp bulunamadı. GGUF için NESHTER_LLAMA_CPP ortam değişkenini llama.cpp klasörüne "
-            "ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
-        )
-    if out_dir.exists():
-        raise FileExistsError(f"'{out_dir}' zaten var; üzerine yazılmaz. Başka bir klasör adı seçin.")
-    try:
-        hf_dir = out_dir / "_hf"
-        report(0.1, "Ağırlıklara gömülüyor ve kaydediliyor")
-        save_safetensors(lm, recipe, hf_dir, safety_ablated=safety)
-        report(0.5, "GGUF'a dönüştürülüyor")
-        try:
-            gguf = to_gguf(hf_dir, out_dir / f"{body.name}.gguf", _QUANT[body.format], llama_cpp)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"GGUF dönüştürme başarısız oldu (llama.cpp {e.returncode} koduyla çıktı).") from e
-        shutil.rmtree(hf_dir)
-    except BaseException:
-        shutil.rmtree(out_dir, ignore_errors=True)  # out_dir bu işte oluştu (başta yoktu)
-        raise
-    if body.ollama:
-        report(0.9, "Ollama'ya ekleniyor")
-        try:
-            ollama_create(body.name, gguf)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Ollama'ya ekleme başarısız oldu ('ollama create' {e.returncode} koduyla çıktı).") from e
-    return gguf

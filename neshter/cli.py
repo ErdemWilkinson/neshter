@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import secrets
-import shutil
 import socket
 import sys
 import threading
@@ -18,7 +17,7 @@ from pathlib import Path
 
 import uvicorn
 
-from neshter.export import find_llama_cpp, save_safetensors, to_gguf, verify_source_untouched
+from neshter.export import export_gguf, find_llama_cpp, save_safetensors, verify_source_untouched
 from neshter.loader import load_model
 from neshter.recipe import check_against, load_recipe, to_interventions
 from neshter.server.app import create_app
@@ -125,7 +124,9 @@ def _apply(args: argparse.Namespace) -> int:
         if quant is None:
             result = save_safetensors(lm, recipe, out)
         else:
-            result = _save_gguf(lm, recipe, out, quant, llama_cpp)
+            result = export_gguf(
+                lm, recipe, out, out.name, quant, llama_cpp, safety=recipe.concept == "refusal"
+            )
         if not verify_source_untouched(lm):
             _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor).")
             return EXIT_ERROR
@@ -135,19 +136,6 @@ def _apply(args: argparse.Namespace) -> int:
 
     print(f"{count} müdahale uygulandı, kaydedildi: {result}")
     return EXIT_OK
-
-
-def _save_gguf(lm, recipe, out: Path, quant: str, llama_cpp: Path) -> Path:
-    """safetensors ara klasörü → GGUF; out bu işte oluşur, hata olursa silinir."""
-    try:
-        hf_dir = out / "_hf"
-        save_safetensors(lm, recipe, hf_dir)
-        gguf = to_gguf(hf_dir, out / f"{out.name}.gguf", quant, llama_cpp)
-        shutil.rmtree(hf_dir)
-    except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
-        raise
-    return gguf
 
 
 def _parser() -> argparse.ArgumentParser:

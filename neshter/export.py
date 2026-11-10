@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import date
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -41,10 +42,20 @@ from neshter.interventions import (
 )
 from neshter.licenses import clean_id, inside_model
 from neshter.loader import LoadedModel, sha256_path
+from neshter.progress import ProgressFn, check_cancel, sub_progress
 from neshter.recipe import DirectionOp, HeadOp, Recipe, save_recipe
 
 _QUANTS = ("Q4_K_M", "Q8_0")
 _GB = 1024**3
+QUANT_BYTES_PER_PARAM = {"Q4_K_M": 0.6, "Q8_0": 1.07}
+
+
+class DiskFull(OSError):
+    """Diskte dışa aktarım için yeterli yer yok (yazmaya başlamadan önce tespit edilir)."""
+
+
+class LlamaCppMissing(FileNotFoundError):
+    """llama.cpp (dönüştürücü ya da llama-quantize) bulunamadı."""
 
 
 def _quantize_name() -> str:
@@ -317,6 +328,30 @@ def _estimate_bytes(lm: LoadedModel, directions: bool) -> int:
     return total
 
 
+def estimate_export_bytes(
+    lm: LoadedModel, fmt: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"], has_directions: bool
+) -> int:
+    """Dışa aktarımın disk tepe kullanımı. GGUF: _hf klasörü, f16 dosyası ve nicelenmiş dosya birlikte durur."""
+    st = _estimate_bytes(lm, has_directions)
+    if fmt == "safetensors":
+        return st
+    quant = fmt.removeprefix("gguf_").upper()
+    if quant not in QUANT_BYTES_PER_PARAM:
+        raise ValueError(f"Geçersiz dışa aktarım biçimi {fmt!r}.")
+    n = sum(p.numel() for p in lm.model.parameters())
+    return int(st + 2 * n + QUANT_BYTES_PER_PARAM[quant] * n)
+
+
+def _check_disk(parent: Path, estimate: int) -> None:
+    parent.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(parent).free
+    if free < estimate * 1.1:
+        raise DiskFull(
+            f"Diskte yeterli yer yok: gereken yaklaşık {estimate * 1.1 / _GB:.2f} GB, "
+            f"boş {free / _GB:.2f} GB."
+        )
+
+
 _LICENSE_GLOBS = ("LICENSE*", "USE_POLICY*", "NOTICE*")
 
 
@@ -380,6 +415,8 @@ def save_safetensors(
     summary: Summary | None = None,
     safety_ablated: bool = False,
     dtype: torch.dtype | None = None,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
     """Müdahaleleri gömüp safetensors klasörü olarak atomik kaydeder; modeli eski haline döndürür.
 
@@ -403,23 +440,22 @@ def save_safetensors(
 
     interventions = to_interventions(recipe)
     has_dir = any(isinstance(iv, DirectionAblation) for iv in interventions)
-    estimate = _estimate_bytes(lm, has_dir)
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(out_dir.parent).free
-    if free < estimate * 1.1:
-        raise OSError(
-            f"Diskte yeterli yer yok: gereken yaklaşık {estimate * 1.1 / _GB:.2f} GB, "
-            f"boş {free / _GB:.2f} GB."
-        )
+    _check_disk(out_dir.parent, _estimate_bytes(lm, has_dir))
 
     safety = safety_ablated or recipe.concept == "refusal"  # tek doğruluk kaynağı
     target = save_dtype(lm) if dtype is None else dtype
+    check_cancel(cancel)
+    if progress is not None:
+        progress(0.05, "Ağırlıklara gömülüyor")
     undo = bake(lm, interventions)
     try:
         try:
+            if progress is not None:
+                progress(0.3, "Ağırlıklar yazılıyor")
             lm.model.save_pretrained(
                 tmp, safe_serialization=True, state_dict=_cast_state_dict(lm.model, target)
             )
+            check_cancel(cancel)  # Cancelled: aşağıdaki except tmp'yi siler, finally ağırlıkları geri alır
             lm.tokenizer.save_pretrained(tmp)
             cfg_path = tmp / "config.json"
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -441,7 +477,11 @@ def save_safetensors(
                 (tmp / "LICENSE").write_text(lm.license_text, encoding="utf-8")
             if lm.arch.family == "gemma2" and not any(tmp.glob("NOTICE*")):
                 (tmp / "NOTICE").write_text(GEMMA_NOTICE + "\n", encoding="utf-8")
+            if progress is not None:
+                progress(0.95, "Kayıt tamamlanıyor")
             os.replace(tmp, out_dir)
+            if progress is not None:
+                progress(1.0, "Kaydedildi")
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
@@ -468,31 +508,45 @@ def find_llama_cpp() -> Path | None:
 
 
 def to_gguf(
-    hf_dir: Path, out_file: Path, quant: Literal["Q4_K_M", "Q8_0"], llama_cpp: Path
+    hf_dir: Path,
+    out_file: Path,
+    quant: Literal["Q4_K_M", "Q8_0"],
+    llama_cpp: Path,
+    metadata: dict | None = None,
+    cancel: threading.Event | None = None,
 ) -> Path:
+    """safetensors klasörü → f16 GGUF → nicelenmiş GGUF. `metadata` verilirse geçici bir JSON'a yazılır ve
+    dönüştürücüye `--metadata <dosya>` ile geçer (general.license, general.tags, ...); dosya her durumda silinir.
+    İptal yalnızca dönüştürme ile quantize arasında denetlenir (alt süreç ortasında kesilmez)."""
     if quant not in _QUANTS:
         raise ValueError(f"Geçersiz niceleme '{quant}'; {', '.join(_QUANTS)} olmalı.")
     llama_cpp, out_file = Path(llama_cpp), Path(out_file)
     converter = llama_cpp / "convert_hf_to_gguf.py"
     if not converter.is_file():
-        raise FileNotFoundError(
+        raise LlamaCppMissing(
             f"'{llama_cpp}' klasöründe convert_hf_to_gguf.py bulunamadı. GGUF'a dönüştürmek için "
             "llama.cpp kaynak deposundaki convert_hf_to_gguf.py (ve gguf-py) bu klasörde olmalı."
         )
     quantize = llama_cpp / _quantize_name()
     if not quantize.is_file():
-        raise FileNotFoundError(f"'{llama_cpp}' klasöründe {_quantize_name()} bulunamadı.")
+        raise LlamaCppMissing(f"'{llama_cpp}' klasöründe {_quantize_name()} bulunamadı.")
     if not (Path(hf_dir) / "config.json").is_file():
         raise FileNotFoundError(f"'{hf_dir}' içinde config.json yok; dönüştürülecek safetensors klasörü eksik.")
     if out_file.exists():
         raise FileExistsError(f"'{out_file}' zaten var; üzerine yazılmaz.")
     f16 = out_file.with_name(out_file.name + ".f16.tmp")
     qtmp = out_file.with_name(out_file.name + ".tmp")
+    meta_file = out_file.with_name(out_file.name + ".metadata.json.tmp")
     try:
-        subprocess.run(
-            [sys.executable, str(converter), str(hf_dir), "--outtype", "f16", "--outfile", str(f16)],
-            check=True,
-        )
+        cmd = [sys.executable, str(converter), str(hf_dir), "--outtype", "f16", "--outfile", str(f16)]
+        try:
+            if metadata is not None:
+                meta_file.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+                cmd += ["--metadata", str(meta_file)]
+            subprocess.run(cmd, check=True)
+        finally:
+            meta_file.unlink(missing_ok=True)
+        check_cancel(cancel)
         try:
             subprocess.run([str(quantize), str(f16), str(qtmp), quant], check=True)
             os.replace(qtmp, out_file)
@@ -504,10 +558,112 @@ def to_gguf(
     return out_file
 
 
+def gguf_metadata(lm: LoadedModel, recipe: Recipe, safety: bool) -> dict:
+    """Dönüştürücünün `--metadata` dosyası: lisans, etiketler, tek satırlık İngilizce açıklama."""
+    n_heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
+    n_dirs = sum(isinstance(op, DirectionOp) for op in recipe.interventions)
+    return {
+        "general.license": _display_license(lm) or "other",
+        "general.tags": ["neshter"] + (["safety-ablated", "abliterated"] if safety else []),
+        "general.description": (
+            f"Derived from {_md_safe(lm.name, 120) or 'a base model'} with Neshter {neshter.__version__}: "
+            f"{n_heads} heads silenced, {n_dirs} directions removed."
+        ),
+    }
+
+
+_KEEP_GLOBS = ("README.md", "recipe.nester.json", *_LICENSE_GLOBS)
+_GGUF_NAME = re.compile(r'[^/\\:*?"<>|\x00-\x1f]+')
+
+
+def export_gguf(
+    lm: LoadedModel,
+    recipe: Recipe,
+    out_dir: Path,
+    name: str,
+    quant: str,
+    llama_cpp: Path,
+    safety: bool,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> Path:
+    """safetensors ara klasörü → GGUF. Son düzen: out_dir/{name}.gguf + README.md + recipe.nester.json +
+    lisans dosyaları (ara `_hf` klasörü silinir). out_dir yeni olmalı; hata ya da iptalde tamamen silinir."""
+    out_dir = Path(out_dir)
+    if quant not in _QUANTS:
+        raise ValueError(f"Geçersiz niceleme '{quant}'; {', '.join(_QUANTS)} olmalı.")
+    if name in ("", ".", "..") or not _GGUF_NAME.fullmatch(name):
+        raise ValueError(f"Geçersiz dosya adı {name!r}.")
+    source = Path(lm.source_path)
+    if _is_within(out_dir, source) or (source.is_file() and out_dir.resolve() == source.resolve()):
+        raise ValueError("Kayıt klasörü kaynak modelin içinde olamaz; kaynak dosyalara asla yazılmaz.")
+    if out_dir.exists():
+        raise FileExistsError(f"'{out_dir}' zaten var; üzerine yazılmaz. Başka bir klasör adı seçin.")
+    check_cancel(cancel)
+    has_dir = any(isinstance(op, DirectionOp) for op in recipe.interventions)
+    _check_disk(out_dir.parent, estimate_export_bytes(lm, f"gguf_{quant.lower()}", has_dir))
+    safety = safety or recipe.concept == "refusal"
+
+    out_dir.mkdir()  # bundan sonra out_dir bu işe aittir
+    try:
+        hf_dir = out_dir / "_hf"
+        save_safetensors(
+            lm, recipe, hf_dir, safety_ablated=safety, progress=sub_progress(progress, 0.02, 0.6), cancel=cancel
+        )
+        if progress is not None:
+            progress(0.6, "GGUF'a dönüştürülüyor ve nicelendiriliyor")
+        try:
+            gguf = to_gguf(
+                hf_dir, out_dir / f"{name}.gguf", quant, llama_cpp,
+                metadata=gguf_metadata(lm, recipe, safety), cancel=cancel,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"GGUF dönüştürme başarısız oldu (llama.cpp {e.returncode} koduyla çıktı).") from e
+        check_cancel(cancel)
+        if progress is not None:
+            progress(0.95, "Kart, tarif ve lisans GGUF'un yanına taşınıyor")
+        for pattern in _KEEP_GLOBS:
+            for f in sorted(hf_dir.glob(pattern)):
+                if f.is_file() and not (out_dir / f.name).exists():
+                    os.replace(f, out_dir / f.name)
+        shutil.rmtree(hf_dir)
+        if progress is not None:
+            progress(1.0, "GGUF hazır")
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    return gguf
+
+
+def modelfile_license(lm: LoadedModel, out_dir: Path) -> str | None:
+    """Ollama Modelfile'a yazılacak lisans metni: out_dir/LICENSE, yoksa modelin lisans metni, yoksa bildirimler."""
+    path = Path(out_dir) / "LICENSE"
+    if path.is_file():
+        with open(path, "rb") as f:
+            text = f.read(1024 * 1024).decode("utf-8", errors="replace")
+        if text.strip():
+            return text
+    if lm.license_text and lm.license_text.strip():
+        return lm.license_text
+    return "\n\n".join(license_notices(lm)) or None
+
+
 OLLAMA_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
-def ollama_create(name: str, gguf: Path) -> None:
+def write_modelfile(gguf: Path, license_text: str | None) -> Path:
+    """gguf'un yanına Modelfile yazar: `FROM <mutlak yol>` ve lisans metni varsa üç tırnaklı LICENSE bloğu."""
+    gguf = Path(gguf)
+    content = f"FROM {gguf.resolve()}\n"
+    if license_text and license_text.strip():
+        safe = license_text.replace('"""', "'''")  # üç tırnak Modelfile'ı erken kapatır
+        content += f'LICENSE """\n{safe}\n"""\n'
+    path = gguf.parent / "Modelfile"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def ollama_create(name: str, gguf: Path, license_text: str | None = None) -> None:
     if not OLLAMA_NAME.fullmatch(name):
         raise ValueError(
             f"Geçersiz Ollama model adı {name!r}: harf/rakamla başlamalı; yalnızca harf, rakam, '.', '_', '-' (en çok 64)."
@@ -517,8 +673,6 @@ def ollama_create(name: str, gguf: Path) -> None:
         raise FileNotFoundError(
             "Ollama bulunamadı (PATH'te 'ollama' yok). Ollama'yı kurun ya da bu adımı atlayın."
         )
-    gguf = Path(gguf)
-    modelfile = gguf.parent / "Modelfile"
-    modelfile.write_text(f"FROM {gguf.resolve()}\n", encoding="utf-8")
+    modelfile = write_modelfile(Path(gguf), license_text)
     # Tam yol: Windows'ta CreateProcess çıplak adı önce çalışma klasöründe arar.
     subprocess.run([exe, "create", name, "-f", str(modelfile)], check=True)
