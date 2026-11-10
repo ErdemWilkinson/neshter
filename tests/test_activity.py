@@ -7,7 +7,7 @@ from neshter.activity import (
     tokens,
     top_mlp_neurons,
 )
-from neshter.interventions import HeadAblation, apply
+from neshter.interventions import HeadAblation, apply, head_means
 
 PROMPT = "bugün hava nasıl"
 
@@ -143,16 +143,26 @@ def test_add_special_tokens_is_forwarded(lm, monkeypatch):
 
 def test_activity_forwards_disable_kv_cache(lm, monkeypatch):
     seen = []
-    real = lm.model.forward
+    real = lm.model.model.forward
 
     def spy(*a, **kw):
         seen.append(kw.get("use_cache"))
         return real(*a, **kw)
 
-    monkeypatch.setattr(lm.model, "forward", spy)
+    monkeypatch.setattr(lm.model.model, "forward", spy)
     head_output_power(lm, PROMPT)
     top_mlp_neurons(lm, PROMPT, k=3)
     assert seen == [False, False]
+
+
+def test_activity_and_head_means_skip_lm_head(lm, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("lm_head çağrıldı")
+
+    monkeypatch.setattr(lm.model.lm_head, "forward", boom)
+    head_output_power(lm, "merhaba dünya")
+    top_mlp_neurons(lm, "merhaba dünya")
+    head_means(lm, ["merhaba dünya"])
 
 
 def test_activation_diff_does_not_add_second_bos(lm, monkeypatch):

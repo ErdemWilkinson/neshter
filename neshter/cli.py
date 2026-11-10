@@ -99,7 +99,7 @@ def _apply(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     try:
-        lm = load_model(Path(args.model), device="auto")  # sunucuyla aynı politika: bf16, sığarsa GPU
+        lm = load_model(Path(args.model), device="auto")  # sunucuyla aynı politika: sığarsa GPU, dtype pick_compute_dtype
     except Exception as e:
         _err(f"Model yüklenemedi: {e}")
         return EXIT_ERROR

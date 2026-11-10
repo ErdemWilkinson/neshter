@@ -71,7 +71,7 @@ def head_output_power(
     ]
     try:
         with torch.no_grad():
-            lm.model(**enc, use_cache=False)
+            lm.model.model(**enc, use_cache=False)  # lm_head gerekmez
     finally:
         for h in handles:
             h.remove()
@@ -115,7 +115,7 @@ def top_mlp_neurons(
     ]
     try:
         with torch.no_grad():
-            lm.model(**enc, use_cache=False)
+            lm.model.model(**enc, use_cache=False)  # lm_head gerekmez
     finally:
         for h in handles:
             h.remove()

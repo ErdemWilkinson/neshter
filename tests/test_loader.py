@@ -3,6 +3,7 @@ import shutil
 
 import pytest
 import torch
+from safetensors.torch import load_file, save_file
 
 from neshter import loader
 from neshter.loader import (
@@ -169,10 +170,62 @@ def test_display_name_override(tiny_model_dir):
     assert lm.name == "qwen2.5:7b"
 
 
-def test_default_dtype_is_bf16(tiny_model_dir):
-    lm = load_model(tiny_model_dir, device="cpu")
+@pytest.mark.parametrize("device,n,ram,native,expected", [
+    ("cuda", 10**9, 64 * 2**30, False, torch.bfloat16),
+    ("cpu", 5 * 10**8, 16 * 2**30, False, torch.float32),   # 0.5B·4·1.2 = 2.4 GB < 0.7·16 GB
+    ("cpu", 8 * 10**9, 16 * 2**30, False, torch.bfloat16),  # 38 GB > 11.2 GB
+    ("cpu", 5 * 10**8, 16 * 2**30, True, torch.bfloat16),   # AVX512_BF16 / AMX
+])
+def test_pick_compute_dtype_table(device, n, ram, native, expected):
+    assert loader.pick_compute_dtype(device, n, ram, native) == expected
+
+
+def test_auto_dtype_loads_float32_on_cpu_without_native_bf16(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
+    assert next(lm.model.parameters()).dtype == torch.float32 and lm.device_note is None
+
+
+def test_auto_dtype_bf16_with_note_when_ram_tight(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
     assert next(lm.model.parameters()).dtype == torch.bfloat16
-    assert lm.device_note is None
+    assert loader.SLOW_BF16_NOTE in lm.device_note
+
+
+def test_explicit_dtype_is_respected(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    lm = loader.load_model(tiny_model_dir, device="cpu", dtype=torch.bfloat16)
+    assert next(lm.model.parameters()).dtype == torch.bfloat16
+
+
+def test_native_bf16_cpu_keeps_bf16_without_note(tiny_model_dir, monkeypatch):
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: True)
+    lm = loader.load_model(tiny_model_dir, device="cpu")
+    assert next(lm.model.parameters()).dtype == torch.bfloat16 and lm.device_note is None
+
+
+def test_fp32_policy_loads_without_bf16_rounding(tmp_path, tiny_model_dir, monkeypatch):
+    # a float32 checkpoint must not be rounded through bf16 on its way to float32
+    shutil.copytree(tiny_model_dir, tmp_path / "m")
+    f = tmp_path / "m" / "model.safetensors"
+    sd = load_file(f)
+    key = next(k for k, v in sd.items() if v.ndim == 2)
+    sd[key] = torch.full_like(sd[key], 1 + 2**-12, dtype=torch.float32)   # not bf16-representable
+    save_file(sd, f, metadata={"format": "pt"})
+    monkeypatch.setattr(loader, "cpu_has_native_bf16", lambda: False)
+    monkeypatch.setattr(loader, "available_ram_bytes", lambda: 1 << 40)
+    lm = loader.load_model(tmp_path / "m", device="cpu")
+    assert torch.equal(dict(lm.model.named_parameters())[key], sd[key])
+
+
+def test_hardware_probes_return_plain_values():
+    from neshter import hardware
+
+    assert isinstance(hardware.cpu_has_native_bf16(), bool)
+    assert hardware.available_ram_bytes() > 0
 
 
 def test_auto_device_stays_on_cpu_when_vram_too_small(tiny_model_dir, monkeypatch):

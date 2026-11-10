@@ -650,14 +650,16 @@ def test_cancel_finished_job_is_noop_and_unknown_raises():
 # --- Fix wave: yükleme (C1 ad, I7 dtype, Minor 6/12) ---------------------------------------------
 
 
-def test_load_defaults_to_bf16_and_accepts_name(client, auth, tiny_model_dir):
-    body = {"path": str(tiny_model_dir), "name": "qwen2.5:7b"}
+def test_load_auto_dtype_follows_policy_and_accepts_name(client, auth, tiny_model_dir, monkeypatch):
+    monkeypatch.setattr("neshter.loader.cpu_has_native_bf16", lambda: False)
+    body = {"path": str(tiny_model_dir), "name": "qwen2.5:7b", "dtype": "auto"}
     st = wait_done(client, auth, client.post("/api/session/load", json=body, headers=auth).json()["job_id"])
     assert st["result"]["name"] == "qwen2.5:7b"
     assert st["result"]["device"] == "cpu" and st["result"]["device_note"] is None
+    assert st["result"]["dtype"] == "float32"
     import torch
 
-    assert next(client.app.state.session.lm.model.parameters()).dtype == torch.bfloat16
+    assert next(client.app.state.session.lm.model.parameters()).dtype == torch.float32
 
 
 def test_load_rejects_unknown_dtype(client, auth, tiny_model_dir):
