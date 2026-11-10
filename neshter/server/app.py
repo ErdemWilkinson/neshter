@@ -62,7 +62,7 @@ from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexit
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
-from neshter.server.errors import NoModel, install_handlers
+from neshter.server.errors import SECURITY_HEADERS, NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -279,16 +279,6 @@ def _bad_input():
 # --- Güvenlik ara katmanı (saf ASGI; akışlı yanıtları bozmaz) ------------------------------------
 
 
-# Derlenmiş yerel arayüz için yeterli en dar CSP: satır içi betik yok; stil için 'unsafe-inline' (React stil öznitelikleri).
-SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
-        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
-    ),
-    "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
-    "X-Frame-Options": "DENY",
-}
 _SECURITY_HEADER_PAIRS = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in SECURITY_HEADERS.items()]
 
 

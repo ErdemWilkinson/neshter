@@ -1959,6 +1959,24 @@ def test_free_bytes_uses_nearest_existing_ancestor(tmp_path):
     assert app_module._free_bytes(str(tmp_path / "a" / "b")) > 0
 
 
+def test_500_handler_sets_security_headers():
+    from fastapi import FastAPI
+
+    from neshter.server.errors import install_handlers
+
+    bare = FastAPI()  # _Guard olmadan: başlıkları işleyicinin kendisi koymalı
+    install_handlers(bare)
+
+    @bare.get("/boom")
+    def boom():
+        raise RuntimeError("x")
+
+    r = TestClient(bare, raise_server_exceptions=False).get("/boom")
+    assert r.status_code == 500 and r.json()["error_code"] == "internal"
+    for k, v in app_module.SECURITY_HEADERS.items():
+        assert r.headers[k] == v
+
+
 def test_unexpected_exception_is_500_without_leaking(auth, caplog):
     from fastapi.routing import APIRoute
 
@@ -1974,4 +1992,5 @@ def test_unexpected_exception_is_500_without_leaking(auth, caplog):
     assert r.status_code == 500
     assert r.json() == {"detail": "Beklenmeyen hata.", "error_code": "internal"}
     assert "gizli-yol" not in r.text and "Traceback" not in r.text
+    assert r.headers.get_list("content-security-policy") == [app_module.SECURITY_HEADERS["Content-Security-Policy"]]
     assert any(rec.exc_info and "gizli-yol" in str(rec.exc_info[1]) for rec in caplog.records)  # günlükte var
