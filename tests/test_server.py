@@ -356,6 +356,16 @@ def test_compare(ready):
     assert set(body) == {"original", "modified", "mode"} and body["mode"] in ("batch", "sequential")
 
 
+def test_compare_direction_recipe_reports_baked_mode(ready):
+    import torch
+
+    c, a = ready
+    vec = base64.b64encode(torch.randn(64).numpy().astype("<f4").tobytes()).decode()
+    ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
+    r = c.post("/api/compare", json={"prompt": "merhaba", "recipe_ops": ops, "max_new_tokens": 3}, headers=a)
+    assert r.status_code == 200 and r.json()["mode"] == "baked"
+
+
 def test_compare_rejects_bad_ops(ready):
     c, a = ready
     bad_layer = [{"type": "head", "layer": 99, "head": 0}]

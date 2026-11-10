@@ -643,7 +643,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     lm,
                     items,
                     interventions,
-                    progress=lambda done, total: report(0.95 * done / total, f"{done}/{total} test"),
+                    progress=lambda done, total: report(0.95 * done / total, f"{done}/{total} adım"),
                     cancel=cancel,
                     max_new_tokens=body.max_new_tokens,
                     target=body.target,

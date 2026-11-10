@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from neshter import compare
+from neshter import compare, export
 from neshter.compare import (
     CategoryResult,
     SuiteItem,
@@ -13,7 +13,7 @@ from neshter.compare import (
     run_suite,
     summarize,
 )
-from neshter.interventions import HeadAblation
+from neshter.interventions import DirectionAblation, HeadAblation
 from neshter.metrics import holm, mcnemar_exact, min_detectable_drop, paired_diff
 
 
@@ -419,3 +419,168 @@ def test_suite_answers_not_in_prompt():
     for item in load_suite():
         if item.check == "contains":
             assert not any(answer_matches(a, item.prompt) for a in item.accepted()), item.prompt
+
+
+# --- Task 8: yön tarifleri gömülü (bf16'ya yuvarlanmış) ağırlıklarla ölçülür -------------------------
+
+
+def _state(lm):
+    return {k: v.clone() for k, v in lm.model.state_dict().items()}
+
+
+def _same(lm, before):
+    sd = lm.model.state_dict()
+    return sd.keys() == before.keys() and all(torch.equal(v, sd[k]) for k, v in before.items())
+
+
+def _direction(seed=0):
+    return DirectionAblation(torch.randn(64, generator=torch.Generator().manual_seed(seed)))
+
+
+def _spy_bake(monkeypatch):
+    calls = []
+    real = export.bake
+    monkeypatch.setattr(export, "bake", lambda *a, **k: calls.append(k) or real(*a, **k))
+    return calls
+
+
+def test_generate_pair_direction_uses_baked_weights(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    before = _state(lm)
+    _, _, mode = generate_pair(lm, "merhaba", [_direction()], max_new_tokens=5)
+    assert mode == "baked" and calls[0]["round_to"] == torch.bfloat16
+    assert _same(lm, before)
+
+
+def test_generate_pair_baked_modified_runs_on_rounded_weights(lm, monkeypatch):
+    """Orijinal dokunulmamış ağırlıklarla, müdahaleli bf16'ya yuvarlanmış gömülü ağırlıklarla üretilir."""
+    iv = [_direction(3)]
+    before, seen = _state(lm), []
+    real = compare._generate
+
+    def spy(lm_, enc, n, seed):
+        seen.append(_same(lm_, before))
+        if not seen[-1]:  # gömülü yarım: yazıcı ağırlıkları bf16'da tam gösterilebilir olmalı
+            w = lm_.model.model.layers[0].self_attn.o_proj.weight
+            assert torch.equal(w, w.to(torch.bfloat16).to(w.dtype))
+        return real(lm_, enc, n, seed)
+
+    monkeypatch.setattr(compare, "_generate", spy)
+    a, b, mode = generate_pair(lm, "merhaba", iv, max_new_tokens=6)
+    assert mode == "baked" and seen == [True, False]  # önce orijinal, sonra gömülü
+    monkeypatch.setattr(compare, "_generate", real)
+    undo = export.bake(lm, iv, round_to=torch.bfloat16)
+    try:
+        (expected,) = compare._generate(lm, compare._encode(lm, "merhaba", 1), 6, 42)
+    finally:
+        undo()
+    assert b == expected and _same(lm, before)
+
+
+def test_head_only_pair_stays_batch(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    _, _, mode = generate_pair(lm, "merhaba", [HeadAblation(0, 1)], max_new_tokens=3)
+    assert mode == "batch" and calls == []
+
+
+def test_generate_pair_baked_false_forces_hook_path(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    _, _, mode = generate_pair(lm, "merhaba", [_direction()], max_new_tokens=3, baked=False)
+    assert mode == "batch" and calls == []
+
+
+def test_generate_pair_baked_restores_weights_on_error(lm, monkeypatch):
+    before, n = _state(lm), []
+    real = compare._generate
+
+    def boom(lm_, enc, n_tokens, seed):
+        n.append(1)
+        if len(n) == 2:  # 2. çağrı = gömülü ağırlıklarla üretim
+            assert not _same(lm_, before)
+            raise ValueError("üretim patladı")
+        return real(lm_, enc, n_tokens, seed)
+
+    monkeypatch.setattr(compare, "_generate", boom)
+    with pytest.raises(ValueError, match="patladı"):
+        generate_pair(lm, "merhaba", [_direction()], max_new_tokens=3)
+    assert _same(lm, before)
+
+
+def test_suite_baked_bakes_once_and_restores(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    before = _state(lm)
+    run_suite(lm, load_suite()[:3], [_direction()], max_new_tokens=3)
+    assert len(calls) == 1 and calls[0]["round_to"] == torch.bfloat16
+    assert _same(lm, before)
+
+
+def test_suite_baked_progress_is_done_total_over_two_passes(lm):
+    seen = []
+    run_suite(lm, load_suite()[:3], [_direction()], progress=lambda d, t: seen.append((d, t)), max_new_tokens=3)
+    assert seen == [(i, 6) for i in range(1, 7)]  # 1..n orijinal, n+1..2n müdahaleli
+
+
+def test_suite_baked_nll_computed_after_undo(lm, monkeypatch):
+    pristine, restored = _state(lm), []
+    monkeypatch.setattr(
+        compare, "answer_nll", lambda lm_, p, a: restored.append(_same(lm_, pristine)) or 1.0
+    )
+    run_suite(lm, load_suite()[:2], [_direction()], max_new_tokens=3)
+    assert len(restored) == 4 and all(restored)  # her NLL orijinal ağırlıklarla hesaplandı
+
+
+def test_suite_baked_generation_pass_order(lm, monkeypatch):
+    """Geçiş 1 hep orijinal, geçiş 2 hep gömülü; iki geçiş run_suite'te, generate_pair kullanılmaz."""
+    monkeypatch.setattr(compare, "generate_pair", lambda *a, **k: pytest.fail("baked yolu generate_pair kullanmaz"))
+    before, seen = _state(lm), []
+    real = compare._generate
+    monkeypatch.setattr(
+        compare, "_generate", lambda lm_, enc, n, seed: seen.append(_same(lm_, before)) or real(lm_, enc, n, seed)
+    )
+    run_suite(lm, load_suite()[:3], [_direction()], max_new_tokens=3)
+    assert seen == [True] * 3 + [False] * 3
+
+
+def test_suite_baked_cancel_restores_weights(lm):
+    ev, before, during = threading.Event(), _state(lm), []
+
+    def progress(done, total):
+        if done / total > 0.5:  # baked kipte total = 2n
+            during.append(_same(lm, before))
+            ev.set()
+
+    out = run_suite(lm, load_suite()[:4], [_direction()], progress=progress, cancel=ev, max_new_tokens=3)
+    assert out == [] and during == [False]  # iptal anında ağırlıklar gömülüydü; sonra geri alındı
+    assert _same(lm, before)
+
+
+def test_suite_baked_cancel_in_first_pass_never_bakes(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    ev, before = threading.Event(), _state(lm)
+    out = run_suite(lm, load_suite()[:3], [_direction()], progress=lambda d, t: ev.set(), cancel=ev, max_new_tokens=3)
+    assert out == [] and calls == [] and _same(lm, before)
+
+
+def test_suite_baked_restores_weights_on_error(lm, monkeypatch):
+    before, n = _state(lm), []
+    real = compare._generate
+
+    def boom(lm_, enc, n_tokens, seed):
+        n.append(1)
+        if len(n) == 5:  # 3 öğe: 3 orijinal + ikinci geçişin 2. üretimi
+            raise ValueError("üretim patladı")
+        return real(lm_, enc, n_tokens, seed)
+
+    monkeypatch.setattr(compare, "_generate", boom)
+    with pytest.raises(ValueError, match="patladı"):
+        run_suite(lm, load_suite()[:3], [_direction()], max_new_tokens=3)
+    assert _same(lm, before)
+
+
+def test_suite_head_only_stays_on_hook_path(lm, monkeypatch):
+    calls = _spy_bake(monkeypatch)
+    seen = []
+    res = run_suite(
+        lm, load_suite()[:2], [HeadAblation(0, 0)], progress=lambda d, t: seen.append((d, t)), max_new_tokens=3
+    )
+    assert calls == [] and seen == [(1, 2), (2, 2)] and res[0].n == 2
