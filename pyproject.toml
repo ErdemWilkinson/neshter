@@ -32,6 +32,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["neshter"]
+# Derlenmiş arayüz (neshter/web/dist) wheel'e girsin: VCS/gitignore süzgeci onu atlamasın.
+artifacts = ["neshter/web/dist/**"]
 
 # Yalnızca bu kaynaktan uv sync / uv run / uvx --from <klon> için geçerlidir (paket üst verisine girmez).
 # GPU kullanıcıları torch'u kendi CUDA dizininden kurar (ör. --index); Task 13'te .bat yolunda

@@ -35,10 +35,12 @@ import neshter
 from neshter.activity import head_output_power, normalize_global, normalize_per_layer, tokens, top_mlp_neurons
 from neshter.arch import estimate_memory_bytes, fit_badge
 from neshter.compare import generate_pair, load_suite, run_suite, summarize
+from neshter.concepts.detectors import DETECTORS
 from neshter.concepts.hunt import MEASURE_TOP_K, default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
 from neshter.export import (
     LlamaCppMissing,
+    estimate_export_bytes,
     export_gguf,
     find_llama_cpp,
     modelfile_license,
@@ -47,7 +49,7 @@ from neshter.export import (
     suggest_export_name,
     verify_source_untouched,
 )
-from neshter.hardware import system_info
+from neshter.hardware import cpu_has_native_bf16, system_info
 from neshter.interventions import HeadAblation
 from neshter.loader import (
     SUPPORTED_FAMILIES,
@@ -60,6 +62,7 @@ from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexit
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
+from neshter.server.errors import NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -67,6 +70,10 @@ SAMPLE_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
 _QUANT = {"gguf_q4_k_m": "Q4_K_M", "gguf_q8_0": "Q8_0"}
 
 Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
+
+QUICK_GUARD = "general"  # hızlı kip: hedef kategori + bu "kimseyi bozmadım" kontrol kategorisi
+QUICK_MAX_NEW_TOKENS = 64
+QUICK_N_RANDOM = 20  # kullanıcıya dönük alt sınır (EffectReq.n_random ge=20)
 
 
 # --- İstek şemaları (bilinmeyen alan yasak) -------------------------------------------------------
@@ -78,8 +85,8 @@ class _Req(BaseModel, extra="forbid"):
 
 class ActivityReq(_Req):
     prompt: str = Field(min_length=1)
-    token_index: int
-    scale: Literal["layer", "global"]
+    token_index: int | None = None  # None: yalnızca ham güç (tüm token'lar tek çağrıda)
+    scale: Literal["layer", "global"] = "layer"
 
 
 class MlpReq(_Req):
@@ -116,12 +123,22 @@ class CompareReq(_Req):
     prompt: str = Field(min_length=1)
     recipe_ops: list[Op] = Field(min_length=1)
     max_new_tokens: int = Field(default=200, ge=1, le=1024)
+    concept_id: str | None = None  # DETECTORS'ta varsa yanıt "target_hit" taşır
 
 
 class SuiteReq(_Req):
     recipe_ops: list[Op] = Field(min_length=1)
     target: str | None = None  # None: özet yok (ör. "tone"un test kategorisi yok)
     max_new_tokens: int = Field(default=200, ge=1, le=1024)
+    quick: bool = False  # yalnızca hedef + QUICK_GUARD kategorisi, ≤ 64 token, 20 rastgele kontrol
+
+
+def _check_out_dir(out_dir: str) -> None:
+    if out_dir.startswith(("\\\\", "//")):
+        # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
+        raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
+    if not Path(out_dir).is_absolute():
+        raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
 
 
 class ExportReq(_Req):
@@ -136,11 +153,24 @@ class ExportReq(_Req):
     def _ollama_needs_gguf(self) -> ExportReq:
         if self.ollama and self.format == "safetensors":
             raise ValueError("Ollama'ya eklemek için GGUF biçimi seçilmeli.")
-        if self.out_dir.startswith(("\\\\", "//")):
-            # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
-            raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
-        if not Path(self.out_dir).is_absolute():
-            raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
+        _check_out_dir(self.out_dir)
+        return self
+
+
+class EstimateReq(_Req):
+    """Dışa aktarım disk tahmini. `recipe_ops` verilirse yön var mı ve güvenlik etiketi ondan türetilir
+    (dışa aktarma işiyle aynı); verilmezse açık `has_directions` ve yalnızca `concept` kullanılır, ad geçicidir."""
+
+    format: Literal["safetensors", "gguf_q4_k_m", "gguf_q8_0"]
+    recipe_ops: list[Op] | None = Field(default=None, min_length=1)
+    has_directions: bool = False
+    out_dir: str | None = Field(default=None, min_length=1)
+    concept: str | None = Field(default=None, pattern=RECIPE_TEXT)
+
+    @model_validator(mode="after")
+    def _local_out_dir(self) -> EstimateReq:
+        if self.out_dir is not None:
+            _check_out_dir(self.out_dir)
         return self
 
 
@@ -149,10 +179,6 @@ class RecipeCheckReq(_Req):
 
 
 # --- Oturum ---------------------------------------------------------------------------------------
-
-
-class NoModel(Exception):
-    pass
 
 
 class Session:
@@ -275,7 +301,7 @@ class _Guard:
         if reason is None:
             await self.app(scope, receive, send)
         elif scope["type"] == "http":
-            await JSONResponse({"detail": reason}, status_code=403)(scope, receive, send)
+            await JSONResponse({"detail": reason, "error_code": "forbidden"}, status_code=403)(scope, receive, send)
         else:
             await send({"type": "websocket.close", "code": 1008})
 
@@ -311,6 +337,20 @@ def _load(
         raise
     except Exception as e:
         raise RuntimeError(f"Model yüklenemedi: {type(e).__name__}: {e}") from e
+
+
+def _unsupported_reason(arch: dict | None) -> str | None:
+    if arch is None:
+        return "unknown_arch"
+    return None if arch["family"] in SUPPORTED_FAMILIES else "unsupported_family"
+
+
+def _free_bytes(out_dir: str) -> int:
+    """Boş disk: `out_dir`in (henüz yoksa) var olan en yakın atasında ölçülür; klasör yaratılmaz."""
+    p = Path(out_dir)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return int(shutil.disk_usage(p).free)
 
 
 def _default_effect_prompts() -> list[str]:
@@ -359,10 +399,6 @@ def _recipe_metrics(
 
 def _sse(event: str, status) -> str:
     return f"event: {event}\ndata: {json.dumps(asdict(status), ensure_ascii=False)}\n\n"
-
-
-class _Cancelled(Exception):
-    pass
 
 
 async def job_stream(jobs: JobManager, job_id: str, request, poll: float = 0.1, keepalive: float = 15.0):
@@ -421,21 +457,34 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     app.state.jobs = jobs
     app.add_middleware(_Guard, token=token, port=port)
 
-    @app.exception_handler(NoModel)
-    async def _no_model(_, exc: NoModel):
-        return JSONResponse({"detail": str(exc)}, status_code=409)
+    install_handlers(app)
 
     def require_model() -> LoadedModel:
         return session.require()
 
-    def start(fn) -> dict:
-        return {"job_id": jobs.submit(fn)}
+    def start(fn, kind: str) -> dict:
+        return {"job_id": jobs.submit(fn, kind=kind)}
 
     # -- sistem / modeller --
 
     @app.get("/api/system")
     def get_system():
-        return asdict(system_info())
+        llama = find_llama_cpp()
+        return {
+            **asdict(system_info()),
+            "default_out_dir": str(Path.home() / "Neshter"),
+            "llama_cpp": {
+                "found": llama is not None,
+                "path": None if llama is None else str(llama),
+                "converter": llama is not None and (llama / "convert_hf_to_gguf.py").is_file(),
+            },
+            "ollama": shutil.which("ollama") is not None,
+            "torch_version": torch.__version__,
+            "torch_cuda": torch.version.cuda,
+            "cuda_available": torch.cuda.is_available(),
+            "native_bf16": cpu_has_native_bf16(),
+            "cpu_threads": torch.get_num_threads(),
+        }
 
     @app.get("/api/models")
     def get_models():
@@ -455,6 +504,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "license": e.license,
                     "arch": (arch := e.arch),
                     "supported": arch is not None and arch["family"] in SUPPORTED_FAMILIES,
+                    "unsupported_reason": _unsupported_reason(arch),
                 }
             )
         return out
@@ -490,7 +540,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
                 def update(self, n=1):
                     if cancel.is_set():
-                        raise _Cancelled()
+                        raise Cancelled()
                     self._seen += n or 0
                     if self.total:
                         report(
@@ -502,7 +552,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             report(0.0, "İndirme başlıyor")
             return {"path": str(snapshot_download(SAMPLE_REPO, tqdm_class=Bar))}
 
-        return start(fn)
+        return start(fn, "download")
 
     # -- oturum --
 
@@ -534,7 +584,30 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "dtype": str(next(lm.model.parameters()).dtype).removeprefix("torch."),
             }
 
-        return start(fn)
+        return start(fn, "load")
+
+    @app.get("/api/session")
+    def get_session():
+        """Kilit almaz: yükleme/av sürerken de anlık durumu verir. `source_path` yerel arayüz için açıktır;
+        belirteç hiçbir yanıta girmez."""
+        lm = session.lm
+        if lm is None:
+            return {"loaded": False}
+        param = next(lm.model.parameters())
+        return {
+            "loaded": True,
+            "name": lm.name,
+            "arch": asdict(lm.arch),
+            "device": param.device.type,
+            "dtype": str(param.dtype).removeprefix("torch."),
+            "license": lm.license,
+            "memory_bytes": sum(p.numel() * p.element_size() for p in lm.model.parameters()),
+            "device_note": lm.device_note,
+            "source_path": str(lm.source_path),
+            "default_method": default_method(lm),
+            "safety_dirs": len(session.safety_dirs),
+            "safety_heads": len(session.safety_heads),
+        }
 
     # -- anlık (eşzamanlı) uçlar --
 
@@ -552,13 +625,15 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def activity(body: ActivityReq):
         with _model_busy_guard(), _bad_input():
             lm = require_model()
-            power = head_output_power(lm, body.prompt)  # [L, H, T]
-            n_tokens = power.shape[-1]
-            if not -n_tokens <= body.token_index < n_tokens:
-                raise ValueError(f"token_index {body.token_index} aralık dışı (prompt {n_tokens} token).")
-            at = power[:, :, body.token_index]
-            norm = normalize_per_layer(at) if body.scale == "layer" else normalize_global(at)
-            return {"tokens": tokens(lm, body.prompt), "power": norm.tolist()}
+            power = head_output_power(lm, body.prompt)  # [L, H, T]; tek ileri geçiş, tüm token'lar
+            out = {"tokens": tokens(lm, body.prompt), "power_raw": power.tolist()}
+            if body.token_index is not None:
+                n_tokens = power.shape[-1]
+                if not -n_tokens <= body.token_index < n_tokens:
+                    raise ValueError(f"token_index {body.token_index} aralık dışı (prompt {n_tokens} token).")
+                at = power[:, :, body.token_index]
+                out["power"] = (normalize_per_layer(at) if body.scale == "layer" else normalize_global(at)).tolist()
+            return out
 
     @app.post("/api/mlp")
     def mlp(body: MlpReq):
@@ -572,7 +647,9 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             lm = require_model()
             interventions = to_interventions(_recipe_from_ops(lm, body.recipe_ops))
             original, modified, mode = generate_pair(lm, body.prompt, interventions, max_new_tokens=body.max_new_tokens)
-        return {"original": original, "modified": modified, "mode": mode}
+        detector = DETECTORS.get(body.concept_id) if body.concept_id is not None else None
+        target_hit = None if detector is None else {"original": detector(original), "modified": detector(modified)}
+        return {"original": original, "modified": modified, "mode": mode, "target_hit": target_hit}
 
     @app.post("/api/recipe/check")
     def recipe_check(body: RecipeCheckReq):
@@ -605,7 +682,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     )
                 )
 
-        return start(fn)
+        return start(fn, "effect")
 
     @app.post("/api/hunt")
     def hunt_endpoint(body: HuntReq):
@@ -662,7 +739,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "val_n": r.val_n,
             }
 
-        return start(fn)
+        return start(fn, "hunt")
 
     @app.post("/api/suite")
     def suite(body: SuiteReq):
@@ -672,6 +749,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             raise HTTPException(422, f"Hedef kategori '{body.target}' test setinde yok.")
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops)
+        if body.quick:
+            items = [i for i in items if i.category in {body.target, QUICK_GUARD}]
+        max_new_tokens = min(body.max_new_tokens, QUICK_MAX_NEW_TOKENS) if body.quick else body.max_new_tokens
+        extra = {"n_random": QUICK_N_RANDOM} if body.quick else {}
 
         def fn(report, cancel):
             with session.lock:
@@ -683,13 +764,15 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     interventions,
                     progress=lambda done, total: report(0.95 * done / total, f"{done}/{total} adım"),
                     cancel=cancel,
-                    max_new_tokens=body.max_new_tokens,
+                    max_new_tokens=max_new_tokens,
                     target=body.target,
                 )
                 if cancel.is_set():
                     return None
                 report(0.95, "KL ve perplexity ölçülüyor")
-                metrics = _recipe_metrics(lm, interventions, progress=sub_progress(report, 0.95, 1.0), cancel=cancel)
+                metrics = _recipe_metrics(
+                    lm, interventions, progress=sub_progress(report, 0.95, 1.0), cancel=cancel, **extra
+                )
             if cancel.is_set():
                 return None
             return {
@@ -698,7 +781,28 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "metrics": metrics,
             }
 
-        return start(fn)
+        return start(fn, "suite")
+
+    @app.post("/api/export/estimate")
+    def export_estimate(body: EstimateReq):
+        """Disk tahmini + önerilen ad. Model kullanmaz (yalnızca parametre boyutları): kilit gerekmez."""
+        lm = require_model()
+        if body.recipe_ops is not None:
+            with _bad_input():
+                _recipe_from_ops(lm, body.recipe_ops, body.concept)
+            has_directions = any(isinstance(op, DirectionOp) for op in body.recipe_ops)
+            safety = _is_safety(session, body.recipe_ops, body.concept)
+        else:  # tarif yok: ad geçicidir (head/yön eşleşmesi bilinmez); yalnızca concept == "refusal"
+            has_directions = body.has_directions
+            safety = _is_safety(session, [], body.concept)
+        needed = int(estimate_export_bytes(lm, body.format, has_directions) * 1.1)
+        free = _free_bytes(body.out_dir or str(Path.home() / "Neshter"))
+        return {
+            "bytes_needed": needed,
+            "free_bytes": free,
+            "enough": free >= needed,
+            "suggested_name": suggest_export_name(lm, safety),
+        }
 
     @app.post("/api/export")
     def export(body: ExportReq):
@@ -754,7 +858,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "name": name,
             }
 
-        return start(fn)
+        return start(fn, "export")
 
     # -- iş durumu --
 
@@ -763,6 +867,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             return jobs.status(job_id)
         except KeyError as e:
             raise HTTPException(404, "İş bulunamadı.") from e
+
+    @app.get("/api/jobs")
+    def list_jobs():
+        return [{k: v for k, v in asdict(st).items() if k != "result"} for st in jobs.list()]
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
