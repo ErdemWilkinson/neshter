@@ -17,7 +17,14 @@ from pathlib import Path
 
 import uvicorn
 
-from neshter.export import export_gguf, find_llama_cpp, save_safetensors, verify_source_untouched
+from neshter.export import (
+    SourceModified,
+    ensure_source_untouched,
+    export_gguf,
+    find_llama_cpp,
+    is_refusal,
+    save_safetensors,
+)
 from neshter.loader import load_model
 from neshter.recipe import HeadOp, check_against, load_recipe, to_interventions
 from neshter.server.app import create_app
@@ -84,7 +91,7 @@ def _apply(args: argparse.Namespace) -> int:
     heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
     dirs = len(recipe.interventions) - heads
     print(f"Tarif: {heads} head, {dirs} yön, kavram={recipe.concept or '-'}")
-    if dirs and recipe.concept != "refusal" and not args.label_safety:
+    if dirs and not is_refusal(recipe.concept) and not args.label_safety:
         _err(
             "Uyarı: bu tarif yön silme içeriyor; Neşter tarifin iddia ettiği kavramı doğrulayamaz. "
             "Bir reddetme yönüyse --label-safety ile etiketleyin."
@@ -130,16 +137,17 @@ def _apply(args: argparse.Namespace) -> int:
     try:
         count = len(to_interventions(recipe))
         # Etiket: tarifin kavramı "refusal" ya da --label-safety (kayıt katmanı ikisini de zorlar).
-        safety = args.label_safety or recipe.concept == "refusal"
+        safety = args.label_safety or is_refusal(recipe.concept)
         if safety:  # kaydedilen recipe.nester.json kendi kendini etiketlesin
             recipe = recipe.model_copy(update={"concept": "refusal"})
         if quant is None:
             result = save_safetensors(lm, recipe, out, safety_ablated=safety)
         else:
             result = export_gguf(lm, recipe, out, out.name, quant, llama_cpp, safety=safety)
-        if not verify_source_untouched(lm):
-            _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor).")
-            return EXIT_ERROR
+        ensure_source_untouched(lm, out)  # uyuşmazlıkta `out` silinir
+    except SourceModified:
+        _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor); çıktı silindi.")
+        return EXIT_ERROR
     except Exception as e:
         _err(f"Kayıt başarısız: {e}")
         return EXIT_ERROR

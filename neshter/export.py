@@ -59,6 +59,24 @@ class LlamaCppMissing(FileNotFoundError):
     """llama.cpp (dönüştürücü ya da llama-quantize) bulunamadı."""
 
 
+class SourceModified(RuntimeError):
+    """Kaynak model dosyaları kayıt sırasında değişti (SHA-256 uyuşmuyor); çıktı silindi."""
+
+
+_RESERVED_NAME = re.compile(r"(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?", re.IGNORECASE)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
+
+
+def is_bad_file_name(name: str) -> bool:
+    """Windows'ta ayrılmış ad (CON, NUL, COM1...; uzantılı da) ya da nokta/boşlukla biten ad mı?"""
+    return _RESERVED_NAME.fullmatch(name) is not None or name.endswith((".", " "))
+
+
+def is_refusal(concept: str | None) -> bool:
+    """Kavram reddetme mi? Büyük/küçük harf duyarsız (tarif deseni büyük harfe izin verir)."""
+    return (concept or "").lower() == "refusal"
+
+
 def _quantize_name() -> str:
     return "llama-quantize.exe" if os.name == "nt" else "llama-quantize"
 
@@ -497,7 +515,7 @@ def save_safetensors(
     has_dir = any(isinstance(iv, DirectionAblation) for iv in interventions)
     _check_disk(out_dir.parent, _estimate_bytes(lm, has_dir))
 
-    safety = safety_ablated or recipe.concept == "refusal"  # tek doğruluk kaynağı
+    safety = safety_ablated or is_refusal(recipe.concept)  # tek doğruluk kaynağı
     target = save_dtype(lm) if dtype is None else dtype
     ensure_bake_ram(lm, interventions, cast_dtype=target)  # I4: uzun işlerin son adımında takas/OOM olmasın
     check_cancel(cancel)
@@ -528,7 +546,8 @@ def save_safetensors(
                 model_card(lm, recipe, summary, safety_ablated=safety), encoding="utf-8"
             )
             save_recipe(recipe, tmp / "recipe.nester.json")
-            _copy_license_files(Path(lm.source_path), tmp)
+            src = Path(lm.source_path)
+            _copy_license_files(src.parent if src.suffix.lower() == ".pt" else src, tmp)  # .pt: yanındaki dosyalar
             if lm.license_text and not any(tmp.glob("LICENSE*")):
                 (tmp / "LICENSE").write_text(lm.license_text, encoding="utf-8")
             if lm.arch.family == "gemma2" and not any(tmp.glob("NOTICE*")):
@@ -546,8 +565,31 @@ def save_safetensors(
     return out_dir
 
 
-def verify_source_untouched(lm: LoadedModel) -> bool:
-    return sha256_path(lm.source_path) == lm.source_sha256
+def verify_source_untouched(
+    lm: LoadedModel, progress: ProgressFn | None = None, cancel: threading.Event | None = None
+) -> bool:
+    """Kaynağın SHA-256'sı yüklemedekiyle aynı mı? İlerleme bildirir; `cancel` ile kesilir (Cancelled)."""
+    return sha256_path(lm.source_path, progress, cancel) == lm.source_sha256
+
+
+def ensure_source_untouched(
+    lm: LoadedModel,
+    out_dir: Path,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> None:
+    """Kayıttan sonra kaynağı yeniden doğrular. Uyuşmazlıkta ya da iptalde bu işin yazdığı `out_dir` silinir;
+    uyuşmazlık SourceModified (error_code `source_modified`), iptal Cancelled olarak yükselir."""
+    try:
+        same = verify_source_untouched(lm, progress, cancel)
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    if not same:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise SourceModified(
+            "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor); çıktı silindi."
+        )
 
 
 # --------------------------------------------------------------------------- gguf / ollama
@@ -648,8 +690,8 @@ def export_gguf(
     out_dir = Path(out_dir)
     if quant not in _QUANTS:
         raise ValueError(f"Geçersiz niceleme '{quant}'; {', '.join(_QUANTS)} olmalı.")
-    if name in ("", ".", "..") or not _GGUF_NAME.fullmatch(name):
-        raise ValueError(f"Geçersiz dosya adı {name!r}.")
+    if name in ("", ".", "..") or not _GGUF_NAME.fullmatch(name) or is_bad_file_name(name):
+        raise ValueError(f"Geçersiz dosya adı {name!r} (Windows'ta ayrılmış ya da nokta/boşlukla biten ad olamaz).")
     source = Path(lm.source_path)
     if _is_within(out_dir, source) or (source.is_file() and out_dir.resolve() == source.resolve()):
         raise ValueError("Kayıt klasörü kaynak modelin içinde olamaz; kaynak dosyalara asla yazılmaz.")
@@ -658,7 +700,7 @@ def export_gguf(
     check_cancel(cancel)
     has_dir = any(isinstance(op, DirectionOp) for op in recipe.interventions)
     _check_disk(out_dir.parent, estimate_export_bytes(lm, f"gguf_{quant.lower()}", has_dir))
-    safety = safety or recipe.concept == "refusal"
+    safety = safety or is_refusal(recipe.concept)
 
     out_dir.mkdir()  # bundan sonra out_dir bu işe aittir
     try:
@@ -727,7 +769,10 @@ def suggest_export_name(lm: LoadedModel, safety: bool) -> str:
 def write_modelfile(gguf: Path, license_text: str | None) -> Path:
     """gguf'un yanına Modelfile yazar: `FROM <mutlak yol>` ve lisans metni varsa üç tırnaklı LICENSE bloğu."""
     gguf = Path(gguf)
-    content = f"FROM {gguf.resolve()}\n"
+    target = str(gguf.resolve())
+    if _CONTROL_CHARS.search(target):  # satır sonu FROM satırından sonra yeni bir yönerge açabilirdi
+        raise ValueError("GGUF yolunda denetim karakteri var; Modelfile yazılmadı.")
+    content = f"FROM {target}\n"
     if license_text and license_text.strip():
         safe = license_text.replace('"""', "'''")  # üç tırnak Modelfile'ı erken kapatır
         content += f'LICENSE """\n{safe}\n"""\n'

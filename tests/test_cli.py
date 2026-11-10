@@ -387,3 +387,22 @@ def test_wheel_build_contains_web_dist(tmp_path):
 def test_wheel_ships_web_dist_artifacts():
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "neshter/web/dist/**" in cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]
+
+
+# --- Final fix wave: M1 (kaynak değişti: çıktı silinir), M8 (Refusal büyük harf) ----------------------------
+
+
+def test_apply_source_modified_removes_output(tmp_path, tiny_model_dir, lm, monkeypatch, capsys):
+    monkeypatch.setattr(export_module, "verify_source_untouched", lambda lm_, progress=None, cancel=None: False)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
+    assert _apply(r, tiny_model_dir, tmp_path / "o") != 0
+    assert not (tmp_path / "o").exists()
+    assert "SHA-256" in capsys.readouterr().err
+
+
+def test_apply_capitalised_refusal_concept_is_labelled_without_warning(tmp_path, tiny_model_dir, lm, capsys):
+    r = _dir_recipe(tmp_path, lm, "Refusal")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert "yön silme" not in capsys.readouterr().err
+    cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["neshter"]["abliterated"] == "refusal"

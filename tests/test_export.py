@@ -1107,3 +1107,85 @@ def test_baked_compare_paths_refuse_before_generating_when_ram_short(lm, monkeyp
     with pytest.raises(MemoryError, match="RAM yetmiyor"):
         compare.run_suite(lm, items, d, max_new_tokens=2)
     assert gens == []
+
+
+# --- Final fix wave: M1 (kaynak doğrulama iptal/ilerleme/temizlik), M3, M8, M9, M10, M12 ----------------------
+
+
+def test_ensure_source_untouched_reports_progress_and_passes(lm, tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    seen = []
+    export.ensure_source_untouched(lm, out, progress=lambda p, m: seen.append(p))
+    assert out.exists() and seen and seen[-1] == pytest.approx(1.0)
+
+
+def test_ensure_source_untouched_mismatch_removes_output(lm, tmp_path):
+    from neshter.server.errors import error_code_for
+
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "model.safetensors").write_bytes(b"x")
+    changed = dataclasses.replace(lm, source_sha256="0" * 64)
+    with pytest.raises(export.SourceModified) as ei:
+        export.ensure_source_untouched(changed, out)
+    assert not out.exists() and error_code_for(ei.value) == "source_modified"
+
+
+def test_ensure_source_untouched_is_cancellable_and_removes_output(lm, tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        export.ensure_source_untouched(lm, out, cancel=ev)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("name", ["CON", "con", "NUL.gguf", "com1", "LPT9.x", "aux", "ad.", "ad "])
+def test_export_gguf_rejects_windows_reserved_names(lm, tmp_path, monkeypatch, name):
+    _Tools(monkeypatch)
+    llama = _fake_llama(tmp_path)
+    with pytest.raises(ValueError, match="Geçersiz dosya adı"):
+        export_gguf(lm, recipe_for(lm, [HeadAblation(0, 1)]), tmp_path / "o", name, "Q8_0", llama, safety=False)
+    assert not (tmp_path / "o").exists()
+
+
+def test_modelfile_rejects_control_characters_in_path(tmp_path):
+    with pytest.raises(ValueError):
+        write_modelfile(tmp_path / "a\nFROM evil" / "m.gguf", None)
+
+
+def test_modelfile_license_cannot_inject_directives(tmp_path):
+    gguf = tmp_path / "m.gguf"
+    mf = write_modelfile(gguf, 'x""""\nFROM /evil\n"""""').read_text(encoding="utf-8")
+    assert mf.count('"""') == 2
+    # Üç tırnaklı LICENSE bloğunun DIŞINDA tek bir FROM yönergesi var: kendi FROM'umuz.
+    head, block, tail = mf.split('"""')
+    outside = [line for line in (head + tail).splitlines() if line.strip()]
+    assert outside == [f"FROM {gguf.resolve()}", "LICENSE "]
+    assert sum(line.startswith("FROM ") for line in outside) == 1
+    assert "FROM /evil" in block  # lisans metni bloğun içinde düz metin olarak kalır
+
+
+def test_pt_source_license_files_are_copied(tmp_path, tiny_model_dir, lm):
+    from neshter.loader import load_model
+
+    src = tmp_path / "pt"
+    src.mkdir()
+    for name in ("config.json", "tokenizer.json", "tokenizer_config.json"):
+        if (tiny_model_dir / name).exists():
+            shutil.copy(tiny_model_dir / name, src)
+    torch.save(lm.model.state_dict(), src / "weights.pt")
+    (src / "USE_POLICY.md").write_text("politika", encoding="utf-8")
+    (src / "NOTICE").write_text("bildirim", encoding="utf-8")
+    lm_pt = load_model(src / "weights.pt", device="cpu", dtype=torch.float32)
+    out = save_safetensors(lm_pt, recipe_for(lm_pt, [HeadAblation(0, 1)]), tmp_path / "out")
+    assert (out / "USE_POLICY.md").read_text(encoding="utf-8") == "politika"
+    assert (out / "NOTICE").read_text(encoding="utf-8") == "bildirim"
+
+
+def test_save_refusal_label_is_case_insensitive(lm, tmp_path):
+    out = save_safetensors(lm, recipe_for(lm, [HeadAblation(0, 1)], concept="Refusal"), tmp_path / "o")
+    cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
+    assert cfg["neshter"]["abliterated"] == "refusal"

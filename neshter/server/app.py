@@ -47,7 +47,9 @@ from neshter.export import (
     ollama_create,
     save_safetensors,
     suggest_export_name,
-    verify_source_untouched,
+    ensure_source_untouched,
+    is_bad_file_name,
+    is_refusal,
 )
 from neshter.hardware import available_ram_bytes, cpu_has_native_bf16, system_info
 from neshter.interventions import HeadAblation
@@ -142,6 +144,8 @@ class SuiteReq(_Req):
 
 
 def _check_out_dir(out_dir: str) -> None:
+    if re.search(r"[\x00-\x1f]", out_dir):  # ör. satır sonu Modelfile'ın FROM satırına ulaşabilirdi
+        raise ValueError("out_dir denetim karakteri içeremez.")
     if out_dir.startswith(("\\\\", "//")):
         # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
         raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
@@ -161,6 +165,8 @@ class ExportReq(_Req):
     def _ollama_needs_gguf(self) -> ExportReq:
         if self.ollama and self.format == "safetensors":
             raise ValueError("Ollama'ya eklemek için GGUF biçimi seçilmeli.")
+        if self.name is not None and is_bad_file_name(self.name):
+            raise ValueError("Bu ad Windows'ta ayrılmış (CON, NUL, COM1...) ya da nokta/boşlukla bitiyor.")
         _check_out_dir(self.out_dir)
         return self
 
@@ -252,7 +258,7 @@ def _is_safety(session: Session, ops: list, concept: str | None) -> bool:
     """Kayıt güvenlik-ablasyonu sayılır mı? İstemcinin "refusal" demesi YA DA sunucu tarafı eşleşme:
     tarifteki herhangi bir head, bu oturumda güvenlik kavramından bulunmuş bir head'dir YA DA herhangi bir
     yön, bulunmuş bir yöne |cos| ≥ 0.99. Tek bir eşleşme yeter; istemci etiketi kaldıramaz."""
-    if concept == "refusal":
+    if is_refusal(concept):
         return True
     if any(isinstance(op, HeadOp) and (op.layer, op.head) in session.safety_heads for op in ops):
         return True
@@ -337,6 +343,27 @@ def _b64_f32(t: torch.Tensor) -> str:
 
 
 _DTYPES = {"auto": None, "bfloat16": torch.bfloat16, "float32": torch.float32}
+
+
+def _ollama_available() -> bool:
+    return shutil.which("ollama") is not None
+
+
+def _check_export_tools(fmt: str, ollama: bool) -> None:
+    """GGUF/Ollama dışa aktarımı için araçlar: yoksa iş başlamadan 422 (`llama_cpp_missing` / `ollama_missing`)."""
+    if fmt != "safetensors":
+        llama = find_llama_cpp()
+        if llama is None or not (llama / "convert_hf_to_gguf.py").is_file():
+            raise ApiError(
+                422,
+                "llama.cpp bulunamadı ya da convert_hf_to_gguf.py eksik. GGUF için NESHTER_LLAMA_CPP ortam "
+                "değişkenini llama.cpp klasörüne ayarlayın (llama-quantize ve convert_hf_to_gguf.py orada olmalı).",
+                "llama_cpp_missing",
+            )
+    if ollama and not _ollama_available():
+        raise ApiError(
+            422, "Ollama bulunamadı (PATH'te 'ollama' yok). Ollama'yı kurun ya da bu adımı kapatın.", "ollama_missing"
+        )
 
 
 def _memory_bytes(fmt: str, size_bytes: int, available_ram: int, native_bf16: bool) -> int:
@@ -848,6 +875,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         with _bad_input():
             _recipe_from_ops(lm, body.recipe_ops, body.concept)
         _free_bytes(body.out_dir)  # sürücü yoksa iş başlamadan 422 (iş hatası yerine)
+        _check_export_tools(body.format, body.ollama)  # eksik araç uzun kayıttan SONRA değil, önce anlaşılır
 
         def fn(report, cancel):
             with session.lock:
@@ -874,10 +902,8 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                         progress=sub_progress(report, 0.0, 0.9), cancel=cancel,
                     )
                 report(0.9, "Kaynak model doğrulanıyor")
-                if not verify_source_untouched(lm):
-                    raise RuntimeError(
-                        "Kaynak model dosyaları kayıt sırasında değişmiş görünüyor (SHA-256 uyuşmuyor)."
-                    )
+                # Uyuşmazlık: out_dir silinir, SourceModified (source_modified); iptal edilebilir, ilerleme bildirir.
+                ensure_source_untouched(lm, out_dir, sub_progress(report, 0.9, 0.95), cancel)
                 if cancel.is_set():  # son adımda gelen iptal de çıktıyı bırakmaz (out_dir bu işte oluştu)
                     shutil.rmtree(out_dir, ignore_errors=True)
                     return None
