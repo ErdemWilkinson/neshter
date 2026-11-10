@@ -39,7 +39,7 @@ from neshter.concepts.model import Concept, load_preset
 from neshter.export import find_llama_cpp, ollama_create, save_safetensors, to_gguf
 from neshter.hardware import system_info
 from neshter.interventions import HeadAblation
-from neshter.loader import LoadedModel, _read_license, load_model
+from neshter.loader import LoadedModel, UnsafeModelFile, UnsupportedArchitecture, load_model, read_license
 from neshter.metrics import real_effect
 from neshter.recipe import DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
@@ -72,6 +72,8 @@ class MlpReq(_Req):
 
 class LoadReq(_Req):
     path: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=256)  # görünen ad (ör. "qwen2.5:7b")
+    dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = bf16 (CPU ve GPU'da aynı)
 
 
 class EffectReq(_Req):
@@ -224,11 +226,24 @@ def _b64_f32(t: torch.Tensor) -> str:
     return base64.b64encode(np.ascontiguousarray(t.detach().cpu().to(torch.float32).numpy(), dtype="<f4").tobytes()).decode("ascii")
 
 
+_DTYPES = {"auto": torch.bfloat16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+
+
 def _memory_bytes(fmt: str, size_bytes: int) -> int:
-    # GGUF yüklenirken tam duyarlığa açılır; ~Q4 varsayımıyla parametre sayısı tahmin edilir (muhafazakâr).
+    # GGUF yüklenirken bf16'ya açılır; ~Q4 varsayımıyla parametre sayısı tahmin edilir (muhafazakâr).
+    # Yükleme politikası CPU'da da GPU'da da bf16'dır → parametre başına 2 bayt.
     n_params = size_bytes / 0.6 if fmt == "gguf" else size_bytes / 2
-    dtype_bytes = 2 if torch.cuda.is_available() else 4
-    return estimate_memory_bytes(int(n_params), dtype_bytes)
+    return estimate_memory_bytes(int(n_params), 2)
+
+
+def _load(path: Path, dtype: torch.dtype, name: str | None) -> LoadedModel:
+    """load_model; beklenmeyen (çoğu İngilizce) hatalar Türkçe bir öneke sarılır."""
+    try:
+        return load_model(path, device="auto", dtype=dtype, name=name)
+    except (UnsupportedArchitecture, UnsafeModelFile):
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Model yüklenemedi: {type(e).__name__}: {e}") from e
 
 
 def _default_effect_prompts() -> list[str]:
@@ -294,7 +309,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "size_bytes": e.size_bytes,
                     "memory_bytes": mem,
                     "badge": fit_badge(mem, info.vram_bytes, info.ram_bytes),
-                    "license": _read_license(e.path) if e.path.is_dir() else None,
+                    "license": read_license(e.path) if e.path.is_dir() else None,
                 }
             )
         return out
@@ -335,16 +350,25 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             raise HTTPException(422, f"'{path}' bulunamadı.")
 
         def fn(report, cancel):
-            dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
             with session.lock:
                 report(0.05, "Önceki model bırakılıyor")
                 session.free()
                 if cancel.is_set():
                     return None
                 report(0.1, "Model yükleniyor")
-                lm = load_model(path, device="auto", dtype=dtype)
+                lm = _load(path, _DTYPES[body.dtype], body.name)
+                if cancel.is_set():  # yükleme sürerken iptal edildi: durum "cancelled", oturum boş kalsın
+                    del lm
+                    session.free()
+                    return None
                 session.lm = lm
-            return {"arch": asdict(lm.arch), "name": lm.name, "license": lm.license}
+            return {
+                "arch": asdict(lm.arch),
+                "name": lm.name,
+                "license": lm.license,
+                "device": next(lm.model.parameters()).device.type,
+                "device_note": lm.device_note,
+            }
 
         return start(fn)
 
