@@ -312,3 +312,28 @@ def test_apply_label_safety_reaches_gguf_metadata(tmp_path, tiny_model_dir, lm, 
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0", "--label-safety") == 0
     assert "safety-ablated" in calls["metadata"]["general.tags"]
+
+
+def test_label_safety_recipe_labels_itself(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--label-safety") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "refusal"
+    assert load_recipe(r).concept == "code"  # girdi tarifi değişmez
+
+
+def test_label_safety_recipe_labels_itself_in_gguf_folder(tmp_path, tiny_model_dir, lm, monkeypatch):
+    def fake_to_gguf(hf_dir, out_file, q, llama_cpp, metadata=None, cancel=None):
+        Path(out_file).write_bytes(b"GGUF")
+        return Path(out_file)
+
+    monkeypatch.setattr(cli, "find_llama_cpp", lambda: tmp_path / "llama")
+    monkeypatch.setattr(export_module, "to_gguf", fake_to_gguf)
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q8_0", "--label-safety") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "refusal"
+
+
+def test_unlabelled_recipe_keeps_its_concept(tmp_path, tiny_model_dir, lm):
+    r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
+    assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
+    assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "code"

@@ -69,7 +69,9 @@ Importing the saved GGUF into Ollama is optional and **off by default**. When en
 - Your source model is never modified: it is opened read-only and its SHA-256 is checked before and
   after saving. Saves are atomic (`.tmp` folder, then `os.replace`) and never overwrite an existing
   folder.
-- Recipes are untrusted input: strict schema, no code, no file paths.
+- Recipes are untrusted input: strict schema, no code, no file paths. From v0.1.1 a recipe's `concept`
+  and `method` must match `^[A-Za-z0-9_.-]{1,64}$`, so older recipes with free text there fail to load
+  with a clear validation message (edit those two fields to a short id).
 
 ## Responsible use
 
@@ -77,6 +79,11 @@ Neşter has a built-in `refusal` concept. Models saved after cutting it carry th
 `abliterated: refusal` and a `safety-ablated` tag in the generated model card, because their safety
 behavior is reduced. Use such models responsibly, and respect the license of the base model
 (for example, the Llama license has naming and use-policy requirements for derivatives).
+
+The safety label is best-effort and conservative. In the app it is applied automatically when the
+exported recipe contains one of the top 20 heads or a direction (cosine >= 0.99) found by a refusal
+hunt in the current session. The CLI cannot verify what a recipe claims, so it relies on the recipe's
+`concept` being `refusal` or on `neshter apply --label-safety`.
 
 ## Status
 

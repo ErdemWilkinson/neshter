@@ -1367,3 +1367,62 @@ def test_late_cancel_records_no_safety_direction(ready, monkeypatch):
         assert s.safety_dirs == []
     finally:
         s.safety_dirs.clear()
+
+
+# --- Fix round 1: safety-hunt detection, concept id validation, name boundary -----------------------
+
+
+def _custom_concept(**over):
+    from neshter.concepts.model import load_preset
+
+    c = load_preset("code").model_dump()  # >= 32 örnek veren geçerli bir gövde
+    c.update(over)
+    return c
+
+
+@pytest.mark.parametrize("over", [
+    {"id": "refusal", "safety_ablation": False},  # kimliği "refusal": bayrak kapalı olsa da güvenlik avı
+    {"id": "my-refuse", "safety_ablation": False, "suite_target": "harmful_refusal"},  # reddetme dedektörünün kategorisi
+])
+def test_custom_refusal_concepts_still_label_the_export(unlabelled, tmp_path, monkeypatch, over):
+    monkeypatch.setattr(app_module, "hunt", lambda *a, **k: _fake_result())
+    c, a = unlabelled
+    wait_done(c, a, c.post("/api/hunt", json={"concept": _custom_concept(**over)}, headers=a).json()["job_id"])
+    s = c.app.state.session
+    assert len(s.safety_dirs) == 1 and (0, 0) in s.safety_heads
+    res = _export(c, a, tmp_path / "ozel", recipe_ops=[{"type": "head", "layer": 0, "head": 0}])
+    assert res["safety_ablated"] is True
+
+
+def test_plain_custom_concept_is_not_a_safety_hunt(unlabelled, monkeypatch):
+    monkeypatch.setattr(app_module, "hunt", lambda *a, **k: _fake_result())
+    c, a = unlabelled
+    wait_done(c, a, c.post("/api/hunt", json={"concept": _custom_concept(id="my-code")}, headers=a).json()["job_id"])
+    s = c.app.state.session
+    assert s.safety_dirs == [] and s.safety_heads == set()
+
+
+@pytest.mark.parametrize("bad", ["a b", "x" * 65, "<b>", "refusal\n", "", "ğ"])
+def test_hunt_rejects_concept_id_that_export_would_reject(unlabelled, bad):
+    c, a = unlabelled
+    r = c.post("/api/hunt", json={"concept": _custom_concept(id=bad)}, headers=a)
+    assert r.status_code == 422
+    assert "Kavram kimliği" in r.text
+
+
+def test_hunt_accepts_valid_custom_concept_id(unlabelled, monkeypatch):
+    monkeypatch.setattr(app_module, "hunt", lambda *a, **k: _fake_result())
+    c, a = unlabelled
+    r = c.post("/api/hunt", json={"concept": _custom_concept(id="Benim_Kavram-2.1")}, headers=a)
+    assert r.status_code == 200
+    wait_done(c, a, r.json()["job_id"])
+
+
+def test_explicit_name_boundary_is_64_chars():
+    from neshter.export import OLLAMA_NAME
+    from neshter.server.app import ExportReq
+
+    kw = {"recipe_ops": HEAD_OPS, "format": "safetensors", "ollama": False, "out_dir": str(Path.cwd().anchor) + "x"}
+    assert ExportReq(name="a" * 64, **kw).name == "a" * 64 and OLLAMA_NAME.fullmatch("a" * 64)
+    with pytest.raises(ValueError):
+        ExportReq(name="a" * 65, **kw)

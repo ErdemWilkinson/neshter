@@ -1030,3 +1030,15 @@ def test_suggest_export_name_always_matches_ollama_name(lm, raw):
     m = dataclasses.replace(lm, name=raw)
     for safety in (False, True):
         assert OLLAMA_NAME.fullmatch(suggest_export_name(m, safety))
+
+
+@pytest.mark.parametrize("raw,safety,expected", [
+    ("Qwen-abliterated", True, "Qwen-neshter-abliterated"),
+    ("Qwen-ABLITERATED", True, "Qwen-neshter-abliterated"),
+    ("Qwen-abliterated", False, "Qwen-abliterated-neshter"),
+    ("abliterated", True, "abliterated-neshter-abliterated"),
+    ("Türkçe-Model", False, "Turkce-Model-neshter"),
+    ("çğıöşü ÇĞİÖŞÜ", False, "cgiosu-CGIOSU-neshter"),
+])
+def test_suggest_export_name_suffix_not_stacked_and_turkish_transliterated(lm, raw, safety, expected):
+    assert suggest_export_name(dataclasses.replace(lm, name=raw), safety) == expected

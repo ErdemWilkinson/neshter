@@ -131,6 +131,8 @@ def _apply(args: argparse.Namespace) -> int:
         count = len(to_interventions(recipe))
         # Etiket: tarifin kavramı "refusal" ya da --label-safety (kayıt katmanı ikisini de zorlar).
         safety = args.label_safety or recipe.concept == "refusal"
+        if safety:  # kaydedilen recipe.nester.json kendi kendini etiketlesin
+            recipe = recipe.model_copy(update={"concept": "refusal"})
         if quant is None:
             result = save_safetensors(lm, recipe, out, safety_ablated=safety)
         else:
