@@ -1,7 +1,9 @@
 import base64
 import json
+import re
 import socket
 import threading
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,8 @@ from neshter.cli import main
 from neshter.interventions import HeadAblation
 from neshter.interventions import DirectionAblation
 from neshter.recipe import SourceRef, load_recipe, save_recipe
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _recipe_file(tmp_path, lm, ops, concept="code") -> Path:
@@ -337,3 +341,8 @@ def test_unlabelled_recipe_keeps_its_concept(tmp_path, tiny_model_dir, lm):
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)], concept="code")
     assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
     assert load_recipe(tmp_path / "o" / "recipe.nester.json").concept == "code"
+
+
+def test_wheel_ships_web_dist_artifacts():
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "neshter/web/dist/**" in cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]

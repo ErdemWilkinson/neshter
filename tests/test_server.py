@@ -5,6 +5,7 @@ import functools
 import json
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,12 @@ from fastapi.testclient import TestClient
 
 from conftest import recipe_for
 from neshter import export as export_module
+from neshter.activity import head_output_power, normalize_per_layer
+from neshter.export import DiskFull, LlamaCppMissing
+from neshter.loader import UnsafeModelFile, UnsupportedArchitecture
+from neshter.progress import Cancelled
 from neshter.server import app as app_module
+from neshter.server.errors import error_code_for
 from neshter.server.app import create_app
 from neshter.server.jobs import JobManager
 
@@ -122,13 +128,35 @@ def test_accepts_localhost_host_header(client, auth):
 def test_every_api_route_needs_token(client):
     for method, path in [
         ("get", "/api/models"),
+        ("get", "/api/jobs"),
         ("get", "/api/jobs/x"),
         ("get", "/api/jobs/x/events"),
         ("post", "/api/jobs/x/cancel"),
+        ("get", "/api/session"),
+        ("get", "/api/system"),
         ("post", "/api/activity"),
+        ("post", "/api/export/estimate"),
         ("get", "/api/yok-boyle-bir-uc"),
     ]:
         assert getattr(client, method)(path).status_code == 403, path
+
+
+def test_every_registered_api_route_is_behind_the_guard(client):
+    """K16: yönlendiriciden TÜM /api rotaları sayılır; sonradan eklenen bir uç token'sız kalamaz."""
+    from fastapi.routing import APIRoute
+
+    routes = [r for r in client.app.routes if isinstance(r, APIRoute) and r.path.startswith("/api")]
+    assert len(routes) >= 15  # bekçi: numaralandırma boş dönmesin
+    paths = {r.path for r in routes}
+    assert {"/api/jobs", "/api/session", "/api/system", "/api/export/estimate"} <= paths
+    for r in routes:
+        url = r.path.replace("{job_id}", "x")
+        for method in r.methods - {"HEAD", "OPTIONS"}:
+            assert client.request(method, url).status_code == 403, (method, r.path)
+            bad = client.request(method, url, headers={"X-Neshter-Token": "yanlis"})
+            assert bad.status_code == 403, (method, r.path)
+            body = bad.json()
+            assert body["error_code"] == "forbidden" and "detail" in body
 
 
 def test_no_cors_headers_and_no_docs(client, auth, port):
@@ -148,7 +176,7 @@ def test_empty_token_refused():
 
 def test_system(client, auth):
     r = client.get("/api/system", headers=auth).json()
-    assert set(r) == {"gpu_name", "vram_bytes", "ram_bytes"}
+    assert {"gpu_name", "vram_bytes", "ram_bytes"} <= set(r)
     assert r["ram_bytes"] > 0
 
 
@@ -233,6 +261,8 @@ def test_activity_rejects_bad_body(ready):
     assert c.post("/api/activity", json={"prompt": "x", "token_index": -1, "scale": "kotu"}, headers=a).status_code == 422
     body = {"prompt": "x", "token_index": -1, "scale": "layer", "ekstra": 1}
     assert c.post("/api/activity", json=body, headers=a).status_code == 422
+    assert c.post("/api/activity", json={"prompt": "x"}, headers=a).status_code == 200  # token_index artık isteğe bağlı
+    assert c.post("/api/activity", json={"prompt": ""}, headers=a).status_code == 422
 
 
 def test_mlp(ready):
@@ -355,7 +385,8 @@ def test_compare(ready):
     r = c.post("/api/compare", json={"prompt": "merhaba", "recipe_ops": HEAD_OPS, "max_new_tokens": 4}, headers=a)
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"original", "modified", "mode"} and body["mode"] in ("batch", "sequential")
+    assert set(body) == {"original", "modified", "mode", "target_hit"} and body["mode"] in ("batch", "sequential")
+    assert body["target_hit"] is None  # concept_id verilmedi
 
 
 def test_compare_direction_recipe_reports_baked_mode(ready):
@@ -1426,3 +1457,414 @@ def test_explicit_name_boundary_is_64_chars():
     assert ExportReq(name="a" * 64, **kw).name == "a" * 64 and OLLAMA_NAME.fullmatch("a" * 64)
     with pytest.raises(ValueError):
         ExportReq(name="a" * 65, **kw)
+
+
+# --- Görev 12: arayüz sözleşmesi ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc,code",
+    [
+        (Cancelled(), "cancelled"),
+        (UnsupportedArchitecture("x"), "unsupported_arch"),
+        (DiskFull("x"), "disk_full"),
+        (LlamaCppMissing("x"), "llama_cpp_missing"),
+        (FileExistsError("x"), "exists"),
+        (RuntimeError("CUDA out of memory"), "oom"),
+        (ValueError("x"), "invalid_input"),
+        (KeyError("x"), "internal"),
+        (UnsafeModelFile("x"), "unsafe_file"),
+        (FileNotFoundError("x"), "not_found"),
+        (MemoryError(), "oom"),
+        (app_module.NoModel("x"), "no_model"),
+    ],
+)
+def test_error_code_for(exc, code):
+    assert error_code_for(exc) == code
+
+
+def test_error_code_follows_cause():
+    try:
+        try:
+            raise UnsafeModelFile("x")
+        except UnsafeModelFile as e:
+            raise RuntimeError("Model yüklenemedi") from e
+    except RuntimeError as e:
+        assert error_code_for(e) == "unsafe_file"
+
+
+def test_error_code_follows_context():
+    try:
+        try:
+            raise DiskFull("x")
+        except DiskFull:
+            raise RuntimeError("sonradan")  # örtük __context__
+    except RuntimeError as e:
+        assert error_code_for(e) == "disk_full"
+
+
+def test_error_code_cycle_terminates():
+    a, b = RuntimeError("a"), RuntimeError("b")
+    a.__cause__, b.__cause__ = b, a
+    assert error_code_for(a) == "internal"
+
+
+def test_no_model_lives_in_errors_and_is_reexported():
+    from neshter.server import errors
+
+    assert app_module.NoModel is errors.NoModel
+    assert not hasattr(errors, "app")  # errors, app'i içe aktarmaz (döngü yok)
+
+
+def test_download_cancel_is_progress_cancelled(ready, monkeypatch):
+    """Özel `_Cancelled` yok: indirme çubuğu progress.Cancelled fırlatır, iş "cancelled" olur."""
+    assert not hasattr(app_module, "_Cancelled")
+    c, a = ready
+    started = threading.Event()
+
+    def fake_snapshot(repo, tqdm_class=None, **kw):
+        bar = tqdm_class(total=100)
+        started.set()
+        for _ in range(400):
+            bar.update(1)  # iptal kurulunca Cancelled fırlatır
+            time.sleep(0.02)
+
+    monkeypatch.setattr(app_module, "snapshot_download", fake_snapshot)
+    job = c.post("/api/models/sample", headers=a).json()["job_id"]
+    assert started.wait(10)
+    c.post(f"/api/jobs/{job}/cancel", headers=a)
+    wait_done(c, a, job, timeout=10, expect="cancelled")
+
+
+def test_http_errors_have_error_code(client, auth):
+    r = client.post("/api/mlp", json={"prompt": "a", "token_index": -1}, headers=auth)
+    assert r.status_code == 409 and r.json()["error_code"] == "no_model" and r.json()["detail"]
+    r = client.get("/api/system")
+    assert r.status_code == 403 and r.json()["error_code"] == "forbidden" and r.json()["detail"]
+    r = client.get("/api/jobs/yok", headers=auth)
+    assert r.status_code == 404 and r.json()["error_code"] == "not_found"
+    r = client.post("/api/activity", json={"prompt": "a", "scale": "kotu"}, headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input" and r.json()["detail"]
+    r = client.post("/api/session/load", json={"path": "X:\\yok\\boyle\\bir\\yol"}, headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_busy_409_has_busy_code(client, auth):
+    sess = client.app.state.session
+    assert sess.lock.acquire(blocking=False)
+    try:
+        r = client.post("/api/mlp", json={"prompt": "a", "token_index": -1}, headers=auth)
+    finally:
+        sess.lock.release()
+    assert r.status_code == 409 and r.json()["error_code"] == "busy"
+
+
+def test_job_error_has_code(client, auth, tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "gpt2"}))
+    job = client.post("/api/session/load", json={"path": str(tmp_path)}, headers=auth).json()["job_id"]
+    st = wait_done(client, auth, job, expect="error")
+    assert st["error_code"] == "unsupported_arch" and st["kind"] == "load"
+
+
+def test_job_without_error_has_no_code(ready):
+    c, a = ready
+    body = {"heads": [[0, 1]], "prompts": ["merhaba dünya"]}
+    st = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])
+    assert st["error_code"] is None and st["kind"] == "effect"
+
+
+def _wait_terminal(jm, jid, timeout=10):
+    deadline = time.time() + timeout
+    while jm.status(jid).state not in ("done", "error", "cancelled") and time.time() < deadline:
+        time.sleep(0.01)
+
+
+def test_job_manager_kind_default_timestamps_and_code():
+    jm = JobManager()
+    try:
+        ok = jm.submit(lambda report, cancel: 1)
+
+        def boom(report, cancel):
+            raise DiskFull("dolu")
+
+        bad = jm.submit(boom, kind="export")
+        for jid in (ok, bad):
+            _wait_terminal(jm, jid)
+        s_ok, s_bad = jm.status(ok), jm.status(bad)
+        assert s_ok.kind == "job" and s_ok.error_code is None
+        assert s_bad.kind == "export" and s_bad.error_code == "disk_full" and s_bad.error == "dolu"
+        for s in (s_ok, s_bad):
+            created, started, finished = (datetime.fromisoformat(x) for x in (s.created_at, s.started_at, s.finished_at))
+            assert created.tzinfo is not None and created <= started <= finished
+        assert [j.id for j in jm.list()] == [ok, bad]
+    finally:
+        jm.shutdown()
+
+
+def test_job_manager_queued_job_has_no_start_and_cancel_finishes_it():
+    jm = JobManager()
+    gate = threading.Event()
+    try:
+        jm.submit(lambda report, cancel: gate.wait(10))
+        second = jm.submit(lambda report, cancel: 2, kind="hunt")
+        s = jm.status(second)
+        assert s.state == "queued" and s.started_at is None and s.finished_at is None and s.created_at
+        jm.cancel(second)
+        s = jm.status(second)
+        assert s.state == "cancelled" and s.started_at is None and s.finished_at is not None
+    finally:
+        gate.set()
+        jm.shutdown()
+
+
+def test_jobs_list(ready):
+    c, a = ready
+    wait_done(c, a, c.post("/api/hunt", json={"concept_id": "code", "method": "activation_diff"}, headers=a).json()["job_id"])
+    rows = c.get("/api/jobs", headers=a).json()
+    assert rows and all("result" not in r and r["kind"] for r in rows)
+    assert {"load", "hunt"} <= {r["kind"] for r in rows}
+    assert all(datetime.fromisoformat(r["created_at"]) for r in rows)
+    assert [r["created_at"] for r in rows] == sorted(r["created_at"] for r in rows)
+
+
+def test_session_endpoint_before_and_after_load(client, auth, tiny_model_dir):
+    assert client.get("/api/session", headers=auth).json() == {"loaded": False}
+    body = {"path": str(tiny_model_dir), "dtype": "float32"}
+    job = client.post("/api/session/load", json=body, headers=auth).json()["job_id"]
+    wait_done(client, auth, job)
+    s = client.get("/api/session", headers=auth).json()
+    assert s["loaded"] is True and s["arch"]["family"] and s["dtype"] in ("float32", "bfloat16", "float16")
+    assert s["memory_bytes"] > 0 and s["default_method"] in ("attribution", "activation_diff")
+    assert s["safety_dirs"] == 0 and s["safety_heads"] == 0
+    assert s["name"] and s["device"] in ("cpu", "cuda") and "license" in s and "device_note" in s
+    assert s["source_path"] == str(tiny_model_dir)  # yerel arayüz için bilinçli olarak açık; belirteç asla
+    assert TOKEN not in json.dumps(s)
+
+
+def test_session_endpoint_does_not_take_the_lock(ready):
+    c, a = ready
+    sess = c.app.state.session
+    assert sess.lock.acquire(blocking=False)
+    try:
+        r = c.get("/api/session", headers=a)
+    finally:
+        sess.lock.release()
+    assert r.status_code == 200 and r.json()["loaded"] is True
+
+
+def test_session_counts_safety_labels(unlabelled):
+    c, a = unlabelled
+    s = c.app.state.session
+    s.safety_dirs.append(torch.ones(64) / 8)
+    s.safety_heads.update({(0, 1), (1, 2)})
+    r = c.get("/api/session", headers=a).json()
+    assert r["safety_dirs"] == 1 and r["safety_heads"] == 2
+
+
+def test_system_extras(client, auth):
+    import shutil
+
+    r = client.get("/api/system", headers=auth).json()
+    assert r["default_out_dir"] == str(Path.home() / "Neshter")
+    assert set(r["llama_cpp"]) == {"found", "path", "converter"}
+    assert isinstance(r["llama_cpp"]["found"], bool) and isinstance(r["llama_cpp"]["converter"], bool)
+    assert (r["llama_cpp"]["path"] is None) == (not r["llama_cpp"]["found"])
+    assert r["ollama"] is (shutil.which("ollama") is not None)
+    assert r["torch_version"] == torch.__version__
+    assert r["torch_cuda"] == torch.version.cuda
+    assert r["cuda_available"] is torch.cuda.is_available()
+    assert isinstance(r["native_bf16"], bool)
+    assert r["cpu_threads"] == torch.get_num_threads()
+
+
+def test_system_llama_cpp_found_and_converter(client, auth, tmp_path, monkeypatch):
+    import os
+
+    (tmp_path / ("llama-quantize.exe" if os.name == "nt" else "llama-quantize")).write_bytes(b"")
+    monkeypatch.setenv("NESHTER_LLAMA_CPP", str(tmp_path))
+    r = client.get("/api/system", headers=auth).json()["llama_cpp"]
+    assert r == {"found": True, "path": str(tmp_path), "converter": False}
+    (tmp_path / "convert_hf_to_gguf.py").write_text("")
+    assert client.get("/api/system", headers=auth).json()["llama_cpp"]["converter"] is True
+
+
+def test_activity_all_tokens_one_call(ready):
+    c, a = ready
+    prompt = "merhaba güzel dünya"
+    r = c.post("/api/activity", json={"prompt": prompt}, headers=a).json()
+    assert "power" not in r
+    raw = r["power_raw"]
+    n_tok = len(r["tokens"])
+    assert len(raw) == 2 and len(raw[0]) == 4 and len(raw[0][0]) == n_tok  # [L][H][T]
+    raw_t = torch.tensor(raw)
+    assert torch.allclose(raw_t, head_output_power(c.app.state.session.lm, prompt), atol=1e-5)
+    for i in range(n_tok):
+        one = c.post("/api/activity", json={"prompt": prompt, "token_index": i, "scale": "layer"}, headers=a).json()
+        assert one["power_raw"] == raw
+        assert torch.allclose(normalize_per_layer(raw_t[:, :, i]), torch.tensor(one["power"]), atol=1e-6)
+
+
+def test_activity_global_scale_normalizes_the_chosen_token(ready):
+    c, a = ready
+    r = c.post("/api/activity", json={"prompt": "merhaba dünya", "token_index": 0, "scale": "global"}, headers=a).json()
+    power = torch.tensor(r["power"])
+    assert power.shape == (2, 4) and power.min().item() == 0.0 and power.max().item() == pytest.approx(1.0)
+
+
+def test_compare_target_hit(ready, monkeypatch):
+    c, a = ready
+    monkeypatch.setattr(
+        app_module, "generate_pair", lambda *a_, **k: ("def f(x):\n    return x", "Merhaba dünya", "batch")
+    )
+    body = {"prompt": "x", "recipe_ops": HEAD_OPS, "max_new_tokens": 2, "concept_id": "code"}
+    assert c.post("/api/compare", json=body, headers=a).json()["target_hit"] == {"original": True, "modified": False}
+    assert c.post("/api/compare", json={**body, "concept_id": "tone"}, headers=a).json()["target_hit"] is None
+    no_concept = {k: v for k, v in body.items() if k != "concept_id"}
+    assert c.post("/api/compare", json=no_concept, headers=a).json()["target_hit"] is None
+
+
+def test_compare_target_hit_real_generation(ready):
+    c, a = ready
+    body = {"prompt": "merhaba", "recipe_ops": HEAD_OPS, "max_new_tokens": 3, "concept_id": "refusal"}
+    hit = c.post("/api/compare", json=body, headers=a).json()["target_hit"]
+    assert set(hit) == {"original", "modified"} and all(isinstance(v, bool) for v in hit.values())
+
+
+def test_export_estimate(unlabelled, tmp_path):
+    from neshter.export import estimate_export_bytes
+
+    c, a = unlabelled
+    lm = c.app.state.session.lm
+    out = tmp_path / "yeni" / "alt"  # yok: en yakın var olan ata (tmp_path) ölçülür
+    r = c.post("/api/export/estimate", json={"format": "safetensors", "out_dir": str(out)}, headers=a).json()
+    assert set(r) == {"bytes_needed", "free_bytes", "enough", "suggested_name"}
+    assert r["bytes_needed"] == int(estimate_export_bytes(lm, "safetensors", False) * 1.1) > 0
+    assert r["free_bytes"] > 0 and r["enough"] is True
+    assert r["suggested_name"].endswith("-neshter") and "abliterated" not in r["suggested_name"]
+    assert not out.exists()  # tahmin klasör yaratmaz
+    gguf = c.post("/api/export/estimate", json={"format": "gguf_q4_k_m"}, headers=a).json()  # out_dir yok: varsayılan
+    assert gguf["bytes_needed"] > r["bytes_needed"] and gguf["free_bytes"] > 0
+
+
+def test_export_estimate_not_enough_disk(unlabelled, tmp_path, monkeypatch):
+    c, a = unlabelled
+    monkeypatch.setattr(app_module.shutil, "disk_usage", lambda p: type("U", (), {"free": 10})())
+    body = {"format": "safetensors", "out_dir": str(tmp_path)}
+    r = c.post("/api/export/estimate", json=body, headers=a).json()
+    assert r["free_bytes"] == 10 and r["enough"] is False
+
+
+def test_export_estimate_directions_derived_from_ops(unlabelled):
+    c, a = unlabelled
+    vec = base64.b64encode(torch.randn(64).numpy().astype("<f4").tobytes()).decode()
+    ops = [{"type": "direction", "d_model": 64, "vector_b64": vec}]
+    explicit = c.post("/api/export/estimate", json={"format": "safetensors", "has_directions": True}, headers=a).json()
+    derived = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": ops}, headers=a).json()
+    heads = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS}, headers=a).json()
+    assert derived["bytes_needed"] == explicit["bytes_needed"] >= heads["bytes_needed"]
+    # recipe_ops verilince açık has_directions yok sayılır (yalnızca ops'tan türetilir)
+    over = {"format": "safetensors", "recipe_ops": HEAD_OPS, "has_directions": True}
+    assert c.post("/api/export/estimate", json=over, headers=a).json()["bytes_needed"] == heads["bytes_needed"]
+
+
+def test_export_estimate_name_matches_export_job_safety(unlabelled, tmp_path):
+    c, a = unlabelled
+    # Oturumda refusal avından gelmiş bir head: ops bununla eşleşince ad "-abliterated" olmalı.
+    c.app.state.session.safety_heads.add((0, 1))
+    est = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS}, headers=a).json()
+    assert est["suggested_name"].endswith("-neshter-abliterated")
+    body = _export_body(tmp_path / "eslesme")
+    del body["name"]
+    res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
+    assert res["name"] == est["suggested_name"]
+    other_ops = [{"type": "head", "layer": 1, "head": 3}]
+    other = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": other_ops}, headers=a).json()
+    assert other["suggested_name"].endswith("-neshter") and "abliterated" not in other["suggested_name"]
+
+
+def test_export_estimate_concept_refusal_is_abliterated(unlabelled):
+    c, a = unlabelled
+    for extra in ({"concept": "refusal"}, {"concept": "refusal", "recipe_ops": HEAD_OPS}):
+        r = c.post("/api/export/estimate", json={"format": "safetensors", **extra}, headers=a).json()
+        assert r["suggested_name"].endswith("-neshter-abliterated")
+
+
+def test_export_estimate_validation(unlabelled, client, auth):
+    c, a = unlabelled
+    assert c.post("/api/export/estimate", json={"format": "zip"}, headers=a).status_code == 422
+    bad = [{"type": "head", "layer": 99, "head": 0}]
+    assert c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": bad}, headers=a).status_code == 422
+    assert c.post("/api/export/estimate", json={"format": "safetensors", "ekstra": 1}, headers=a).status_code == 422
+    r = client.post("/api/export/estimate", json={"format": "safetensors"}, headers=auth)  # model yok
+    assert r.status_code == 409 and r.json()["error_code"] == "no_model"
+
+
+def test_models_unsupported_reason_and_license(tmp_path, tiny_model_dir, auth):
+    import shutil
+
+    hub = tmp_path / "hub"
+    ok = hub / "models--org--tiny" / "snapshots" / "abc"
+    shutil.copytree(tiny_model_dir, ok)
+    (ok / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
+    bad_family = hub / "models--org--gpt" / "snapshots" / "abc"
+    shutil.copytree(tiny_model_dir, bad_family)
+    cfg = json.loads((bad_family / "config.json").read_text(encoding="utf-8"))
+    cfg["model_type"] = "gpt2"
+    (bad_family / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    (tmp_path / "bozuk.gguf").write_bytes(b"x" * 100)
+    c = _make({"huggingface": [hub], "lmstudio": [tmp_path]})
+    rows = {e["name"]: e for e in c.get("/api/models", headers=auth).json()}
+    assert rows["org/tiny"]["supported"] is True and rows["org/tiny"]["unsupported_reason"] is None
+    assert rows["org/tiny"]["license"] == "apache-2.0"
+    assert rows["org/gpt"]["supported"] is False and rows["org/gpt"]["unsupported_reason"] == "unsupported_family"
+    assert rows["bozuk"]["unsupported_reason"] == "unknown_arch" and "license" in rows["bozuk"]
+
+
+def _recording_suite(seen):
+    def fake(lm, items, interventions, progress=None, cancel=None, max_new_tokens=200, **kw):
+        seen.update(cats={i.category for i in items}, mnt=max_new_tokens, target=kw.get("target"))
+        return _stub_suite(lm, items, interventions, progress, cancel, max_new_tokens, **kw)
+
+    return fake
+
+
+def _recording_metrics(seen):
+    def fake(lm, interventions, n_random=DEFAULT_N_RANDOM_FOR_TESTS, **kw):
+        seen["n_random"] = n_random
+        return {"kl": 0.0}
+
+    return fake
+
+
+DEFAULT_N_RANDOM_FOR_TESTS = object()  # "n_random verilmedi" işareti
+
+
+def test_suite_quick_mode(ready, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app_module, "run_suite", _recording_suite(seen))
+    monkeypatch.setattr(app_module, "_recipe_metrics", _recording_metrics(seen))
+    c, a = ready
+    body = {"recipe_ops": HEAD_OPS, "target": "code", "quick": True, "max_new_tokens": 200}
+    wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
+    assert seen["cats"] == {"code", "general"} and seen["mnt"] == 64 and seen["n_random"] == 20
+    assert seen["target"] == "code"
+
+
+def test_suite_quick_without_target_and_small_budget(ready, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app_module, "run_suite", _recording_suite(seen))
+    monkeypatch.setattr(app_module, "_recipe_metrics", _recording_metrics(seen))
+    c, a = ready
+    body = {"recipe_ops": HEAD_OPS, "quick": True, "max_new_tokens": 10}
+    wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
+    assert seen["cats"] == {"general"} and seen["mnt"] == 10 and seen["n_random"] == 20
+
+
+def test_suite_full_mode_is_unchanged(ready, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app_module, "run_suite", _recording_suite(seen))
+    monkeypatch.setattr(app_module, "_recipe_metrics", _recording_metrics(seen))
+    c, a = ready
+    body = {"recipe_ops": HEAD_OPS, "target": "code", "max_new_tokens": 200}
+    wait_done(c, a, c.post("/api/suite", json=body, headers=a).json()["job_id"], timeout=60)
+    assert len(seen["cats"]) > 2 and seen["mnt"] == 200 and seen["n_random"] is DEFAULT_N_RANDOM_FOR_TESTS
