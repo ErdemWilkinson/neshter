@@ -130,3 +130,48 @@ def test_direction_norm_overflow_underflow_rejected(value):
     op = {"type": "direction", "d_model": 8, "vector_b64": raw}
     with pytest.raises(ValidationError):
         Recipe.model_validate_json(json.dumps(_raw(interventions=[op])))
+
+
+# --- Fix wave: Minor 9 (tarif sağlamlaştırma) ------------------------------------------------------
+
+
+def test_nested_unknown_field_and_unknown_type_rejected():
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(source_model={"name": "m", "sha256": SHA, "path": "C:/x"}))
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(interventions=[{"type": "neuron", "layer": 0, "head": 1}]))
+
+
+@pytest.mark.parametrize("field", ["concept", "method", "neshter_version"])
+def test_long_display_strings_rejected(field):
+    Recipe.model_validate(_raw(**{field: "x" * 256}))
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(**{field: "x" * 257}))
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(source_model={"name": "x" * 257, "sha256": SHA}))
+
+
+def test_naive_created_at_rejected():
+    with pytest.raises(ValidationError):
+        Recipe.model_validate(_raw(created_at="2026-11-10T00:00:00"))
+
+
+def test_exact_size_boundary(tmp_path):
+    body = json.dumps(_raw()).encode()
+    limit = 5 * 1024 * 1024
+    ok = body + b" " * (limit - len(body))
+    (tmp_path / "ok.json").write_bytes(ok)
+    assert load_recipe(tmp_path / "ok.json").concept == "code"
+    (tmp_path / "big.json").write_bytes(ok + b" ")
+    with pytest.raises(ValueError, match="çok büyük"):
+        load_recipe(tmp_path / "big.json")
+
+
+def test_save_recipe_removes_tmp_on_failure(tmp_path, monkeypatch):
+    import neshter.recipe as rmod
+
+    r = Recipe.model_validate(_raw())
+    monkeypatch.setattr(rmod.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("kilitli")))
+    with pytest.raises(OSError):
+        save_recipe(r, tmp_path / "r.nester.json")
+    assert list(tmp_path.iterdir()) == []
