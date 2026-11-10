@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.tmp/
-dist/
+/dist/
 .pytest_cache/
 .superpowers/
+.claude/
