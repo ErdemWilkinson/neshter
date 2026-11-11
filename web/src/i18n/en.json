@@ -83,6 +83,7 @@
   "restore.unreadable": "Unsaved cuts from an earlier session exist but this version could not read them; they can only be deleted.",
   "restore.pending": "New cuts are not written to the draft until you choose.",
   "restore.failed": "The cuts could not be restored",
+  "restore.waitModel": "Cannot restore while the model is busy; it unlocks when the job ends.",
   "unsaved.row": "Unsaved work: {model_name} · {n} cuts",
   "unsaved.row.one": "Unsaved work: {model_name} · {n} cut",
   "unsaved.prompts": "Drafts also store the prompts you entered, along with the cuts.",

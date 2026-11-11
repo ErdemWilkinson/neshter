@@ -8,6 +8,7 @@ import { opKey } from '@/core/ops';
 import { itemsToRecipe } from '@/core/recipe';
 import { basketStore, type BasketState } from '@/core/stores/basket';
 import { compareStore } from '@/core/stores/compare';
+import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
 import { plural, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -58,6 +59,10 @@ export function RestorePrompt() {
   const [shown, setShown] = useState<{ offer: Offer; failure: Failure | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const pendingSha = useStore(draftStatusStore, (s) => s.pendingSha);
+  // The recipe check needs the model: while a job (a load, a run) holds it the server answers 409.
+  const jobRunning = useStore(jobsStore, isLocked);
+  const flaggedBusy = useStore(sessionStore, (s) => s.busy);
+  const modelBusy = jobRunning || flaggedBusy;
   // A draft deleted elsewhere (Home list) clears `pendingSha`: the offer is gone with it.
   const offer = shown !== null && shown.offer.sha === sha && pendingSha === sha ? shown.offer : null;
   const failure = shown?.failure ?? null;
@@ -136,6 +141,7 @@ export function RestorePrompt() {
       {offer.draft === null ? <p>{t('restore.unreadable')}</p> : <p>{plural('restore.prompt', offer.count)}</p>}
       {offer.draft !== null && offer.draft.unsupported > 0 && <p>{t('restore.unsupported', { n: offer.draft.unsupported })}</p>}
       <p>{t('restore.pending')}</p>
+      {offer.draft !== null && modelBusy && <p role="status">{t('restore.waitModel')}</p>}
       {failure !== null && (
         <div>
           <p>{t('restore.failed')}</p>
@@ -144,7 +150,7 @@ export function RestorePrompt() {
       )}
       <div className="restore-actions">
         {offer.draft !== null && (
-          <Button variant="primary" disabled={busy} onClick={() => void restore()}>
+          <Button variant="primary" disabled={busy || modelBusy} onClick={() => void restore()}>
             {t('restore.restore')}
           </Button>
         )}
