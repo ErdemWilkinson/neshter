@@ -68,6 +68,29 @@ def _port(value: str) -> int:
     return port
 
 
+GRACEFUL_SHUTDOWN_SECONDS = 3  # açık SSE akışı (Ctrl+C) kapanışı sonsuza dek bekletmesin
+
+
+def _run_server(app, host: str, port: int) -> None:
+    """uvicorn.Server ile çalıştırır; `/api/shutdown` sunucuyu `should_exit` ile zarifçe durdurur.
+
+    uvicorn, lifespan kapanışından (işleri iptal eden `jobs.shutdown()`) ÖNCE açık bağlantıların bitmesini
+    bekler; çalışan işin açık SSE akışı varsa iş bitene dek kapanmazdı. Bu yüzden kapat isteği önce işleri
+    iptal eder (akış `cancelled` ile biter), Ctrl+C için de `timeout_graceful_shutdown` üst sınırı vardır."""
+    config = uvicorn.Config(
+        app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS
+    )
+    server = uvicorn.Server(config)
+    if hasattr(app, "state"):  # testlerde sahte uygulama (str) olabilir
+
+        def request_exit() -> None:
+            app.state.jobs.shutdown()  # idempotent
+            server.should_exit = True
+
+        app.state.request_exit = request_exit
+    server.run()
+
+
 def _serve(args: argparse.Namespace) -> int:
     port = args.port if args.port else _free_port()
     token = secrets.token_urlsafe(24)
@@ -77,7 +100,7 @@ def _serve(args: argparse.Namespace) -> int:
     print("Durdurmak için Ctrl+C. Adres yalnızca bu bilgisayardan erişilebilir.")
     if not args.no_browser:
         threading.Thread(target=_open_when_ready, args=(url, port), daemon=True).start()
-    uvicorn.run(app, host=HOST, port=port, log_level="warning")
+    _run_server(app, host=HOST, port=port)
     return EXIT_OK
 
 

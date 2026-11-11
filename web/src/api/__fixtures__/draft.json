@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "sha256": "87c805a1b11d25aeec8ee7a1ac4cc5194940b5b2cb769e21bfdec28c9b56b13c",
+  "model_name": "abc123",
+  "unsaved_count": 1,
+  "basket": [
+    {
+      "type": "head",
+      "layer": 0,
+      "head": 1
+    }
+  ],
+  "shelf": [],
+  "saved_ops": [],
+  "prompts": [
+    "merhaba"
+  ],
+  "updated_at": "2026-11-11T08:22:46.880018Z"
+}

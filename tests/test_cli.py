@@ -16,6 +16,7 @@ from neshter.cli import main
 from neshter.interventions import HeadAblation
 from neshter.interventions import DirectionAblation
 from neshter.recipe import SourceRef, load_recipe, save_recipe
+from neshter.server.app import create_app
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -163,7 +164,7 @@ def test_apply_gemma2_direction_recipe_saves(tmp_path, tiny_gemma2_dir, gemma_lm
 
 @pytest.fixture
 def served(monkeypatch):
-    """create_app/uvicorn.run/webbrowser.open sahtelenir; gerçek sunucu başlamaz."""
+    """create_app/_run_server/webbrowser.open sahtelenir; gerçek sunucu başlamaz."""
     seen = {"opened": threading.Event(), "urls": []}
 
     def fake_create_app(token, port, roots=None):
@@ -185,7 +186,7 @@ def served(monkeypatch):
         return True
 
     monkeypatch.setattr(cli, "create_app", fake_create_app)
-    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    monkeypatch.setattr(cli, "_run_server", fake_run)
     monkeypatch.setattr(cli.webbrowser, "open", fake_open)
     return seen
 
@@ -201,6 +202,95 @@ def test_serve_binds_loopback_same_port_and_opens_browser(served, capsys):
     url = f"http://127.0.0.1:{kw['port']}/#token={token}"
     assert served["urls"] == [url]
     assert url in capsys.readouterr().out
+
+
+def test_run_server_wires_request_exit(monkeypatch):
+    class FakeServer:
+        def __init__(self, config):
+            self.should_exit = False
+            FakeServer.inst = self
+
+        def run(self):
+            app.state.request_exit()
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
+    app = create_app("t", 47997, roots={})
+    cli._run_server(app, "127.0.0.1", 47997)
+    assert FakeServer.inst.should_exit is True
+
+
+def _hold_sse_then_shutdown(monkeypatch, tmp_path, hook):
+    """Gerçek uvicorn.Server, çalışan iptal edilebilir bir işin açık SSE akışı; kapat isteği sonrası geçen süre."""
+    import http.client
+    import time
+
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    port = cli._free_port()
+    token = "t" * 30
+    app = create_app(token, port, roots={})
+    started = threading.Event()
+
+    def job(report, cancel):
+        started.set()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not cancel.is_set():
+            report(0.1, "x")
+            time.sleep(0.05)
+        return {}
+
+    job_id = app.state.jobs.submit(job, kind="x")
+    result = {}
+
+    def client():
+        headers = {"X-Neshter-Token": token, "Host": f"127.0.0.1:{port}"}
+        for _ in range(100):  # sunucu dinlemeye başlayana dek
+            try:
+                sse = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                sse.request("GET", f"/api/jobs/{job_id}/events", headers=headers)
+                break
+            except OSError:
+                time.sleep(0.1)
+        result["sse"] = sse  # bağlantı sunucu kapanana dek açık kalmalı (çöp toplayıcı kapatmasın)
+        resp = sse.getresponse()
+        resp.fp.readline()  # akış gerçekten açık
+        assert started.wait(10)
+        result["t0"] = time.monotonic()
+        result["status"] = hook(port, headers)
+
+    t = threading.Thread(target=client, daemon=True)
+    t.start()
+    cli._run_server(app, "127.0.0.1", port)
+    t1 = time.monotonic()
+    t.join(5)
+    return result, t1
+
+
+def test_shutdown_returns_promptly_with_open_sse_stream(monkeypatch, tmp_path):
+    import http.client
+
+    def post_shutdown(port, headers):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("POST", "/api/shutdown", headers=headers)
+        return c.getresponse().status
+
+    result, t1 = _hold_sse_then_shutdown(monkeypatch, tmp_path, post_shutdown)
+    assert result["status"] == 202
+    assert t1 - result["t0"] < 3  # iş 30 sn sürerdi; kapat isteği işi iptal edip akışı bitirir
+
+
+def test_graceful_shutdown_has_an_upper_bound(monkeypatch):
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            seen["timeout"] = config.timeout_graceful_shutdown
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
+    cli._run_server(create_app("t", 47996, roots={}), "127.0.0.1", 47996)
+    assert seen["timeout"] == cli.GRACEFUL_SHUTDOWN_SECONDS
 
 
 def test_serve_no_browser_does_not_open(served, capsys):

@@ -25,8 +25,8 @@ log = logging.getLogger("neshter.server")
 # Derlenmiş yerel arayüz için yeterli en dar CSP: satır içi betik yok; stil için 'unsafe-inline' (React stil öznitelikleri).
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
-        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+        "default-src 'self'; script-src 'self'; worker-src 'self'; font-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
@@ -88,7 +88,7 @@ class ApiError(HTTPException):
         self.code = code
 
 
-_STATUS_CODES = {403: "forbidden", 404: "not_found", 409: "busy", 422: "invalid_input"}
+_STATUS_CODES = {403: "forbidden", 404: "not_found", 409: "busy", 413: "too_large", 422: "invalid_input", 501: "unsupported"}
 
 
 def _http_code(exc: StarletteHTTPException) -> str:
