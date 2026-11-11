@@ -185,7 +185,23 @@ select {
   color: var(--accent-increase);
 }
 
-.busy-banner,
+.busy-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  z-index: 20;
+  max-width: 32rem;
+  margin: 0 auto;
+  padding: 8px 14px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--badge-explore);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.5);
+  pointer-events: none;
+}
+
 .device-banner {
   padding: 8px 12px;
   color: var(--text-1);

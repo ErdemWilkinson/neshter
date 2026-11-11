@@ -124,7 +124,7 @@ test('compare shows busy banner on 409', async () => {
   const user = userEvent.setup();
   mount({ 'POST /api/compare': () => jsonResponse(409, { detail: 'meşgul', error_code: 'busy' }) });
   await ask(user);
-  expect(await screen.findByText('Model meşgul: çalışan işin bitmesini bekleyin.')).toBeInTheDocument();
+  expect(await screen.findByText('Model şu an çalışıyor; iş bitince devam edebilirsiniz.')).toBeInTheDocument();
   expect(screen.queryByRole('alert')).toBeNull();
 });
 

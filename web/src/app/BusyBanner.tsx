@@ -8,13 +8,15 @@ import { useT } from '@/i18n';
 const RECHECK_MS = 3000;
 
 /**
- * "Model meşgul" while a job holds the model: our own (`jobsStore`) or one a 409 told us about (`session.busy`).
+ * A notice while a job holds the model: one a 409 told us about (`session.busy`), or our own (`jobsStore`) when no
+ * progress card shows it. It floats over the page (fixed, `.busy-banner`), so it never moves the content.
  * A 409 flag has no job of ours to clear it, so while it is set the server's job list is polled until none runs.
  */
 export function BusyBanner() {
   const t = useT();
   const flagged = useStore(sessionStore, (s) => s.busy);
   const locked = useStore(jobsStore, isLocked);
+  const cardShown = useStore(jobsStore, (s) => s.progressCards > 0);
 
   useEffect(() => {
     if (!flagged) return;
@@ -34,7 +36,9 @@ export function BusyBanner() {
     };
   }, [flagged]);
 
-  if (!flagged && !locked) return null;
+  // Our own running job with a progress card on screen explains itself; a 409 flag (someone else's job) or an own job
+  // without a visible card (we navigated away) still gets the notice.
+  if (!flagged && !(locked && !cardShown)) return null;
   return (
     <div className="busy-banner" role="status">
       {t('app.busy')}
