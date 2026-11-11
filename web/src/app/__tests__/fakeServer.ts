@@ -23,6 +23,7 @@ export function fakeServer(overrides: Record<string, Handler> = {}) {
     'GET /api/prefs': () => jsonResponse(200, prefs),
     'PUT /api/prefs': (init) => jsonResponse(200, JSON.parse(String(init?.body))),
     'GET /api/jobs': () => jsonResponse(200, []),
+    'GET /api/drafts': () => jsonResponse(200, []),
     'POST /api/shutdown': () => jsonResponse(200, { ok: true }),
   };
   const handlers = { ...defaults, ...overrides };

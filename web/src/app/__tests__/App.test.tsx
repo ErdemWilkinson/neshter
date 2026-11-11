@@ -228,6 +228,7 @@ test('a restorable server draft is offered after boot and restoring fills the ba
   const stored = encodeDraft({ items: [aCut()], shelf: [], savedOps: [], model: { name: 'abc123', sha256: SHA }, prompts: [] });
   const { server } = mount(
     fakeServer({
+      'GET /api/drafts': () => jsonResponse(200, [{ sha256: SHA, model_name: 'abc123', updated_at: 'x', unsaved_count: 1 }]),
       [`GET /api/draft/${SHA}`]: () => jsonResponse(200, { ...stored, updated_at: 'x' }),
       'POST /api/recipe/check': () => jsonResponse(200, { ok: true, errors: [], sha_mismatch: false }),
       [`PUT /api/draft/${SHA}`]: (init) => jsonResponse(200, { ...(bodyOf(init) as object), updated_at: 'x' }),

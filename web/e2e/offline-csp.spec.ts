@@ -28,8 +28,8 @@ test('every request stays on 127.0.0.1, no CSP violation, nothing in localStorag
   page.on('request', (request) => urls.push(request.url()));
   const failures: string[] = [];
   page.on('response', (response) => {
-    // "no draft yet" is a plain 404 on GET /api/draft/<sha>; anything else failing is a bug.
-    if (response.status() >= 400 && !(response.status() === 404 && response.url().includes('/api/draft/'))) {
+    // The restore prompt asks /api/drafts first, so even "no draft yet" must not produce a 404.
+    if (response.status() >= 400) {
       failures.push(`${response.status()} ${response.url()}`);
     }
   });
