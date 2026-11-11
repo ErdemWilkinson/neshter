@@ -14,6 +14,8 @@ export interface BasketItem {
   origin: Origin;
   concept: string | null;
   addedAt: string;
+  /** Display only (not sent, not saved): the hidden-state index a concept direction was found at (0 = embedding). */
+  foundAt?: number;
   /** Explore-only item that the save flow is about to drop; never sent to compare/suite/export. */
   pendingDiscard?: boolean;
 }
