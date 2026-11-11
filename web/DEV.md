@@ -42,11 +42,21 @@ $env:npm_config_cache = 'D:\neshter\npm-cache'; $env:PLAYWRIGHT_BROWSERS_PATH = 
 
 ## ESLint and the repo folder name
 
-`@eslint/config-array`'s Windows `path.relative` lowercases whole paths; this repo's folder contains `İ`
-(`NÖRAL SİNİR AĞI GEÇER`), which changes length when lowercased, so the base-relative path comes out mangled
-(`src\core\zod.ts` becomes `c\core\zod.ts`). A literal `files: ['src/core/**']` never matches here. The scoped
-overrides in `eslint.config.js` therefore use `**/`-prefixed globs (`**/core/**/*.{ts,tsx}`, `**/app/sessionStorage.ts`,
-`**/__tests__/**`, `**/e2e/**`); they behave the same in a clone at any other path. Keep that style for new overrides.
+`@eslint/config-array`'s Windows `path.relative` lowercases whole paths and slices by index. This repo's folder
+(`NÖRAL SİNİR AĞI GEÇER`) contains `İ` (U+0130), which is two UTF-16 units when lowercased, so the offsets drift and
+the first characters of the base-relative path are lost (`src/core/zod.ts` -> `c/core/zod.ts`, `e2e/x.spec.ts` ->
+`e/x.spec.ts`). Top-level-anchored `files`/`ignores` globs then silently stop matching.
+
+- Root-cause workaround: the top of `eslint.config.js` makes U+0130 lowercase to a single character in the eslint
+  process (only when the engine would otherwise expand it). With it, literal globs such as `src/core/**` and
+  `e2e/**` match again.
+- Pattern rule anyway: write scoped overrides with a `**/` prefix (`**/core/**/*.{ts,tsx}`, `**/app/sessionStorage.ts`,
+  `**/__tests__/**`, `**/e2e/**`, `**/__fixtures__/**`) so they also survive a regression of the workaround; never rely on a
+  top-level literal segment alone.
+- Check: `scripts/__tests__/lint-scope.test.ts` (runs in `npm --prefix web run test`) lints snippets under e2e/, src/core,
+  src/app/sessionStorage.ts etc. through the ESLint API (`localStorage` allowed and `sessionStorage` still banned in tests
+  and e2e; react/zod banned in core; fixtures ignored). Manual equivalent:
+  `echo 'export const a = localStorage.length;' | npx eslint --stdin --stdin-filename e2e/x.spec.ts` must print nothing.
 
 ## Pinned versions
 
