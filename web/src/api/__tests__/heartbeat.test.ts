@@ -78,3 +78,32 @@ test('other errors (busy, 500) do not count as an outage', async () => {
   expect(onDown).not.toHaveBeenCalled();
   stop();
 });
+
+test('a poll that is still in flight when stop() is called does not call onUp or onDown', async () => {
+  let release: (r: Response) => void = () => undefined;
+  const pending = new Promise<Response>((resolve) => (release = resolve));
+  const steps: (() => Promise<Response>)[] = [
+    async () => {
+      throw down();
+    },
+    () => pending,
+  ];
+  const fetchFn = vi.fn(async () => {
+    const next = steps.shift();
+    if (!next) throw new Error('no more steps');
+    return next();
+  });
+  const api = createApi({ token: 't', fetchFn: fetchFn as unknown as typeof fetch, onStale: vi.fn() });
+  const onDown = vi.fn();
+  const onUp = vi.fn();
+  const stop = startHeartbeat(api, onDown, { intervalMs: 1000, onUp });
+
+  await vi.advanceTimersByTimeAsync(1000); // outage
+  expect(onDown).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1000); // second poll is now in flight
+  stop();
+  release(jsonResponse(200, session));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(onUp).not.toHaveBeenCalled();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+});

@@ -119,3 +119,15 @@ test('sse treats a connection reset mid-stream as ended', async () => {
   expect(outcome).toBe('ended');
   expect(events.length).toBeLessThanOrEqual(1);
 });
+
+test('an error thrown by onEvent surfaces and is not mistaken for a dropped connection', async () => {
+  const boom = new TypeError('consumer bug');
+  const fetchFn = vi.fn(async () => sseResponse(['event: progress\ndata: 1\n\n', 'event: progress\ndata: 2\n\n']));
+  const onEvent = vi.fn(() => {
+    throw boom;
+  });
+  await expect(
+    streamSse('/e', { token: 't', signal: new AbortController().signal, onEvent, fetchFn: fetchFn as unknown as typeof fetch }),
+  ).rejects.toBe(boom);
+  expect(onEvent).toHaveBeenCalledTimes(1);
+});

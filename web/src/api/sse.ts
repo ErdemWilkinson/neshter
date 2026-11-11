@@ -79,15 +79,19 @@ export async function streamSse(url: string, opts: SseOptions): Promise<'ended' 
   const parser = createParser(onEvent);
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      parser.push(decoder.decode(value, { stream: true }));
+      // Only the read is guarded: an error thrown by `onEvent` (consumer code) must surface, not look like a drop.
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) return 'aborted';
+        if (error instanceof TypeError) return 'ended'; // connection reset mid-stream: the caller re-attaches
+        throw error;
+      }
+      if (chunk.done) break;
+      parser.push(decoder.decode(chunk.value, { stream: true }));
     }
     parser.push(decoder.decode());
-  } catch (error) {
-    if (signal.aborted || isAbortError(error)) return 'aborted';
-    if (error instanceof TypeError) return 'ended'; // connection reset mid-stream: the caller re-attaches
-    throw error;
   } finally {
     reader.cancel().catch(() => undefined);
   }

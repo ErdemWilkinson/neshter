@@ -44,9 +44,16 @@ export const modelEntry = z.looseObject({
   memory_bytes: z.number(),
   badge: z.enum(['ok', 'slow', 'no']),
   license: z.string().nullable(),
-  // Listing-time header read: no head_dim / d_model / n_params.
+  // Listing-time header read: no head_dim / d_model / n_params. Hostile or odd metadata gives null counts
+  // (scan._arch_int), and one such model must not break the whole list.
   arch: z
-    .looseObject({ family: z.string(), n_layers: z.number(), n_heads: z.number(), n_kv_heads: z.number(), d_mlp: z.number() })
+    .looseObject({
+      family: z.string(),
+      n_layers: nullableNumber,
+      n_heads: nullableNumber,
+      n_kv_heads: nullableNumber,
+      d_mlp: nullableNumber,
+    })
     .nullable(),
   supported: z.boolean(),
   unsupported_reason: z.string().nullable(),
