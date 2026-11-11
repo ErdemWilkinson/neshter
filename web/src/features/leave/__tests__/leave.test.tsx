@@ -1,7 +1,11 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { basketStore } from '@/core/stores/basket';
+import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
+import { sessionLoaded } from '@/app/__tests__/fakeServer';
+import { draftStatusStore } from '@/features/draft/draftStatus';
+import type { LoadedSession } from '@/api/schemas';
 import { head } from '@/core/__tests__/fixtures/items';
 import { setLang, t } from '@/i18n';
 import { useLeaveGuard } from '../useLeaveGuard';
@@ -25,6 +29,8 @@ beforeEach(() => {
 afterEach(() => {
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   uiStore.setState({ route: 'home' });
+  sessionStore.setState({ model: null });
+  draftStatusStore.setState({ hasDraft: false, tooLarge: false, pendingSha: null });
   vi.restoreAllMocks();
 });
 
@@ -99,4 +105,24 @@ test('beforeunload listener exists only while dirty', () => {
     basketStore.getState().markSaved();
   });
   expect(count(remove)).toBe(1);
+});
+
+test('the leave body promises the draft only while autosave is not held back by an unresolved earlier draft', async () => {
+  const model = sessionLoaded as unknown as LoadedSession;
+  sessionStore.setState({ model });
+  render(<Harness proceed={vi.fn()} />);
+  dirty();
+  await userEvent.click(screen.getByRole('button', { name: 'çık' }));
+  expect(screen.getByText(/kesimleriniz taslakta kalır/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Vazgeç' }));
+
+  act(() => draftStatusStore.getState().setPendingSha(model.source_sha256));
+  await userEvent.click(screen.getByRole('button', { name: 'çık' }));
+  expect(screen.queryByText(/kesimleriniz taslakta kalır/)).toBeNull();
+  expect(screen.getByText(/yeni kesimler taslağa yazılmaz/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Vazgeç' }));
+
+  act(() => setLang('en'));
+  await userEvent.click(screen.getByRole('button', { name: 'çık' }));
+  expect(screen.getByText(/New cuts are not written to the draft/)).toBeInTheDocument();
 });
