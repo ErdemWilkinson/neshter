@@ -138,6 +138,7 @@ def test_every_api_route_needs_token(client):
         ("get", "/api/system"),
         ("post", "/api/activity"),
         ("post", "/api/export/estimate"),
+        ("post", "/api/shutdown"),
         ("get", "/api/drafts"),
         ("get", f"/api/draft/{'a' * 64}"),
         ("put", f"/api/draft/{'a' * 64}"),
@@ -2250,6 +2251,32 @@ def test_prefs_roundtrip_and_bad_lang(home_client, auth):
     assert c.get("/api/prefs", headers=auth).json()["lang"] == "en"  # geçersiz PUT eskisini bozmaz
     # PUT tüm nesneyi değiştirir: gönderilmeyen alan varsayılana döner
     assert c.put("/api/prefs", json={"refusal_card_seen": True}, headers=auth).json()["lang"] is None
+
+
+def test_shutdown_calls_request_exit(client, auth):
+    called = []
+    client.app.state.request_exit = lambda: called.append(1)
+    r = client.post("/api/shutdown", headers=auth)
+    assert r.status_code == 202 and r.json() == {"ok": True} and called == [1]
+
+
+def test_shutdown_without_hook_is_501(client, auth):
+    r = client.post("/api/shutdown", headers=auth)
+    assert r.status_code == 501 and r.json()["error_code"] == "unsupported"
+
+
+def test_lifespan_prints_unsaved_line(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    with TestClient(create_app(TOKEN, PORT, roots={}), base_url=f"http://127.0.0.1:{PORT}") as c:
+        c.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(unsaved_count=2), headers={"X-Neshter-Token": TOKEN})
+    assert "2 kaydedilmemiş kesim taslağa yazıldı; sonraki açılışta geri yüklenir." in capsys.readouterr().out
+
+
+def test_lifespan_silent_without_unsaved(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    with TestClient(create_app(TOKEN, PORT, roots={}), base_url=f"http://127.0.0.1:{PORT}") as c:
+        c.get("/api/system", headers={"X-Neshter-Token": TOKEN})
+    assert "taslağa yazıldı" not in capsys.readouterr().out
 
 
 def test_session_reports_source_sha256(ready):

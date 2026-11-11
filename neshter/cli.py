@@ -68,6 +68,14 @@ def _port(value: str) -> int:
     return port
 
 
+def _run_server(app, host: str, port: int) -> None:
+    """uvicorn.Server ile çalıştırır; `/api/shutdown` sunucuyu `should_exit` ile zarifçe durdurur."""
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    if hasattr(app, "state"):  # testlerde sahte uygulama (str) olabilir
+        app.state.request_exit = lambda: setattr(server, "should_exit", True)
+    server.run()
+
+
 def _serve(args: argparse.Namespace) -> int:
     port = args.port if args.port else _free_port()
     token = secrets.token_urlsafe(24)
@@ -77,7 +85,7 @@ def _serve(args: argparse.Namespace) -> int:
     print("Durdurmak için Ctrl+C. Adres yalnızca bu bilgisayardan erişilebilir.")
     if not args.no_browser:
         threading.Thread(target=_open_when_ready, args=(url, port), daemon=True).start()
-    uvicorn.run(app, host=HOST, port=port, log_level="warning")
+    _run_server(app, host=HOST, port=port)
     return EXIT_OK
 
 

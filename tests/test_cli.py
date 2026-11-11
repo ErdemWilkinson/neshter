@@ -16,6 +16,7 @@ from neshter.cli import main
 from neshter.interventions import HeadAblation
 from neshter.interventions import DirectionAblation
 from neshter.recipe import SourceRef, load_recipe, save_recipe
+from neshter.server.app import create_app
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -163,7 +164,7 @@ def test_apply_gemma2_direction_recipe_saves(tmp_path, tiny_gemma2_dir, gemma_lm
 
 @pytest.fixture
 def served(monkeypatch):
-    """create_app/uvicorn.run/webbrowser.open sahtelenir; gerçek sunucu başlamaz."""
+    """create_app/_run_server/webbrowser.open sahtelenir; gerçek sunucu başlamaz."""
     seen = {"opened": threading.Event(), "urls": []}
 
     def fake_create_app(token, port, roots=None):
@@ -185,7 +186,7 @@ def served(monkeypatch):
         return True
 
     monkeypatch.setattr(cli, "create_app", fake_create_app)
-    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    monkeypatch.setattr(cli, "_run_server", fake_run)
     monkeypatch.setattr(cli.webbrowser, "open", fake_open)
     return seen
 
@@ -201,6 +202,21 @@ def test_serve_binds_loopback_same_port_and_opens_browser(served, capsys):
     url = f"http://127.0.0.1:{kw['port']}/#token={token}"
     assert served["urls"] == [url]
     assert url in capsys.readouterr().out
+
+
+def test_run_server_wires_request_exit(monkeypatch):
+    class FakeServer:
+        def __init__(self, config):
+            self.should_exit = False
+            FakeServer.inst = self
+
+        def run(self):
+            app.state.request_exit()
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
+    app = create_app("t", 47997, roots={})
+    cli._run_server(app, "127.0.0.1", 47997)
+    assert FakeServer.inst.should_exit is True
 
 
 def test_serve_no_browser_does_not_open(served, capsys):
