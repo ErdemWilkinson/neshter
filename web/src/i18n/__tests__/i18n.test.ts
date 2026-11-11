@@ -10,7 +10,7 @@ test('t interpolates and formats numbers per language', () => {
   expect(t('header.model', { name: 'qwen {x}', dtype: 'float32', device: 'cpu' })).toBe('qwen {x} · float32 · cpu');
   setLang('en');
   expect(t('header.vram', { gb: 0.025 })).toBe('VRAM 0.025 GB');
-  expect(t('header.close')).toBe('Close');
+  expect(t('header.close')).toBe('Quit Neşter');
 });
 
 test('a placeholder without a parameter stays visible instead of vanishing', () => {
@@ -51,7 +51,7 @@ test('exact pinned copy (Task 7 keys only)', () => {
   expect(t('app.stale.down')).toBe('Sunucu kapandı; kesimlerin taslakta');
   expect(t('header.cpuOnly')).toBe('Yalnızca CPU');
   expect(t('header.motion')).toBe('Animasyonları azalt');
-  expect(t('header.close')).toBe('Kapat');
+  expect(t('header.close')).toBe("Neşter'i kapat");
   expect(t('ui.techDetail')).toBe('Teknik ayrıntı');
   expect(t('ui.cancel')).toBe('İptal');
   expect(t('app.step.concept')).toBe('Davranışı bul');

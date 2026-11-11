@@ -3,6 +3,7 @@ import { etaSeconds } from '@/api/eta';
 import type { JobState } from '@/api/schemas';
 import { t, useT } from '@/i18n';
 import { Button } from './Button';
+import { useProgressShown } from './useProgressShown';
 
 export function duration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds));
@@ -14,6 +15,7 @@ export function duration(totalSeconds: number): string {
 export function ProgressCard({ job, onCancel }: { job: JobState; onCancel: () => void }) {
   useT();
   const [now, setNow] = useState(() => Date.now());
+  useProgressShown(); // tells the busy notice that this job is already visible on screen
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);

@@ -1,3 +1,4 @@
+import { useDraftHeld } from '@/features/draft/useDraftHeld';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Dialog } from '@/ui/Dialog';
@@ -15,6 +16,7 @@ export function LeaveDialog({
   onCancel: () => void;
 }) {
   const t = useT();
+  const held = useDraftHeld();
   return (
     <Dialog
       open={open}
@@ -32,7 +34,7 @@ export function LeaveDialog({
         </>
       }
     >
-      <p>{t('leave.body')}</p>
+      <p>{t(held ? 'leave.body.held' : 'leave.body')}</p>
     </Dialog>
   );
 }

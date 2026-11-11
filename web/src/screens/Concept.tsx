@@ -165,9 +165,10 @@ export function Concept() {
       {found !== null && (
         <div className="concept-result">
           <ValidationLine result={found.result} />
-          <LayerChart scores={found.result.layer_scores} refLayer={found.result.ref_layer} />
           <FoundHeads heads={found.result.heads} />
           <FoundDirection result={found.result} conceptId={found.conceptId} />
+          <p className="concept-note">{t('concept.result.note')}</p>
+          <LayerChart scores={found.result.layer_scores} refLayer={found.result.ref_layer} />
         </div>
       )}
 

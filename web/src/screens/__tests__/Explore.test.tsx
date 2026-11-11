@@ -4,6 +4,7 @@ import type { Api } from '@/api/client';
 import { setApi } from '@/api/currentApi';
 import { ApiError, BusyError } from '@/api/errors';
 import type { JobState } from '@/api/schemas';
+import { getExplorePrompt, getSessionStorage } from '@/app/sessionStorage';
 import { basketStore } from '@/core/stores/basket';
 import { jobsStore } from '@/core/stores/jobs';
 import { selectionStore } from '@/core/stores/selection';
@@ -58,6 +59,7 @@ const powers = () =>
     .map((row) => row.querySelectorAll('td')[2]?.textContent);
 
 beforeEach(() => {
+  getSessionStorage().clear();
   setLang('tr');
   uiStore.setState({ view: 'list' });
   exploreStore.getState().reset();
@@ -234,4 +236,15 @@ test('the explore view survives leaving and coming back', async () => {
   render(<Explore />);
   expect(screen.getByRole('list', { name: 'Belirteçler' })).toBeInTheDocument();
   expect(screen.getByLabelText('Metin')).toHaveValue('merhaba dün');
+});
+
+test('the prompt is kept in this tab (sessionStorage) so a reload brings it back', async () => {
+  makeApi();
+  const first = render(<Explore />);
+  await userEvent.type(screen.getByLabelText('Metin'), 'merhaba');
+  expect(getExplorePrompt()).toBe('merhaba');
+  first.unmount();
+  exploreStore.getState().reset(); // a reload: the stores start empty, the tab's storage does not
+  render(<Explore />);
+  expect(screen.getByLabelText('Metin')).toHaveValue('merhaba');
 });

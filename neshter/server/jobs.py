@@ -83,7 +83,12 @@ class JobManager:
     def shutdown(self) -> None:
         with self._lock:
             for job in self._jobs.values():
+                if job.status.state in TERMINAL:
+                    continue
                 job.cancel.set()
+                if job.status.state == "queued":  # cancel() ile aynı: kuyrukta kalan iş "queued" görünmesin
+                    job.status.state = "cancelled"
+                    job.status.finished_at = _now()
         self._queue.put(None)
 
     # --- işçi ---

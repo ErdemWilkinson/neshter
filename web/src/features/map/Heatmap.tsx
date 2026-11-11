@@ -93,25 +93,53 @@ export function Heatmap({
     [dims, values, scale, keys],
   );
 
+  // Axis labels and numbers are decoration for sighted users (the canvas has its own keyboard and spoken model).
+  const headStep = dims.n_heads > 24 ? 4 : 1;
+  const layerStep = height / Math.max(1, dims.n_layers) >= 12 ? 1 : 5;
+  const heads = Array.from({ length: dims.n_heads }, (_, i) => i);
+  const layers = Array.from({ length: dims.n_layers }, (_, i) => i);
+
   return (
-    // The canvas is one composite widget with its own keyboard model (arrows, Home/End, Space/Enter).
-    <canvas
-      ref={canvasRef}
-      className="heatmap-canvas"
-      style={{ height }}
-      tabIndex={0}
-      // eslint-disable-next-line jsx-a11y/no-interactive-element-to-noninteractive-role -- the spec fixes role=group on this focusable canvas
-      role="group"
-      aria-roledescription={t('map.heatmap.role')}
-      aria-label={t('map.heatmap.label')}
-      aria-describedby={describedBy}
-      onKeyDown={keys.onKeyDown}
-      onFocus={() => {
-        setHasFocus(true);
-        keys.onFocus();
-      }}
-      onBlur={() => setHasFocus(false)}
-      onClick={onClick}
-    />
+    <div className="heatmap-frame">
+      <span className="heatmap-axis-x" aria-hidden="true">
+        {t('map.axis.head')} →
+      </span>
+      <div className="heatmap-xticks num" aria-hidden="true" style={{ gridTemplateColumns: `repeat(${dims.n_heads}, 1fr)` }}>
+        {heads.map((i) => (
+          <span key={i}>{i % headStep === 0 ? i : ''}</span>
+        ))}
+      </div>
+      <span className="heatmap-axis-y" aria-hidden="true">
+        {t('map.axis.layer')}
+      </span>
+      <div
+        className="heatmap-yticks num"
+        aria-hidden="true"
+        style={{ height, gridTemplateRows: `repeat(${dims.n_layers}, 1fr)` }}
+      >
+        {layers.map((i) => (
+          <span key={i}>{i % layerStep === 0 ? i : ''}</span>
+        ))}
+      </div>
+      {/* The canvas is one composite widget with its own keyboard model (arrows, Home/End, Space/Enter). */}
+      <canvas
+        ref={canvasRef}
+        className="heatmap-canvas"
+        style={{ height }}
+        tabIndex={0}
+        // eslint-disable-next-line jsx-a11y/no-interactive-element-to-noninteractive-role -- the spec fixes role=group on this focusable canvas
+        role="group"
+        aria-roledescription={t('map.heatmap.role')}
+        aria-label={t('map.heatmap.label')}
+        aria-describedby={describedBy}
+        onKeyDown={keys.onKeyDown}
+        onFocus={() => {
+          setHasFocus(true);
+          keys.onFocus();
+        }}
+        onBlur={() => setHasFocus(false)}
+        onClick={onClick}
+      />
+    </div>
   );
 }
