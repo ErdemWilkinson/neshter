@@ -83,6 +83,7 @@
   "restore.unreadable": "Önceki oturumdan kaydedilmemiş kesimler var ama bu sürüm okuyamadı; yalnızca silinebilir.",
   "restore.pending": "Karar verene kadar yeni kesimler taslağa yazılmaz.",
   "restore.failed": "Kesimler geri yüklenemedi",
+  "restore.waitModel": "Model yüklenirken geri yüklenemez; iş bitince açılır.",
   "unsaved.row": "Kaydedilmemiş çalışmalar: {model_name} · {n} kesim",
   "unsaved.row.one": "Kaydedilmemiş çalışmalar: {model_name} · {n} kesim",
   "unsaved.prompts": "Taslaklar, kesimlerle birlikte girdiğiniz istemleri de saklar.",
