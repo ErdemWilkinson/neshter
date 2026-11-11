@@ -47,7 +47,7 @@ afterEach(() => {
 test('App renders the shell with a mocked api and placeholder screens', async () => {
   mount();
   expect(screen.getByText('Yükleniyor…')).toBeInTheDocument();
-  expect(await screen.findByRole('heading', { level: 1, name: 'Karşılama' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { level: 1, name: 'Ne yapmak istiyorsun?' })).toBeInTheDocument();
 
   expect(screen.getByRole('banner')).toBeInTheDocument();
   expect(screen.getByText('Yalnızca CPU')).toBeInTheDocument();
@@ -60,7 +60,7 @@ test('App renders the shell with a mocked api and placeholder screens', async ()
 test('boot order: prefs, then system and session, with the token on every call', async () => {
   window.history.replaceState(null, '', '/#token=secret%20t');
   const { server } = mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   expect(server.calls.map((call) => call.key).slice(0, 3)).toEqual(['GET /api/prefs', 'GET /api/system', 'GET /api/session']);
   for (const call of server.calls) expect(headersOf(call.init)['X-Neshter-Token']).toBe('secret t');
   expect(window.location.hash).toBe('#/'); // the token is out of the address bar
@@ -68,7 +68,7 @@ test('boot order: prefs, then system and session, with the token on every call',
 
 test('the router follows the hash and the stepper marks the current step', async () => {
   mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   act(() => {
     window.location.hash = '#/concept';
   });
@@ -81,24 +81,24 @@ test('the router follows the hash and the stepper marks the current step', async
   act(() => {
     window.location.hash = '#/no-such-screen';
   });
-  expect(await screen.findByRole('heading', { level: 1, name: 'Karşılama' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { level: 1, name: 'Ne yapmak istiyorsun?' })).toBeInTheDocument();
 });
 
 test('prefs.lang wins over the browser language and sets <html lang>', async () => {
   mount(fakeServer({ 'GET /api/prefs': () => jsonResponse(200, { ...prefs, lang: 'en' }) }));
-  expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { level: 1, name: 'What do you want to do?' })).toBeInTheDocument();
   expect(screen.getByText('CPU only')).toBeInTheDocument();
   expect(document.documentElement).toHaveAttribute('lang', 'en');
 });
 
 test('a failing prefs read falls back to defaults and the app still starts', async () => {
   mount(fakeServer({ 'GET /api/prefs': () => jsonResponse(500, { detail: 'x', error_code: 'internal' }) }));
-  expect(await screen.findByRole('heading', { name: 'Karşılama' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' })).toBeInTheDocument();
 });
 
 test('an unloaded session shows no model chip', async () => {
   mount(fakeServer({ 'GET /api/session': () => jsonResponse(200, { loaded: false }) }));
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   expect(sessionStore.getState().model).toBeNull();
   expect(screen.queryByText(/float32/)).toBeNull();
 });
@@ -142,7 +142,7 @@ test('the heartbeat reports a dead server as stale "down"; "kesimlerin taslakta"
       [`PUT /api/draft/${SHA}`]: (init) => jsonResponse(200, { ...(bodyOf(init) as object), updated_at: 'x' }),
     }),
   );
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   act(() => {
     basketStore.getState().add([aCut()]);
   });
@@ -167,7 +167,7 @@ test('unsaved cuts without a server draft do not claim a draft on the down scree
       },
     }),
   );
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   alive = false;
   await act(() => vi.advanceTimersByTimeAsync(10_500));
   expect(await screen.findByRole('heading', { name: 'Sunucu kapandı' })).toBeInTheDocument();
@@ -175,7 +175,7 @@ test('unsaved cuts without a server draft do not claim a draft on the down scree
 
 test('Kapat shuts the server down and shows the closed screen', async () => {
   const { server } = mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(1);
@@ -183,7 +183,7 @@ test('Kapat shuts the server down and shows the closed screen', async () => {
 
 test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', async () => {
   const { server } = mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   act(() => {
     basketStore.getState().add([aCut()]);
   });
@@ -199,7 +199,7 @@ test('a failed shutdown shows an error card and leaves the app and its state unt
   const { server } = mount(
     fakeServer({ 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
   );
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
   expect(await screen.findByText('Neşter kapatılamadı')).toBeInTheDocument();
   expect(screen.getByText('Beklenmeyen bir hata oldu.')).toBeInTheDocument();
@@ -297,9 +297,9 @@ test('useJob works inside the mounted App (the api is registered after bootstrap
 
 test('the language select writes the whole prefs object, not just the change', async () => {
   const { server } = mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Dil' }), 'en');
-  expect(await screen.findByRole('heading', { name: 'Welcome' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'What do you want to do?' })).toBeInTheDocument();
   expect(document.documentElement).toHaveAttribute('lang', 'en');
   await waitFor(() => expect(server.count('PUT /api/prefs')).toBe(1));
   const put = server.calls.find((call) => call.key === 'PUT /api/prefs');
@@ -308,7 +308,7 @@ test('the language select writes the whole prefs object, not just the change', a
 
 test('the motion toggle sets data-motion and saves reduced_motion', async () => {
   const { server } = mount();
-  await screen.findByRole('heading', { name: 'Karşılama' });
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   const toggle = screen.getByRole('checkbox', { name: 'Animasyonları azalt' });
   expect(toggle).not.toBeChecked();
   await userEvent.click(toggle);
