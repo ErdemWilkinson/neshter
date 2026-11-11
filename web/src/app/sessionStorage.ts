@@ -3,6 +3,7 @@
 
 const TOKEN_KEY = 'neshter.token';
 const ACTIVE_JOB_KEY = 'neshter.activeJob';
+const EXPLORE_PROMPT_KEY = 'neshter.explorePrompt';
 
 export function getSessionStorage(): Storage {
   return window.sessionStorage;
@@ -32,3 +33,8 @@ export const setToken = (token: string, ss: Storage = getSessionStorage()): void
 export const getActiveJob = (ss: Storage = getSessionStorage()): string | null => read(ss, ACTIVE_JOB_KEY);
 export const setActiveJob = (id: string, ss: Storage = getSessionStorage()): void => write(ss, ACTIVE_JOB_KEY, id);
 export const clearActiveJob = (ss: Storage = getSessionStorage()): void => write(ss, ACTIVE_JOB_KEY, null);
+
+/** The Explore prompt survives a reload of this tab only (never beyond the tab, never on disk). */
+export const getExplorePrompt = (ss: Storage = getSessionStorage()): string | null => read(ss, EXPLORE_PROMPT_KEY);
+export const setExplorePrompt = (prompt: string, ss: Storage = getSessionStorage()): void =>
+  write(ss, EXPLORE_PROMPT_KEY, prompt === '' ? null : prompt);

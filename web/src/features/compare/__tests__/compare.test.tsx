@@ -187,7 +187,7 @@ test('summary fallback when target is null and no mde footer', () => {
   expect(screen.queryByText(/En küçük saptanabilir düşüş/)).toBeNull();
   expect(screen.queryByText('(hedef)', { exact: false })).toBeNull();
   expect(screen.getByText('Kontrol çekişi yapılmadı.')).toBeInTheDocument();
-  expect(screen.getByText('Dosya boyutu değişmez')).toBeInTheDocument();
+  expect(screen.getByText(/^Değişmez: kesilen head'ler dosyadan çıkarılmaz/)).toBeInTheDocument();
 });
 
 test('belirsiz marks uncertain rows and (hedef) marks the target', async () => {

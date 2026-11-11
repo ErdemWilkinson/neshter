@@ -69,8 +69,13 @@
   list-style: none;
 }
 
+.chips li {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .chip {
-  max-width: 24rem;
+  max-width: min(24rem, 100%);
   padding: 2px 10px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -79,6 +84,27 @@
   color: var(--text-2);
   border: 1px solid var(--border);
   border-radius: 999px;
+}
+
+/* A removable chip (selection): the × button sits inside the pill without being clipped by it. */
+.chip-list .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: visible;
+}
+
+.chip-list .chip:has(.btn) {
+  padding-right: 4px;
+}
+
+.chip-list .chip .btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  line-height: 1;
 }
 
 .chip-unsaved {
@@ -125,11 +151,6 @@ select {
   background: var(--surface-0);
 }
 
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .btn-primary {
   color: var(--surface-0);
   background: var(--accent-increase);
@@ -143,6 +164,17 @@ select {
 
 .btn-ghost {
   background: transparent;
+}
+
+/* Disabled must look inert next to an enabled twin (also the primary one): flat, dashed, no accent fill. */
+.btn:disabled,
+.btn-primary:disabled {
+  color: var(--text-2);
+  background: transparent;
+  border-color: var(--border);
+  border-style: dashed;
+  filter: none;
+  cursor: not-allowed;
 }
 
 .stepper ol {
@@ -568,6 +600,68 @@ select {
   font-size: 0.8125rem;
 }
 
+.legend-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+}
+
+.legend-bar {
+  display: inline-block;
+  width: 6rem;
+  height: 10px;
+  background: linear-gradient(to right, var(--surface-1), var(--accent-increase));
+  border: 1px solid var(--border-control);
+  border-radius: 999px;
+}
+
+.heatmap-frame {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  column-gap: 4px;
+}
+
+.heatmap-axis-x,
+.heatmap-xticks,
+.heatmap-yticks,
+.heatmap-axis-y {
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
+
+.heatmap-axis-x {
+  grid-column: 3;
+}
+
+.heatmap-xticks {
+  display: grid;
+  grid-column: 3;
+  text-align: center;
+}
+
+.heatmap-axis-y {
+  grid-column: 1;
+  grid-row: 3;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-align: center;
+}
+
+.heatmap-yticks {
+  display: grid;
+  grid-column: 2;
+  grid-row: 3;
+  align-items: center;
+  text-align: right;
+  line-height: 1;
+}
+
+.heatmap-frame .heatmap-canvas {
+  grid-column: 3;
+  grid-row: 3;
+}
+
 .heatmap-canvas {
   display: block;
   width: 100%;
@@ -938,6 +1032,20 @@ select {
   gap: 16px;
 }
 
+.pair-view,
+.suite-runner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pair-view > *:not(.btn),
+.suite-runner > .progress-card,
+.suite-runner > .error-card {
+  align-self: stretch;
+}
+
 .pair-prompt {
   display: flex;
   flex-direction: column;
@@ -1043,6 +1151,15 @@ select {
 .suite-table {
   border-collapse: collapse;
   width: 100%;
+  min-width: 36rem;
+}
+
+.suite-table caption {
+  padding-bottom: 8px;
+  font-family: var(--font-heading);
+  font-size: 1.125rem;
+  font-weight: 600;
+  text-align: left;
 }
 
 .suite-table th,
@@ -1128,4 +1245,35 @@ select {
 .result-card dd {
   margin: 0 0 8px;
   overflow-wrap: anywhere;
+}
+
+/* Small screens: a compact header, chips that wrap inside the page, no clipping. */
+@media (max-width: 600px) {
+  .shell {
+    padding: 8px;
+  }
+
+  .app-header {
+    gap: 6px 10px;
+    padding: 6px 10px;
+  }
+
+  .app-header .chips {
+    flex-basis: 100%;
+    order: 3;
+    gap: 6px;
+  }
+
+  .app-header .chip {
+    font-size: 0.75rem;
+  }
+
+  .header-controls {
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .layer-chart-row {
+    grid-template-columns: 5.5rem 1fr 2.5rem auto;
+  }
 }

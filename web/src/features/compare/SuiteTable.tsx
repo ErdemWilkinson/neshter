@@ -12,7 +12,9 @@ export function SuiteTable({ result, target }: { result: SuiteResult; target: st
   const t = useT();
   const { summary } = result;
   return (
-    <div className="suite-table-wrap">
+    // A wide table scrolls inside its own region (keyboard reachable) instead of running off the page on a phone.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable region must be focusable
+    <div className="suite-table-wrap" role="region" tabIndex={0} aria-label={t('compare.table.caption')}>
       <table className="suite-table">
         <caption>{t('compare.table.caption')}</caption>
         <thead>

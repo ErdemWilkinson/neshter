@@ -15,6 +15,10 @@ function outline(ctx: CanvasRenderingContext2D, r: CellRect, color: string, widt
   ctx.strokeRect(r.x + i, r.y + i, Math.max(0, r.w - 2 * i), Math.max(0, r.h - 2 * i));
 }
 
+/** A selected cell is lightened (not just outlined), so it reads at a glance on dark and on bright cells alike. */
+const lighten = ([r, g, b]: [number, number, number]): string =>
+  rgbCss([Math.round(r + (255 - r) * 0.4), Math.round(g + (255 - g) * 0.4), Math.round(b + (255 - b) * 0.4)]);
+
 /** One `fillRect` per cell, then the outlines: selected (focus ring), basket (basket accent), the keyboard focus. */
 export function drawHeatmap(
   ctx: CanvasRenderingContext2D,
@@ -29,13 +33,13 @@ export function drawHeatmap(
       const id = headId(layer, head);
       const rect = layout.cellRect(id);
       if (rect === null) return;
-      ctx.fillStyle = rgbCss(layout.cellColor(id));
+      ctx.fillStyle = marks.selected.has(id) ? lighten(layout.cellColor(id)) : rgbCss(layout.cellColor(id));
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
       if (marks.selected.has(id) || marks.basket.has(id) || id === marks.focus) outlined.push({ id, rect });
     });
   });
   for (const { id, rect } of outlined) {
-    if (marks.selected.has(id)) outline(ctx, rect, palette.focusRing, 2, 1);
+    if (marks.selected.has(id)) outline(ctx, rect, palette.focusRing, 3, 1.5);
     if (marks.basket.has(id)) outline(ctx, rect, palette.basket, 2, 3);
   }
   for (const { id, rect } of outlined) {
