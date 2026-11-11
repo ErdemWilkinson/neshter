@@ -13,6 +13,14 @@ from transformers import (
 
 torch.set_num_threads(2)
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_neshter_home(tmp_path_factory):
+    """Hiçbir test gerçek ~/Neshter/.state'e yazmasın (F2). Ayrı bir ev gereken test monkeypatch.setenv kullanır."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("NESHTER_HOME", str(tmp_path_factory.mktemp("neshter_home")))
+        yield
+
 VOCAB_SIZE = 512
 CHAT_TEMPLATE = "{% for m in messages %}{{ m['content'] }}\n{% endfor %}"
 

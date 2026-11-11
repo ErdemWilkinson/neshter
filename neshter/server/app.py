@@ -24,7 +24,8 @@ from typing import Annotated, Literal
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Path as PathParam, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub import snapshot_download
@@ -68,6 +69,16 @@ from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, 
 from neshter.scan import scan_all
 from neshter.server.errors import SECURITY_HEADERS, ApiError, NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
+from neshter.server.state import (
+    DRAFT_MAX_BYTES,
+    SHA_RE,
+    Draft,
+    DraftIn,
+    DraftSummary,
+    Prefs,
+    StateStore,
+    neshter_home,
+)
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 SAMPLE_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -513,6 +524,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     app = FastAPI(title="Neşter", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
     app.state.jobs = jobs
+    store = app.state.store = StateStore(neshter_home() / ".state")
     app.add_middleware(_Guard, token=token, port=port)
 
     install_handlers(app)
@@ -530,7 +542,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         llama = find_llama_cpp()
         return {
             **asdict(system_info()),
-            "default_out_dir": str(Path.home() / "Neshter"),
+            "default_out_dir": str(neshter_home()),
             "llama_cpp": {
                 "found": llama is not None,
                 "path": None if llama is None else str(llama),
@@ -643,6 +655,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "device": next(lm.model.parameters()).device.type,
                 "device_note": lm.device_note,
                 "dtype": str(next(lm.model.parameters()).dtype).removeprefix("torch."),
+                "source_sha256": lm.source_sha256,
             }
 
         return start(fn, "load")
@@ -665,10 +678,50 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             "memory_bytes": sum(p.numel() * p.element_size() for p in lm.model.parameters()),
             "device_note": lm.device_note,
             "source_path": str(lm.source_path),
+            "source_sha256": lm.source_sha256,
             "default_method": default_method(lm),
             "safety_dirs": len(session.safety_dirs),
             "safety_heads": len(session.safety_heads),
         }
+
+    # -- sunucu tarafı taslak / tercih (model SHA-256'sına göre; sepetin aynası, doğruluk kaynağı değil) --
+
+    @app.get("/api/drafts")
+    def list_drafts() -> list[DraftSummary]:
+        return store.list_drafts()
+
+    @app.get("/api/draft/{sha}")
+    def get_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)]) -> Draft:
+        d = store.get_draft(sha)
+        if d is None:
+            raise HTTPException(404, "Bu model için taslak yok.")
+        return d
+
+    @app.put("/api/draft/{sha}")
+    async def put_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)], request: Request) -> Draft:
+        # Ayrıştırmadan ÖNCE boyut sınırı: önce content-length, sonra gerçek gövde.
+        too_large = ApiError(413, "Taslak çok büyük (en fazla 8 MB).", "too_large")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > DRAFT_MAX_BYTES:
+            raise too_large
+        raw = await request.body()
+        if len(raw) > DRAFT_MAX_BYTES:
+            raise too_large
+        with _bad_input():  # ValidationError ve SHA uyuşmazlığı birer ValueError: 422 invalid_input
+            return await run_in_threadpool(lambda: store.put_draft(sha, DraftIn.model_validate_json(raw)))
+
+    @app.delete("/api/draft/{sha}", status_code=204)
+    def delete_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)]) -> Response:
+        store.delete_draft(sha)
+        return Response(status_code=204)
+
+    @app.get("/api/prefs")
+    def get_prefs() -> Prefs:
+        return store.get_prefs()
+
+    @app.put("/api/prefs")
+    def put_prefs(body: Prefs) -> Prefs:
+        return store.put_prefs(body)
 
     # -- anlık (eşzamanlı) uçlar --
 
@@ -863,12 +916,13 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             has_directions = body.has_directions
             safety = _is_safety(session, [], body.concept)
         needed = int(estimate_export_bytes(lm, body.format, has_directions) * 1.1)
-        free = _free_bytes(body.out_dir or str(Path.home() / "Neshter"))
+        free = _free_bytes(body.out_dir or str(neshter_home()))
         return {
             "bytes_needed": needed,
             "free_bytes": free,
             "enough": free >= needed,
             "suggested_name": suggest_export_name(lm, safety),
+            "safety_ablated": safety,
         }
 
     @app.post("/api/export")

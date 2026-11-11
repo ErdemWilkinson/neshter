@@ -3,6 +3,8 @@
 import base64
 import functools
 import json
+import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -136,6 +138,12 @@ def test_every_api_route_needs_token(client):
         ("get", "/api/system"),
         ("post", "/api/activity"),
         ("post", "/api/export/estimate"),
+        ("get", "/api/drafts"),
+        ("get", f"/api/draft/{'a' * 64}"),
+        ("put", f"/api/draft/{'a' * 64}"),
+        ("delete", f"/api/draft/{'a' * 64}"),
+        ("get", "/api/prefs"),
+        ("put", "/api/prefs"),
         ("get", "/api/yok-boyle-bir-uc"),
     ]:
         assert getattr(client, method)(path).status_code == 403, path
@@ -157,7 +165,7 @@ def test_every_registered_api_route_is_behind_the_guard(client):
     paths = {r.path for r in routes}
     assert {"/api/jobs", "/api/session", "/api/system", "/api/export/estimate"} <= paths
     for r in routes:
-        url = r.path.replace("{job_id}", "x")
+        url = r.path.replace("{job_id}", "x").replace("{sha}", "a" * 64)
         for method in r.methods - {"HEAD", "OPTIONS"}:
             assert client.request(method, url).status_code == 403, (method, r.path)
             bad = client.request(method, url, headers={"X-Neshter-Token": "yanlis"})
@@ -1694,7 +1702,7 @@ def test_system_extras(client, auth):
     import shutil
 
     r = client.get("/api/system", headers=auth).json()
-    assert r["default_out_dir"] == str(Path.home() / "Neshter")
+    assert r["default_out_dir"] == os.environ["NESHTER_HOME"]
     assert set(r["llama_cpp"]) == {"found", "path", "converter"}
     assert isinstance(r["llama_cpp"]["found"], bool) and isinstance(r["llama_cpp"]["converter"], bool)
     assert (r["llama_cpp"]["path"] is None) == (not r["llama_cpp"]["found"])
@@ -1766,7 +1774,7 @@ def test_export_estimate(unlabelled, tmp_path):
     lm = c.app.state.session.lm
     out = tmp_path / "yeni" / "alt"  # yok: en yakın var olan ata (tmp_path) ölçülür
     r = c.post("/api/export/estimate", json={"format": "safetensors", "out_dir": str(out)}, headers=a).json()
-    assert set(r) == {"bytes_needed", "free_bytes", "enough", "suggested_name"}
+    assert set(r) == {"bytes_needed", "free_bytes", "enough", "suggested_name", "safety_ablated"}
     assert r["bytes_needed"] == int(estimate_export_bytes(lm, "safetensors", False) * 1.1) > 0
     assert r["free_bytes"] > 0 and r["enough"] is True
     assert r["suggested_name"].endswith("-neshter") and "abliterated" not in r["suggested_name"]
@@ -2151,3 +2159,126 @@ def test_export_capitalised_refusal_concept_is_labelled(unlabelled, tmp_path):
     body = _export_body(tmp_path / "cap", concept="Refusal")
     res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
     assert res["safety_ablated"] is True
+
+
+# --- Sunucu tarafı taslak/tercih, source_sha256, tahmin güvenlik bayrağı (Plan 2 Task 2) ----------
+
+
+@pytest.fixture
+def home_client(tmp_path, monkeypatch):
+    """Kendi NESHTER_HOME'u (test tmp_path) olan istemci; gerçek ~/Neshter'e ve diğer testlere dokunmaz."""
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    return _make()
+
+
+DRAFT_SHA = "a" * 64
+
+
+def _draft_body(sha=DRAFT_SHA, **over):
+    body = {
+        "schema_version": 1, "sha256": sha, "model_name": "m", "unsaved_count": 1,
+        "basket": HEAD_OPS, "shelf": [], "saved_ops": [], "prompts": ["merhaba"],
+    }
+    return {**body, **over}
+
+
+def test_draft_routes_roundtrip(home_client, auth):
+    c = home_client
+    r = c.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(), headers=auth)
+    assert r.status_code == 200 and r.json()["basket"] == HEAD_OPS and r.json()["updated_at"]
+    assert c.get(f"/api/draft/{DRAFT_SHA}", headers=auth).json()["basket"] == HEAD_OPS
+    listing = c.get("/api/drafts", headers=auth).json()
+    assert [(d["sha256"], d["model_name"], d["unsaved_count"]) for d in listing] == [(DRAFT_SHA, "m", 1)]
+    assert set(listing[0]) == {"sha256", "model_name", "updated_at", "unsaved_count"}
+    assert c.delete(f"/api/draft/{DRAFT_SHA}", headers=auth).status_code == 204
+    gone = c.get(f"/api/draft/{DRAFT_SHA}", headers=auth)
+    assert gone.status_code == 404 and gone.json()["error_code"] == "not_found"
+
+
+def test_draft_state_lives_under_neshter_home(home_client, auth, tmp_path):
+    home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(), headers=auth)
+    assert (tmp_path / ".state" / "drafts" / f"{DRAFT_SHA}.json").is_file()
+
+
+def test_draft_bad_sha_path_is_422(home_client, auth):
+    for bad in ("g" * 64, "A" * 64, "a" * 63):
+        r = home_client.put(f"/api/draft/{bad}", json=_draft_body(bad), headers=auth)
+        assert r.status_code == 422, bad
+        assert home_client.get(f"/api/draft/{bad}", headers=auth).status_code == 422, bad
+        assert home_client.delete(f"/api/draft/{bad}", headers=auth).status_code == 422, bad
+
+
+def test_draft_body_sha_must_match_path(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body("b" * 64), headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_draft_too_large_is_413(home_client, auth):
+    big = _draft_body(prompts=["x" * 8000] * 20)
+    big["basket"] = [{"type": "head", "layer": 0, "head": 1, "pad": "y" * 9000}] * 1000
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=big, headers=auth)
+    assert r.status_code == 413 and r.json()["error_code"] == "too_large"
+
+
+def test_draft_too_large_by_content_length_is_413_without_parsing(home_client, auth):
+    r = home_client.put(
+        f"/api/draft/{DRAFT_SHA}", content=b"{bozuk", headers={**auth, "content-length": str(9 * 1024 * 1024)}
+    )
+    assert r.status_code == 413 and r.json()["error_code"] == "too_large"
+
+
+def test_draft_unparsable_body_is_422(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", content=b"{bozuk", headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_draft_unknown_field_rejected(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(extra=1), headers=auth)
+    assert r.status_code == 422
+
+
+def test_prefs_roundtrip_and_bad_lang(home_client, auth):
+    c = home_client
+    assert c.get("/api/prefs", headers=auth).json() == {
+        "lang": None, "quality": "balanced", "reduced_motion": "system", "refusal_card_seen": False,
+    }
+    r = c.put("/api/prefs", json={"lang": "en"}, headers=auth)
+    assert r.status_code == 200 and r.json()["lang"] == "en"
+    assert c.get("/api/prefs", headers=auth).json()["lang"] == "en"
+    assert c.put("/api/prefs", json={"lang": "de"}, headers=auth).status_code == 422
+    assert c.put("/api/prefs", json={"ekstra": 1}, headers=auth).status_code == 422
+    assert c.get("/api/prefs", headers=auth).json()["lang"] == "en"  # geçersiz PUT eskisini bozmaz
+    # PUT tüm nesneyi değiştirir: gönderilmeyen alan varsayılana döner
+    assert c.put("/api/prefs", json={"refusal_card_seen": True}, headers=auth).json()["lang"] is None
+
+
+def test_session_reports_source_sha256(ready):
+    c, a = ready
+    assert re.fullmatch("[0-9a-f]{64}", c.get("/api/session", headers=a).json()["source_sha256"])
+
+
+def test_load_job_result_reports_source_sha256(tiny_model_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    c, a = _make(), {"X-Neshter-Token": TOKEN}
+    job = c.post("/api/session/load", json={"path": str(tiny_model_dir), "dtype": "float32"}, headers=a).json()["job_id"]
+    res = wait_done(c, a, job)["result"]
+    assert re.fullmatch("[0-9a-f]{64}", res["source_sha256"])
+    assert res["source_sha256"] == c.get("/api/session", headers=a).json()["source_sha256"]
+
+
+def test_system_default_out_dir_follows_neshter_home(home_client, auth, tmp_path):
+    assert home_client.get("/api/system", headers=auth).json()["default_out_dir"] == str(tmp_path)
+
+
+def test_estimate_reports_safety_flag(unlabelled):
+    c, a = unlabelled
+    refusal = c.post(
+        "/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS, "concept": "refusal"}, headers=a
+    ).json()
+    assert refusal["safety_ablated"] is True and refusal["suggested_name"].endswith("-abliterated")
+    plain = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS}, headers=a).json()
+    assert plain["safety_ablated"] is False
+
+
+def test_autouse_home_is_not_real_home():
+    assert Path(os.environ["NESHTER_HOME"]) != Path.home() / "Neshter"
