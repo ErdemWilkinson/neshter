@@ -455,3 +455,131 @@ select {
   border-radius: var(--radius);
   font: inherit;
 }
+
+/* Explore: prompt, controls, token strip, heatmap, list. */
+.explore-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.explore-prompt {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  align-items: end;
+}
+
+.explore-prompt label {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+}
+
+.explore-prompt textarea {
+  padding: 6px 10px;
+  color: var(--text-1);
+  background: var(--surface-0);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  font: inherit;
+  resize: vertical;
+}
+
+.explore-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+}
+
+.token-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.token-chip {
+  min-width: 1.5rem;
+  min-height: 1.75rem;
+  padding: 2px 8px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  white-space: pre;
+  cursor: pointer;
+}
+
+.token-chip[aria-pressed='true'] {
+  color: var(--surface-0);
+  background: var(--accent-increase);
+  border-color: var(--accent-increase);
+}
+
+.token-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--text-2);
+}
+
+.badge-estimated {
+  padding: 0 8px;
+  color: var(--badge-explore);
+  border: 1px solid var(--badge-explore);
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.map-axes {
+  font-size: 0.8125rem;
+}
+
+.heatmap-canvas {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.heatmap-table {
+  border-collapse: collapse;
+}
+
+.heatmap-table th,
+.heatmap-table td {
+  padding: 2px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.heatmap-table .num {
+  text-align: right;
+}
+
+.sort-button {
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mlp-list {
+  margin: 0;
+  padding-left: 2rem;
+  columns: 2 16rem;
+}
