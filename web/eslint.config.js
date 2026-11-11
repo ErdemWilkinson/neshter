@@ -4,9 +4,19 @@ import jsxA11y from 'eslint-plugin-jsx-a11y';
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
-// Scoped overrides use '**/'-prefixed globs on purpose: @eslint/config-array's Windows path.relative lowercases
-// whole paths and, for this repo folder (it contains 'İ'), returns a mangled base-relative path such as
-// 'c<sep>core<sep>zod.ts'. A literal 'src/core/**' glob then never matches; '**/core/**' matches either way.
+// Root-cause workaround. @eslint/config-array computes base-relative paths with a Windows path.relative that
+// lowercases whole strings and then slices by index. This repo folder ("NÖRAL SİNİR AĞI GEÇER") contains 'İ'
+// (U+0130), whose lowercase is two UTF-16 units, so the offsets drift and the first characters of the relative
+// path are lost ('src/core/zod.ts' -> 'c/core/zod.ts', 'e2e/x.spec.ts' -> 'e/x.spec.ts'). Every top-level-anchored
+// glob and globalIgnores entry then silently stops matching. Make U+0130 lowercase to a single 'i' in this
+// (eslint) process so the lengths stay aligned. scripts/__tests__/lint-scope.test.ts pins the resulting scoping.
+if ('İ'.toLowerCase().length !== 1) {
+  const lowerCase = String.prototype.toLowerCase;
+  const dottedI = String.fromCharCode(0x130);
+  String.prototype.toLowerCase = function toLowerCase() {
+    return lowerCase.call(String(this).replaceAll(dottedI, 'I'));
+  };
+}
 
 const LOCAL_STORAGE = {
   name: 'localStorage',
@@ -53,7 +63,7 @@ const nodeGlobals = Object.fromEntries(
 );
 
 export default defineConfig([
-  globalIgnores(['node_modules/**', 'playwright-report/**', 'test-results/**', 'scripts/__tests__/__fixtures__/**']),
+  globalIgnores(['node_modules/**', 'playwright-report/**', 'test-results/**', '**/__fixtures__/**']),
   js.configs.recommended,
   tseslint.configs.strict,
   {
