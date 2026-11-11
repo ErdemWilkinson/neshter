@@ -184,6 +184,20 @@ test('a preset search posts concept_id and the chosen method, then shows the res
   expect(screen.getByRole('button', { name: 'Haritada göster ve ölç' })).toBeInTheDocument();
 });
 
+test('the result lists the found heads before the layer chart and explains the zero scores in one sentence', async () => {
+  mount({
+    'GET /api/jobs/h1': () =>
+      jsonResponse(200, doneJob(huntResult({ heads: [{ layer: 1, head: 2, score: 0.8, measured: { signal_drop: null, neutral_kl: 0.5 } }] }))),
+  });
+  await chip('Kod yazma');
+  await userEvent.click(search());
+  const heads = await screen.findByRole('heading', { name: "Bulunan head'ler" });
+  const chart = screen.getByRole('heading', { name: 'Katman skorları' });
+  expect(heads.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByRole('columnheader', { name: 'Katman' })).toBeInTheDocument();
+  expect(screen.getByText(/Sinyali etkileyemez”, head'in davranışın okunduğu katmandan sonra/)).toBeInTheDocument();
+});
+
 test('a custom concept is sent with a slug id, equal names and its examples', async () => {
   const user = userEvent.setup();
   const server = mount();

@@ -844,6 +844,12 @@ select {
   gap: 12px;
 }
 
+.concept-note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
 .layer-chart-bars {
   display: flex;
   flex-direction: column;
