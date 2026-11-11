@@ -701,7 +701,7 @@ def test_security_headers_on_all_responses(client, auth):
         assert r.headers["x-frame-options"] == "DENY"
     assert client.get("/api/system").status_code == 403  # 403 yanıtı da başlık taşır
     csp = client.get("/").headers["content-security-policy"]
-    assert "script-src" not in csp and "'unsafe-inline'" not in csp.split("style-src")[0]
+    assert "script-src 'self'" in csp and "'unsafe-inline'" not in csp.split("style-src")[0]
     assert "default-src 'self'" in csp and "connect-src 'self'" in csp and "img-src 'self' data:" in csp
 
 
@@ -709,7 +709,8 @@ def test_security_headers_on_all_responses(client, auth):
 
 
 def test_static_dist_is_mounted_only_if_it_exists(tmp_path, monkeypatch, auth):
-    r = _make().get("/")  # dist yok (varsayılan): belirteçsiz küçük bilgi sayfası
+    monkeypatch.setattr(app_module, "WEB_DIST", tmp_path / "yok")  # dist yok: yerel derlemeden bağımsız
+    r = _make().get("/")  # belirteçsiz küçük bilgi sayfası
     assert r.status_code == 200 and "API" in r.text and "derlenmedi" in r.text
     (tmp_path / "index.html").write_text("<h1>ada</h1>", encoding="utf-8")
     monkeypatch.setattr(app_module, "WEB_DIST", tmp_path)
