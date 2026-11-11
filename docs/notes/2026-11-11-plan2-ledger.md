@@ -5,10 +5,10 @@
 Spec: docs/superpowers/specs/2026-11-10-neshter-design.md (+ 3D spec 2026-11-10-neshter-3d-graph-design.md for shared contracts; debate synthesis .superpowers/sdd/2026-11-11-decisions-debate/synthesis.md). Owner approved all A–F 2026-11-11; autopilot overnight.
 
 Preflight scan: preflight-scan.md (54 pair rows, 15 task rows, 46 findings F1–F36 + E1–E10).
-Ruling: adopt every proposed ruling in preflight-scan.md as written (spec binding; smallest change) and patch the plan before Task 1; E1 → junction target D:\neshter\web\node_modules (path keeps a node_modules segment); E4 → no worktree, branch feat/plan2-ui in the main checkout (editable venv points there) — cost if wrong: a plan patch round to revert.
+Ruling: adopt every proposed ruling in preflight-scan.md as written (spec binding; smallest change) and patch the plan before Task 1; E1 → junction target <work>/web\node_modules (path keeps a node_modules segment); E4 → no worktree, branch feat/plan2-ui in the main checkout (editable venv points there) — cost if wrong: a plan patch round to revert.
 Plan patched 0bfe685: all 46 applied. Patcher's own rulings (F3,F5,F22,F23,F27,F31,F32,F36 incl. 1000-item basket cap, heartbeat; F30 badge in T9+T11, T11 depends on T9; checkOutDir(defaultOutDir)) — Ruling: accept — cost if wrong: small UI rework.
 Task 1: implementer DONE_WITH_CONCERNS 92fd9c2 (BASE 0bfe685).
-Ruling: `npm ci`/`npm install` are never run with --prefix web (npm replaces the junction with a real dir on C:); they run in D:\neshter\web per web/DEV.md, lock copied back — carry into every later dispatch — cost if wrong: a C: node_modules inside OneDrive.
+Ruling: `npm ci`/`npm install` are never run with --prefix web (npm replaces the junction with a real dir on C:); they run in <work>/web per web/DEV.md, lock copied back — carry into every later dispatch — cost if wrong: a C: node_modules inside OneDrive.
 Ruling: ESLint override globs use `**/`-prefixed patterns (İ in repo path breaks literal src/ globs) — carry forward — cost if wrong: an unenforced ban, caught by negative tests.
 Ruling: CSP assertion change in test_security_headers_on_all_responses ("script-src 'self'") accepted — plan's GC mandates explicit script-src.
 Note for owner: implementer wrote eslint.config.js via Bash after the ecc config-protection hook blocked Edit (new file required by plan; reviewer to confirm no rule weakened).
