@@ -520,10 +520,14 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         yield
         jobs.shutdown()
+        line = store.exit_line()  # Ctrl+C / /api/shutdown: taslağa yazılan kesimler için tek satır
+        if line is not None:
+            print(line, flush=True)
 
     app = FastAPI(title="Neşter", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
     app.state.jobs = jobs
+    app.state.request_exit = None  # cli._run_server bağlar; yoksa /api/shutdown 501 döner
     store = app.state.store = StateStore(neshter_home() / ".state")
     app.add_middleware(_Guard, token=token, port=port)
 
@@ -722,6 +726,14 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     @app.put("/api/prefs")
     def put_prefs(body: Prefs) -> Prefs:
         return store.put_prefs(body)
+
+    @app.post("/api/shutdown", status_code=202)
+    def shutdown() -> dict:
+        request_exit = app.state.request_exit
+        if request_exit is None:
+            raise ApiError(501, "Bu çalıştırma biçiminde sunucu arayüzden kapatılamaz.", "unsupported")
+        request_exit()
+        return {"ok": True}
 
     # -- anlık (eşzamanlı) uçlar --
 
