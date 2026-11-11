@@ -181,6 +181,17 @@ test('Kapat shuts the server down and shows the closed screen', async () => {
   expect(server.count('POST /api/shutdown')).toBe(1);
 });
 
+test('the closed screen does not promise new cuts in the draft while an earlier draft holds autosave back', async () => {
+  const { server } = mount();
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
+  act(() => draftStatusStore.setState({ hasDraft: true, pendingSha: SHA }));
+  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
+  expect(screen.queryByText(/Kaydedilmemiş kesimleriniz taslakta/)).toBeNull();
+  expect(screen.getByText(/bu oturumdaki yeni kesimler taslağa yazılmadı/)).toBeInTheDocument();
+  expect(server.count('POST /api/shutdown')).toBe(1);
+});
+
 test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', async () => {
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });

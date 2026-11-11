@@ -21,6 +21,7 @@ import { startRouter } from './router';
 import { getSessionStorage } from './sessionStorage';
 import { Shell } from './Shell';
 import { acquireTabLock } from './singleTab';
+import { useDraftHeld } from '@/features/draft/useDraftHeld';
 import { StaleScreen } from './StaleScreen';
 
 type Boot =
@@ -35,6 +36,7 @@ export function App() {
   const [boot, setBoot] = useState<Boot>({ kind: 'booting' });
   const stale = useStore(sessionStore, (s) => s.stale);
   const hasDraft = useStore(draftStatusStore, (s) => s.hasDraft);
+  const draftHeld = useDraftHeld();
   const leave = useLeaveGuard();
   const [closed, setClosed] = useState(false);
   const [closeFailure, setCloseFailure] = useState<{ code: ErrorCode; detail: unknown } | null>(null);
@@ -130,7 +132,7 @@ export function App() {
     return (
       <main className="stale-screen" role="alert">
         <h1>{t('app.closed')}</h1>
-        {hasDraft && <p>{t('app.closed.draft')}</p>}
+        {hasDraft && <p>{t(draftHeld ? 'app.closed.draft.held' : 'app.closed.draft')}</p>}
       </main>
     );
   }
