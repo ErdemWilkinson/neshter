@@ -457,3 +457,136 @@ def test_kl_effect_batched_matches_unbatched_reference_gemma2(gemma_lm):
     ref = _unbatched_reference_kl(gemma_lm, _MIXED_PROMPTS, ivs, 16)
     for a, b in zip(got, ref):
         assert a == pytest.approx(b, abs=1e-5, rel=1e-4)
+
+
+# --- Plan 2 Task 4: sıralı Besag–Clifford permütasyon testi (/api/effect) ------------------------------
+
+from dataclasses import asdict  # noqa: E402
+
+from neshter.metrics import (  # noqa: E402
+    CPU_N_MAX_CAP,
+    DEFAULT_N_MAX,
+    MIN_N_MAX,
+    TAU,
+    futility_k,
+    recipe_effect,
+    sequential_permutation,
+    sequential_real_effect,
+)
+
+PROMPTS = ["bir iki üç dört", "beş altı yedi", "hello world again", "merhaba dünya"]
+
+
+def test_sequential_constants():
+    assert (DEFAULT_N_MAX, MIN_N_MAX, CPU_N_MAX_CAP, TAU) == (39, 19, 199, 0.05)
+    assert m.DEFAULT_N_RANDOM == 30  # suite yolu sabit çekiş kalır
+
+
+def test_futility_k():
+    assert futility_k(39, 0.05) == 1 and futility_k(19, 0.05) == 0
+    assert futility_k(199, 0.05) == 9 and futility_k(39, 0.025) == 0
+
+
+def test_sequential_stops_at_second_exceedance():
+    out, seen = sequential_permutation(1.0, iter([0.1, 2.0, 0.2, 3.0] + [0.0] * 100), 39)
+    assert (out.n_drawn, out.k_exceed, out.p_value, out.p_kind) == (4, 2, 0.5, "besag_clifford")
+    assert out.stopped_early and not out.significant and len(seen) == 4
+
+
+def test_sequential_full_run_no_exceedance():
+    out, _ = sequential_permutation(1.0, iter([0.0] * 39), 39)
+    assert out.p_value == pytest.approx(1 / 40) and out.significant and out.p_kind == "full"
+    assert out.n_drawn == 39 and out.k_exceed == 0 and not out.stopped_early
+
+
+def test_one_exceedance_is_boundary_significant():
+    out, _ = sequential_permutation(1.0, iter([2.0] + [0.0] * 38), 39)
+    assert out.p_value == pytest.approx(0.05) and out.significant and not out.stopped_early
+
+
+def test_ties_count_as_exceedance():
+    out, _ = sequential_permutation(1.0, iter([1.0, 1.0] + [0.0] * 37), 39)
+    assert out.stopped_early
+
+
+def test_draws_not_consumed_after_stop():
+    pulled = []
+    gen = (pulled.append(v) or v for v in [5.0, 5.0, 5.0])
+    sequential_permutation(1.0, gen, 39)
+    assert len(pulled) == 2
+
+
+@pytest.mark.parametrize("seed", range(40))
+@pytest.mark.parametrize("n_max,tau", [(19, 0.05), (39, 0.05), (39, 0.025), (199, 0.05)])
+def test_early_stop_decision_matches_full_run(seed, n_max, tau):
+    """Erken durma kararı, tüm n_max çekişin (1+k)/(1+n_max) <= tau kararıyla aynıdır."""
+    rng = random.Random(seed)
+    target = rng.random()
+    draws = [rng.random() ** 3 for _ in range(n_max)]  # çoğu hedefin altında: iki yön de görülsün
+    out, seen = sequential_permutation(target, iter(draws), n_max, tau)
+    full_k = sum(d >= target for d in draws)
+    assert out.significant == ((1 + full_k) / (1 + n_max) <= tau)
+    assert seen == draws[: out.n_drawn]
+    if out.stopped_early:
+        assert out.p_kind == "besag_clifford" and out.p_value == out.k_exceed / out.n_drawn
+        assert out.k_exceed == futility_k(n_max, tau) + 1 and out.n_drawn < n_max
+    else:  # tüm çekişler yapıldıysa tam p raporlanır (son çekişte aşım olsa bile)
+        assert out.n_drawn == n_max and out.p_kind == "full" and out.p_value == (1 + full_k) / (1 + n_max)
+
+
+def test_sequential_permutation_rejects_short_iterable_and_bad_tau():
+    with pytest.raises(ValueError):
+        sequential_permutation(1.0, iter([0.0] * 5), 39)
+    with pytest.raises(ValueError):
+        sequential_permutation(1.0, iter([0.0] * 39), 39, tau=0.01)  # 1/40 > 0.01: hiçbir zaman anlamlı olamaz
+
+
+def test_sequential_real_effect_prefix_matches_recipe_effect(lm):
+    s = sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:4], n_max=19, seed=3)
+    r = recipe_effect(lm, [HeadAblation(0, 1)], PROMPTS[:4], n_random=19, seed=3)
+    assert s.kl == pytest.approx(r.kl) and s.random_kls == pytest.approx(r.random_kls[: s.n_drawn])
+    k = sum(v >= s.kl for v in s.random_kls)
+    assert s.k_exceed == k and s.n_max == 19 and s.seed == 3 and s.tau == 0.05
+    assert s.p_min == pytest.approx(1 / 20) and s.layer_matched
+
+
+def test_sequential_real_effect_fields_and_band(lm, monkeypatch):
+    """Bant ve yüzdelik yalnız çekilen değerler üzerinden; n_drawn < 2 ise None."""
+    calls = iter([0.0] + [5.0] * 100)  # hedef 0.0; ilk rastgele 5.0 >= 0.0: n_max=19'da ilk aşımda durur
+    real_kl_from = m._kl_from
+
+    def fake(lm_, base, prompts, interventions, last_k, cancel=None):
+        real_kl_from(lm_, base, prompts, interventions, last_k, cancel)
+        return [next(calls)] * len(prompts)
+
+    monkeypatch.setattr(m, "_kl_from", fake)
+    s = sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=19)
+    assert (s.n_drawn, s.k_exceed, s.p_kind, s.stopped_early, s.significant) == (1, 1, "besag_clifford", True, False)
+    assert s.p_value == 1.0 and s.random_kls == [5.0]
+    assert s.random_kl is None and s.random_p05 is None and s.random_p95 is None and s.percentile is None
+
+
+def test_sequential_real_effect_same_seed_same_result(lm):
+    a = sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=19, seed=5)
+    b = sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=19, seed=5)
+    assert asdict(a) == asdict(b)
+
+
+def test_sequential_rejects_small_n_max(lm):
+    with pytest.raises(ValueError):
+        sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=18)
+
+
+def test_sequential_cancel_raises(lm):
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(Cancelled):
+        sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=19, cancel=ev)
+
+
+def test_sequential_progress_message(lm):
+    seen = []
+    s = sequential_real_effect(lm, [HeadAblation(0, 1)], PROMPTS[:2], n_max=19, progress=lambda p, msg: seen.append((p, msg)))
+    msgs = [msg for _, msg in seen if msg.startswith("Rastgele kontrol")]
+    assert msgs[0] == "Rastgele kontrol 1/19 (erken durabilir)" and len(msgs) == s.n_drawn
+    assert [p for p, _ in seen] == sorted(p for p, _ in seen) and all(0 <= p <= 1 for p, _ in seen)
