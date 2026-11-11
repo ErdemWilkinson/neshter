@@ -3,6 +3,7 @@ import { useStore } from 'zustand';
 import { uiStore, type Route } from '@/core/stores/ui';
 import { DraftNotice } from '@/features/draft/DraftNotice';
 import { RestorePrompt } from '@/features/draft/RestorePrompt';
+import { Explore } from '@/screens/Explore';
 import { Home } from '@/screens/Home';
 import { Models } from '@/screens/Models';
 import { useT } from '@/i18n';
@@ -30,7 +31,7 @@ const placeholder = (route: Route): ComponentType =>
 export const SCREENS: Record<Route, ComponentType> = {
   home: Home,
   models: Models,
-  explore: placeholder('explore'),
+  explore: Explore,
   concept: placeholder('concept'),
   compare: placeholder('compare'),
   save: placeholder('save'),

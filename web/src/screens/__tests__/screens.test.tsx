@@ -7,6 +7,9 @@ import type { JobState, LoadedSession, ModelEntry } from '@/api/schemas';
 import { sessionLoaded } from '@/app/__tests__/fakeServer';
 import { basketStore } from '@/core/stores/basket';
 import { jobsStore } from '@/core/stores/jobs';
+import { measureStore } from '@/core/stores/measure';
+import { exploreStore } from '@/features/map/exploreStore';
+import type { Measurement } from '@/core/measurement';
 import { sessionStore } from '@/core/stores/session';
 import { uiStore, type Intent } from '@/core/stores/ui';
 import { head } from '@/core/__tests__/fixtures/items';
@@ -76,6 +79,8 @@ afterEach(() => {
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   jobsStore.setState({ active: null });
   pendingImportStore.getState().set(null);
+  measureStore.getState().reset();
+  exploreStore.getState().reset();
   uiStore.setState({ route: 'home', intent: null });
   vi.restoreAllMocks();
 });
@@ -199,6 +204,33 @@ test.each<[Intent, string]>([
   await waitFor(() => expect(uiStore.getState().route).toBe(route));
   expect(api.session).toHaveBeenCalled();
   expect(sessionStore.getState().model?.source_sha256).toBe(loaded.source_sha256);
+});
+
+test('loading a different model forgets the measurements and the explore view, the same model keeps them', async () => {
+  makeApi();
+  const stale = { ops_fp: 'fp1', kind: 'set_effect' } as Measurement;
+  const fill = () => {
+    measureStore.getState().put(stale);
+    exploreStore.getState().setPrompt('merhaba');
+    exploreStore.getState().setResult({ prompt: 'merhaba', tokens: ['a'], powerRaw: [[[1]]] });
+  };
+  sessionStore.getState().setModel({ ...loaded, source_sha256: 'b'.repeat(64) });
+  fill();
+  const { unmount } = render(<Models />);
+  await userEvent.click(await rowOpen());
+  await waitFor(() => expect(sessionStore.getState().model?.source_sha256).toBe(loaded.source_sha256));
+  expect(measureStore.getState().byFp).toEqual({});
+  expect(exploreStore.getState().result).toBeNull();
+  expect(exploreStore.getState().prompt).toBe('');
+  unmount();
+
+  fill();
+  uiStore.setState({ route: 'models' });
+  render(<Models />);
+  await userEvent.click(await rowOpen());
+  await waitFor(() => expect(uiStore.getState().route).toBe('explore'));
+  expect(measureStore.getState().get('fp1')).toBe(stale);
+  expect(exploreStore.getState().prompt).toBe('merhaba');
 });
 
 test('a pending recipe is applied after the load, then the person moves on', async () => {

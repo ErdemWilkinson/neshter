@@ -7,9 +7,11 @@ import { useJob } from '@/api/useJob';
 import { navigate } from '@/app/router';
 import { basketStore } from '@/core/stores/basket';
 import { compareStore } from '@/core/stores/compare';
+import { measureStore } from '@/core/stores/measure';
 import { selectionStore } from '@/core/stores/selection';
 import { sessionStore } from '@/core/stores/session';
 import { intentRoute, uiStore } from '@/core/stores/ui';
+import { exploreStore } from '@/features/map/exploreStore';
 import { RecipeApply } from '@/features/recipe/RecipeApply';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -34,6 +36,8 @@ function resetForNewModel(): void {
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   compareStore.setState({ lastPrompt: null, lastPair: null, lastSuite: null, refreshedDropped: null });
   selectionStore.getState().clear();
+  measureStore.getState().reset(); // measurements and the explore view belong to one model
+  exploreStore.getState().reset();
 }
 
 /**
