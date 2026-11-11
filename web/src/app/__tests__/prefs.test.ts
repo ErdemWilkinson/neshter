@@ -68,3 +68,43 @@ test('applyPrefs puts language, motion and quality into the stores and the docum
   expect(document.documentElement.lang).toBe('en');
   expect(document.documentElement.dataset['motion']).toBe('reduce');
 });
+
+test('a save after a failed GET reads the stored prefs again instead of overwriting them with defaults', async () => {
+  const stored = { ...prefs, lang: 'en', quality: 'low', reduced_motion: 'on', refusal_card_seen: false };
+  let getFails = true;
+  const { api, server } = apiFor(
+    fakeServer({
+      'GET /api/prefs': () => (getFails ? jsonResponse(500, { detail: 'x', error_code: 'internal' }) : jsonResponse(200, stored)),
+    }),
+  );
+  expect(await loadPrefs(api)).toEqual(DEFAULT_PREFS); // the UI runs on defaults
+  getFails = false;
+  await savePrefs(api, { refusal_card_seen: true });
+  expect(bodyOf(server.calls.at(-1)?.init)).toEqual({ ...stored, refusal_card_seen: true });
+});
+
+test('a save is refused, not sent, while the stored prefs still cannot be read', async () => {
+  const { api, server } = apiFor(fakeServer({ 'GET /api/prefs': () => jsonResponse(500, { detail: 'x', error_code: 'internal' }) }));
+  await loadPrefs(api);
+  await expect(savePrefs(api, { lang: 'en' })).rejects.toBeDefined();
+  expect(server.calls.some((c) => c.key === 'PUT /api/prefs')).toBe(false);
+});
+
+test('concurrent saves are serialized and neither patch is lost', async () => {
+  const stored = { ...prefs };
+  let serverState = { ...stored };
+  const { api, server } = apiFor(
+    fakeServer({
+      'GET /api/prefs': () => jsonResponse(200, serverState),
+      'PUT /api/prefs': async (init) => {
+        await new Promise((resolve) => setTimeout(resolve, 20)); // slow first write
+        serverState = bodyOf(init) as typeof serverState;
+        return jsonResponse(200, serverState);
+      },
+    }),
+  );
+  await loadPrefs(api);
+  await Promise.all([savePrefs(api, { lang: 'en' }), savePrefs(api, { reduced_motion: 'on' })]);
+  expect(serverState).toEqual({ ...stored, lang: 'en', reduced_motion: 'on' });
+  expect(server.calls.filter((c) => c.key === 'PUT /api/prefs')).toHaveLength(2);
+});
