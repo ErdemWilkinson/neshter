@@ -40,6 +40,7 @@ export function StatCards({ result, target }: { result: SuiteResult; target: str
         </p>
       </section>
       <section className="stat-card glass">
+        <h3>{t('compare.stat.sizeTitle')}</h3>
         <p>{t('compare.stat.size')}</p>
       </section>
     </div>

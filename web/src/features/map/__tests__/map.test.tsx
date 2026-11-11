@@ -146,6 +146,14 @@ test('the canvas is a labelled focusable group described by the legend', () => {
   expect(canvas).toHaveAttribute('aria-describedby', 'legend');
 });
 
+test('the heatmap is framed by Katman / Head axis labels and numbered ticks', () => {
+  renderHeatmap(zeros(3, 5));
+  expect(screen.getByText('Katman')).toBeInTheDocument();
+  expect(screen.getByText(/^Head →$/)).toBeInTheDocument();
+  expect(document.querySelectorAll('.heatmap-xticks span')).toHaveLength(5);
+  expect(document.querySelectorAll('.heatmap-yticks span')).toHaveLength(3);
+});
+
 test('arrow keys move focus inside the grid and announce the cell', async () => {
   const user = userEvent.setup();
   const values = [
