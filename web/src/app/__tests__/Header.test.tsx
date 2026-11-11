@@ -6,9 +6,11 @@ import type { SystemInfo } from '@/api/schemas';
 import { newBasketItem } from '@/core/basket';
 import { parseOp } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
+import { jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
 import { setLang } from '@/i18n';
+import { ProgressCard } from '@/ui/ProgressCard';
 import { Header } from '../Header';
 import { BusyBanner } from '../BusyBanner';
 import { DeviceBanner } from '../DeviceBanner';
@@ -146,11 +148,23 @@ test('BusyBanner shows for a held model and clears a 409 flag once the server ha
   expect(container).toBeEmptyDOMElement();
 
   act(() => sessionStore.getState().setBusy(true));
-  expect(await screen.findByRole('status')).toHaveTextContent('Model meşgul');
+  expect(await screen.findByRole('status')).toHaveTextContent('Model şu an çalışıyor');
   await vi.advanceTimersByTimeAsync(3100);
   expect(sessionStore.getState().busy).toBe(true); // a job still runs
   running = false;
   await vi.advanceTimersByTimeAsync(3100);
   expect(sessionStore.getState().busy).toBe(false);
   expect(container).toBeEmptyDOMElement();
+});
+
+test('BusyBanner stays hidden for our own job while a progress card shows it, and floats over the page', () => {
+  const job = { id: 'j1', kind: 'hunt', state: 'running', progress: 0.2, message: '', error: null, error_code: null, started_at: null, created_at: 'x', finished_at: null };
+  act(() => jobsStore.getState().setActive(job as never));
+  render(<BusyBanner />);
+  expect(screen.getByRole('status')).toHaveClass('busy-banner'); // own job, no card: the notice explains the disabled buttons
+  const card = render(<ProgressCard job={job as never} onCancel={() => undefined} />);
+  expect(screen.queryByRole('status')).toBeNull();
+  card.unmount();
+  expect(screen.getByRole('status')).toBeInTheDocument();
+  act(() => jobsStore.getState().clearActive());
 });

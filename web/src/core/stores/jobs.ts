@@ -8,6 +8,10 @@ export interface JobsState {
   setActive(job: JobState<unknown>): void;
   /** Clears the active job; with `id`, only when it is that job (a newer job is left alone). */
   clearActive(id?: string): void;
+  /** How many `ProgressCard`s are on screen: a running job that a card already shows needs no extra banner. */
+  progressCards: number;
+  cardMounted(): void;
+  cardUnmounted(): void;
 }
 
 export const createJobsStore = () =>
@@ -16,6 +20,9 @@ export const createJobsStore = () =>
       active: null,
       setActive: (job) => set({ active: job }),
       clearActive: (id) => set((s) => (id === undefined || s.active?.id === id ? { active: null } : s)),
+      progressCards: 0,
+      cardMounted: () => set((s) => ({ progressCards: s.progressCards + 1 })),
+      cardUnmounted: () => set((s) => ({ progressCards: Math.max(0, s.progressCards - 1) })),
     })),
   );
 

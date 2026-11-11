@@ -13,7 +13,7 @@
   "app.stale.restoreHint.held": "Önceki oturumun taslağı duruyor ve geri yüklenebilir; bu oturumdaki yeni kesimler taslağa yazılmadı.",
   "app.error.title": "Bir şey ters gitti",
   "app.error.reload": "Yeniden yükle",
-  "app.busy": "Model meşgul: çalışan işin bitmesini bekleyin.",
+  "app.busy": "Model şu an çalışıyor; iş bitince devam edebilirsiniz.",
   "app.device.title": "Cihaz notu",
   "app.stepper.label": "Adımlar",
   "app.step.home": "Karşılama",

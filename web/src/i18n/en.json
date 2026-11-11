@@ -13,7 +13,7 @@
   "app.stale.restoreHint.held": "The earlier session's draft is still there and can be restored; this session's new cuts were not written to it.",
   "app.error.title": "Something went wrong",
   "app.error.reload": "Reload",
-  "app.busy": "The model is busy: wait for the running job to finish.",
+  "app.busy": "The model is working right now; you can continue when the job finishes.",
   "app.device.title": "Device note",
   "app.stepper.label": "Steps",
   "app.step.home": "Welcome",
