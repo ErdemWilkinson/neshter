@@ -219,3 +219,19 @@ test('a 409 busy flag also disables Geri yükle', async () => {
   render(<RestorePrompt />);
   expect(await screen.findByRole('button', { name: 'Geri yükle' })).toBeDisabled();
 });
+
+test('no draft request (so no 404 in the console) when the draft list has none for this model', async () => {
+  const api = mockApi({ drafts: vi.fn(async () => [{ sha256: 'f'.repeat(64), model_name: 'other', updated_at: 'x', unsaved_count: 3 }]) });
+  render(<RestorePrompt />);
+  await waitFor(() => expect(api.drafts).toHaveBeenCalledTimes(1));
+  expect(api.draft).not.toHaveBeenCalled();
+  expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull();
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
+});
+
+test('an unreachable draft list offers nothing and does not throw', async () => {
+  const api = mockApi({ drafts: vi.fn(async () => Promise.reject(new ApiError(500, 'internal', 'x'))) });
+  render(<RestorePrompt />);
+  await waitFor(() => expect(api.drafts).toHaveBeenCalled());
+  expect(api.draft).not.toHaveBeenCalled();
+});

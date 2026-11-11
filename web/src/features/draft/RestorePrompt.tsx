@@ -72,9 +72,12 @@ export function RestorePrompt() {
   useEffect(() => {
     if (sha === null) return;
     let cancelled = false;
+    // Ask the list first: `GET /api/draft/<sha>` answers 404 when there is none, and the browser logs that as an error.
     getApi()
-      .draft(sha)
+      .drafts()
+      .then((list) => (list.some((d) => d.sha256 === sha && d.unsaved_count > 0) ? getApi().draft(sha) : null))
       .then((body) => {
+        if (body === null) return;
         if (cancelled) return;
         const decoded = decodeDraft(body);
         if (body.unsaved_count <= 0 || (decoded.ok && decoded.items.length === 0)) return;
@@ -83,7 +86,7 @@ export function RestorePrompt() {
         setShown({ offer: { sha, name, count: body.unsaved_count, draft: decoded.ok ? decoded : null }, failure: null });
         draftStatusStore.getState().setHasDraft(true);
       })
-      .catch(() => undefined); // no draft (404) or an unreachable server: nothing to offer
+      .catch(() => undefined); // a draft that vanished meanwhile (404) or an unreachable server: nothing to offer
     return () => {
       cancelled = true;
     };
