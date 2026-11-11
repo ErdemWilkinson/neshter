@@ -1,0 +1,38 @@
+{
+  "id": "56c8ae7f07094eb7b6d80888f6ca4457",
+  "state": "done",
+  "progress": 1.0,
+  "message": "Rastgele kontrol 39/39 (erken durabilir)",
+  "result": {
+    "kl": 0.002287053212057799,
+    "kl_std": 0.00040309393079951406,
+    "kl_se": 0.0002850304519234773,
+    "n_prompts": 2,
+    "random_kls": [
+      0.001459571998566389,
+      0.001459571998566389
+    ],
+    "random_kl": 0.0014265322705539756,
+    "random_p05": 0.0011386900441721082,
+    "random_p95": 0.0017478636000305414,
+    "percentile": 100.0,
+    "n_drawn": 39,
+    "n_max": 39,
+    "k_exceed": 0,
+    "tau": 0.05,
+    "p_value": 0.025,
+    "p_kind": "full",
+    "p_min": 0.025,
+    "significant": true,
+    "stopped_early": false,
+    "layer_matched": true,
+    "seed": 0,
+    "session_measure_index": 1
+  },
+  "error": null,
+  "kind": "effect",
+  "error_code": null,
+  "created_at": "2026-11-11T08:22:24.203903+00:00",
+  "started_at": "2026-11-11T08:22:24.204066+00:00",
+  "finished_at": "2026-11-11T08:22:24.561824+00:00"
+}

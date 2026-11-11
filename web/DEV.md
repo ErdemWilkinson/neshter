@@ -14,6 +14,19 @@ $env:npm_config_cache = 'D:\neshter\npm-cache'; $env:PLAYWRIGHT_BROWSERS_PATH = 
 3. Checks: `npm --prefix web run test | lint | build`. `build` writes `neshter/web/dist` (+ `build-info.json`) and
    runs `scripts/check-dist.mjs`; `dist` is committed only in Task 15 / at releases.
 
+## API contract fixtures
+
+`src/api/__fixtures__/*.json` are shape-only copies of live server responses (lists cut to 2 items, strings to 200
+characters, absolute paths replaced by `C:\\Users\\x\\model`). `tests/test_web_contract.py` compares their key shapes with a
+tiny model behind `TestClient`; after a server response changes, regenerate and review the diff:
+
+```bash
+NESHTER_UPDATE_FIXTURES=1 CUDA_VISIBLE_DEVICES= D:/neshter/venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_web_contract.py
+```
+
+Then update `src/api/schemas.ts` (`FIXTURE_SCHEMAS` must name every fixture). UI tests that need specific values keep
+hand-made fixtures next to the test.
+
 ## D: workspace and the node_modules junction
 
 - `web/node_modules` is a **directory junction** to `D:\neshter\web\node_modules` (path keeps a `node_modules`

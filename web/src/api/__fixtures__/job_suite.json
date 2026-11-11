@@ -1,0 +1,91 @@
+{
+  "id": "fcad61d08dcf4ceea6607c72b43ced97",
+  "state": "done",
+  "progress": 1.0,
+  "message": "Metrikler hazır",
+  "result": {
+    "categories": [
+      {
+        "category": "code",
+        "n": 25,
+        "k_orig": 0,
+        "k_int": 0,
+        "a": 0,
+        "b": 0,
+        "c": 0,
+        "d": 25,
+        "broken_orig": 0,
+        "broken_int": 0,
+        "diff": {
+          "diff": 0.0,
+          "lo": -0.13319649395317873,
+          "hi": 0.13319649395317873,
+          "uncertain": true,
+          "p_value": 1.0,
+          "p_adj": null
+        },
+        "orig_ci": [
+          0.0,
+          0.13319649395317873
+        ],
+        "int_ci": [
+          0.0,
+          0.13319649395317873
+        ]
+      },
+      {
+        "category": "general",
+        "n": 25,
+        "k_orig": 2,
+        "k_int": 0,
+        "a": 0,
+        "b": 2,
+        "c": 0,
+        "d": 23,
+        "broken_orig": 2,
+        "broken_int": 1,
+        "diff": {
+          "diff": -0.08,
+          "lo": -0.24966512122957818,
+          "hi": 0.06518898740634908,
+          "uncertain": true,
+          "p_value": 0.5,
+          "p_adj": 0.5
+        },
+        "orig_ci": [
+          0.02221993369109193,
+          0.24966512122957818
+        ],
+        "int_ci": [
+          0.0,
+          0.13319649395317873
+        ]
+      }
+    ],
+    "summary": {
+      "level": "bad",
+      "tr": "Hedef davranış belirgin şekilde azalmadı; bu müdahale istenen etkiyi vermedi.",
+      "en": "The target behavior did not drop clearly; this change did not have the intended effect.",
+      "mde_points": 24
+    },
+    "metrics": {
+      "n_prompts": 40,
+      "kl_random_note": null,
+      "kl": 0.00047318306351371573,
+      "kl_std": 0.00016455814163447098,
+      "kl_random": 0.00041856572170217987,
+      "kl_random_p": 0.2857142857142857,
+      "kl_percentile": 75.0,
+      "direction_control": null,
+      "perplexity_orig": 524.2620621511231,
+      "perplexity_int": 523.2487116328438
+    },
+    "quick": true
+  },
+  "error": null,
+  "kind": "suite",
+  "error_code": null,
+  "created_at": "2026-11-11T08:22:25.235757+00:00",
+  "started_at": "2026-11-11T08:22:25.235849+00:00",
+  "finished_at": "2026-11-11T08:22:46.586723+00:00"
+}
