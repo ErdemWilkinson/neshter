@@ -7,6 +7,9 @@ import { ESLint } from 'eslint';
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const eslint = new ESLint({ cwd: WEB_DIR });
 
+// The first lint call in a worker pays the ESLint/typescript-eslint cold start (8-16 s on this machine).
+vi.setConfig({ testTimeout: 60_000 });
+
 async function ruleIds(relPath: string, code: string): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath: join(WEB_DIR, relPath) });
   return (result?.messages ?? []).map((m) => m.ruleId ?? 'parse');
