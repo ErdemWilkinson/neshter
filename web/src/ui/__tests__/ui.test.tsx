@@ -52,6 +52,28 @@ test('Dialog: Esc (the cancel event) calls onCancel and does not close it by its
   expect(dialog).toHaveAttribute('open');
 });
 
+test('Dialog: a close the browser did by itself calls onCancel while open is still true', () => {
+  const onCancel = vi.fn();
+  render(<Dialog open title="T" onCancel={onCancel} actions={<button type="button">x</button>} />);
+  const dialog = document.querySelector('dialog');
+  expect(dialog).toHaveAttribute('open');
+  act(() => {
+    dialog?.removeAttribute('open'); // what a second Esc does to a native dialog
+    dialog?.dispatchEvent(new Event('close'));
+  });
+  expect(onCancel).toHaveBeenCalledTimes(1);
+});
+
+test('Dialog: a close the parent asked for (open=false) does not call onCancel', () => {
+  const onCancel = vi.fn();
+  const { rerender } = render(<Dialog open title="T" onCancel={onCancel} actions={<button type="button">x</button>} />);
+  rerender(<Dialog open={false} title="T" onCancel={onCancel} actions={<button type="button">x</button>} />);
+  act(() => {
+    document.querySelector('dialog')?.dispatchEvent(new Event('close')); // the native close event that follows
+  });
+  expect(onCancel).not.toHaveBeenCalled();
+});
+
 test('Dialog: opens with focus on the first action and is named by its title', () => {
   render(
     <Dialog

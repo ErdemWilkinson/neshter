@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ComponentType } from 'react';
 import { useStore } from 'zustand';
 import { uiStore, type Route } from '@/core/stores/ui';
+import { DraftNotice } from '@/features/draft/DraftNotice';
+import { RestorePrompt } from '@/features/draft/RestorePrompt';
 import { useT } from '@/i18n';
 import { LiveRegion, announce } from '@/ui/LiveRegion';
 import { BusyBanner } from './BusyBanner';
@@ -56,6 +58,8 @@ export function Shell({ onClose }: { onClose: () => void }) {
       <Stepper />
       <DeviceBanner />
       <BusyBanner />
+      <DraftNotice />
+      <RestorePrompt />
       <main className="screen" ref={mainRef} tabIndex={-1}>
         <ErrorBoundary key={route}>
           <Screen />

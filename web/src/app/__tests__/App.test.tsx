@@ -1,13 +1,15 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useJob } from '@/api/useJob';
 import { setApi, getApi } from '@/api/currentApi';
 import { newBasketItem } from '@/core/basket';
+import { encodeDraft } from '@/core/draft';
 import { parseOp } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
 import { jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
+import { draftStatusStore } from '@/features/draft/draftStatus';
 import { setLang } from '@/i18n';
 import { App } from '../App';
 import { getSessionStorage } from '../sessionStorage';
@@ -27,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup(); // unmount before the stores are reset, so the reset does not update mounted components outside act
   setApi(null);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -36,6 +39,8 @@ afterEach(() => {
   uiStore.setState({ route: 'home', lang: 'tr', reducedMotion: 'system' });
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   jobsStore.setState({ active: null });
+  draftStatusStore.setState({ hasDraft: false, tooLarge: false });
+  Reflect.deleteProperty(navigator, 'locks');
   document.documentElement.removeAttribute('data-motion');
 });
 
@@ -56,7 +61,7 @@ test('boot order: prefs, then system and session, with the token on every call',
   window.history.replaceState(null, '', '/#token=secret%20t');
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Karşılama' });
-  expect(server.calls.map((call) => call.key)).toEqual(['GET /api/prefs', 'GET /api/system', 'GET /api/session']);
+  expect(server.calls.map((call) => call.key).slice(0, 3)).toEqual(['GET /api/prefs', 'GET /api/system', 'GET /api/session']);
   for (const call of server.calls) expect(headersOf(call.init)['X-Neshter-Token']).toBe('secret t');
   expect(window.location.hash).toBe('#/'); // the token is out of the address bar
 });
@@ -121,11 +126,38 @@ test('without a token outside dev the app asks for the printed address', async (
   expect(server.fetchFn).not.toHaveBeenCalled();
 });
 
-test('the heartbeat reports a dead server as stale "down" and an unsaved cut changes the wording', async () => {
+const SHA = '87c805a1b11d25aeec8ee7a1ac4cc5194940b5b2cb769e21bfdec28c9b56b13c';
+const aCut = () =>
+  newBasketItem(parseOp({ type: 'head', layer: 0, head: 1 }), { origin: 'heatmap', concept: null, addedAt: '2026-11-11T10:00:00.000Z' });
+
+test('the heartbeat reports a dead server as stale "down"; "kesimlerin taslakta" only once a server draft exists', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  basketStore.getState().add([
-    newBasketItem(parseOp({ type: 'head', layer: 0, head: 1 }), { origin: 'heatmap', concept: null, addedAt: '2026-11-11T10:00:00.000Z' }),
-  ]);
+  let alive = true;
+  mount(
+    fakeServer({
+      'GET /api/session': () => {
+        if (!alive) throw new TypeError('Failed to fetch');
+        return jsonResponse(200, sessionLoaded);
+      },
+      [`PUT /api/draft/${SHA}`]: (init) => jsonResponse(200, { ...(bodyOf(init) as object), updated_at: 'x' }),
+    }),
+  );
+  await screen.findByRole('heading', { name: 'Karşılama' });
+  act(() => {
+    basketStore.getState().add([aCut()]);
+  });
+  expect(screen.getByText('Kaydedilmemiş 1 kesim')).toBeInTheDocument();
+  await act(() => vi.advanceTimersByTimeAsync(700)); // autosave wrote the server draft
+  expect(draftStatusStore.getState().hasDraft).toBe(true);
+  alive = false;
+  await act(() => vi.advanceTimersByTimeAsync(10_500));
+  expect(await screen.findByRole('heading', { name: 'Sunucu kapandı; kesimlerin taslakta' })).toBeInTheDocument();
+  expect(sessionStore.getState().stale).toBe('down');
+});
+
+test('unsaved cuts without a server draft do not claim a draft on the down screen', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  basketStore.getState().add([aCut()]);
   let alive = true;
   mount(
     fakeServer({
@@ -136,19 +168,75 @@ test('the heartbeat reports a dead server as stale "down" and an unsaved cut cha
     }),
   );
   await screen.findByRole('heading', { name: 'Karşılama' });
-  expect(screen.getByText('Kaydedilmemiş 1 kesim')).toBeInTheDocument();
   alive = false;
   await act(() => vi.advanceTimersByTimeAsync(10_500));
-  expect(await screen.findByRole('heading', { name: 'Sunucu kapandı; kesimlerin taslakta' })).toBeInTheDocument();
-  expect(sessionStore.getState().stale).toBe('down');
+  expect(await screen.findByRole('heading', { name: 'Sunucu kapandı' })).toBeInTheDocument();
 });
 
 test('Kapat shuts the server down and shows the closed screen', async () => {
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Karşılama' });
   await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
-  expect(await screen.findByRole('heading', { name: 'Sunucu kapandı' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(1);
+});
+
+test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', async () => {
+  const { server } = mount();
+  await screen.findByRole('heading', { name: 'Karşılama' });
+  act(() => {
+    basketStore.getState().add([aCut()]);
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  expect(await screen.findByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz' })).toBeInTheDocument();
+  expect(server.count('POST /api/shutdown')).toBe(0);
+  await userEvent.click(screen.getByRole('button', { name: 'Kaydetmeden çık' }));
+  expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
+  expect(server.count('POST /api/shutdown')).toBe(1);
+});
+
+test('a failed shutdown shows an error card and leaves the app and its state untouched', async () => {
+  const { server } = mount(
+    fakeServer({ 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
+  );
+  await screen.findByRole('heading', { name: 'Karşılama' });
+  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  expect(await screen.findByText('Neşter kapatılamadı')).toBeInTheDocument();
+  expect(screen.getByText('Beklenmeyen bir hata oldu.')).toBeInTheDocument();
+  expect(screen.getByText('kapanmadı <b>x</b>').closest('details')).not.toBeNull();
+  expect(screen.getByRole('banner')).toBeInTheDocument(); // still the live app
+  expect(screen.queryByText('Neşter kapandı; bu sekmeyi kapatabilirsiniz')).toBeNull();
+  expect(sessionStore.getState().stale).toBe('none');
+  expect(server.count('POST /api/shutdown')).toBe(1);
+  await userEvent.click(screen.getByRole('button', { name: 'Tamam' }));
+  expect(screen.queryByText('Neşter kapatılamadı')).toBeNull();
+});
+
+test('App with lock other and no token renders MultiTabScreen, not the token screen', async () => {
+  vi.stubEnv('DEV', false);
+  const request = vi.fn(async (_name: string, _opts: unknown, cb: (lock: null) => unknown) => cb(null));
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
+  const server = fakeServer();
+  mount(server);
+  expect(await screen.findByRole('heading', { name: 'Neşter başka bir sekmede açık' })).toBeInTheDocument();
+  expect(screen.queryByText("Neşter'i terminalde yazdırılan adresten açın.")).toBeNull();
+  expect(request).toHaveBeenCalledWith('neshter-ui', { ifAvailable: true }, expect.any(Function));
+  expect(server.fetchFn).not.toHaveBeenCalled(); // nothing else is started
+});
+
+test('a restorable server draft is offered after boot and restoring fills the basket', async () => {
+  const stored = encodeDraft({ items: [aCut()], shelf: [], savedOps: [], model: { name: 'abc123', sha256: SHA }, prompts: [] });
+  const { server } = mount(
+    fakeServer({
+      [`GET /api/draft/${SHA}`]: () => jsonResponse(200, { ...stored, updated_at: 'x' }),
+      'POST /api/recipe/check': () => jsonResponse(200, { ok: true, errors: [], sha_mismatch: false }),
+      [`PUT /api/draft/${SHA}`]: (init) => jsonResponse(200, { ...(bodyOf(init) as object), updated_at: 'x' }),
+    }),
+  );
+  expect(await screen.findByText('Önceki oturumdan kaydedilmemiş 1 kesim var: geri yükle?')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Geri yükle' }));
+  expect(await screen.findByText('Kaydedilmemiş 1 kesim')).toBeInTheDocument();
+  expect(server.count('POST /api/recipe/check')).toBe(1);
 });
 
 test('a render error inside a screen shows the error screen, not a blank page', async () => {
