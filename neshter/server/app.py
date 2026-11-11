@@ -63,7 +63,17 @@ from neshter.loader import (
     pick_compute_dtype,
     planned_device,
 )
-from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
+from neshter.metrics import (
+    CPU_N_MAX_CAP,
+    DEFAULT_N_MAX,
+    DEFAULT_N_RANDOM,
+    MIN_N_MAX,
+    kl_effect,
+    load_neutral,
+    perplexity,
+    recipe_effect,
+    sequential_real_effect,
+)
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
@@ -92,7 +102,7 @@ Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
 
 QUICK_GUARD = "general"  # hızlı kip: hedef kategori + bu "kimseyi bozmadım" kontrol kategorisi
 QUICK_MAX_NEW_TOKENS = 64
-QUICK_N_RANDOM = 20  # kullanıcıya dönük alt sınır (EffectReq.n_random ge=20)
+QUICK_N_RANDOM = 20  # hızlı kipte tarif KL kontrolünün sabit çekiş sayısı (/api/effect sıralı testi ayrı: EffectReq.n_max)
 MAX_ACTIVITY_TOKENS = 512  # /api/activity yanıtı L×H×T'ye büyür: token sayısı sınırlanır
 MAX_ACTIVITY_CHARS = 8000  # tokenlaştırmadan önce ucuz üst sınır
 
@@ -124,7 +134,8 @@ class LoadReq(_Req):
 class EffectReq(_Req):
     heads: list[tuple[int, int]] = Field(min_length=1)
     prompts: list[str] | None = Field(default=None, min_length=1)
-    n_random: int = Field(DEFAULT_N_RANDOM, ge=20, le=50)  # kullanıcıya dönük alt sınır 20; kütüphane en az 1
+    n_max: int = Field(DEFAULT_N_MAX, ge=MIN_N_MAX, le=999)  # sıralı testin en çok çekişi; CPU'da en çok CPU_N_MAX_CAP
+    seed: int = Field(0, ge=0, le=2**32 - 1)  # sabit tohum: aynı istek aynı çekişleri verir
 
 
 class HuntReq(_Req):
@@ -216,6 +227,8 @@ class Session:
         self.safety_dirs: list[torch.Tensor] = []
         # Aynı kavramlardan bulunmuş (katman, head) çiftleri (avın ölçülen ilk MEASURE_TOP_K head'i).
         self.safety_heads: set[tuple[int, int]] = set()
+        # Bu modelle tamamlanan (iptal edilmemiş) /api/effect ölçümleri: seçilerek bulunan sonuç hipotezdir.
+        self.measure_count = 0
 
     def require(self) -> LoadedModel:
         if self.lm is None:
@@ -226,6 +239,7 @@ class Session:
         self.lm = None
         self.safety_dirs = []
         self.safety_heads = set()
+        self.measure_count = 0
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -420,6 +434,12 @@ def _free_bytes(out_dir: str) -> int:
         return int(shutil.disk_usage(p).free)
     except OSError as e:  # var olmayan sürücü (ör. Q:\x), erişilemeyen birim
         raise HTTPException(422, "Hedef klasörün sürücüsü bulunamadı.") from e
+
+
+def _check_cpu_cap(lm: LoadedModel, n_max: int) -> None:
+    """CPU'da sıralı testin çekiş üst sınırı (ValueError -> 422 / invalid_input)."""
+    if next(lm.model.parameters()).device.type == "cpu" and n_max > CPU_N_MAX_CAP:
+        raise ValueError(f"CPU'da en çok {CPU_N_MAX_CAP} çekiş yapılabilir (istenen: {n_max}).")
 
 
 def _default_effect_prompts() -> list[str]:
@@ -686,6 +706,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             "default_method": default_method(lm),
             "safety_dirs": len(session.safety_dirs),
             "safety_heads": len(session.safety_heads),
+            "measure_count": session.measure_count,
         }
 
     # -- sunucu tarafı taslak / tercih (model SHA-256'sına göre; sepetin aynası, doğruluk kaynağı değil) --
@@ -789,7 +810,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
     @app.post("/api/effect")
     def effect(body: EffectReq):
-        arch = require_model().arch
+        lm0 = require_model()
+        arch = lm0.arch
+        with _bad_input():
+            _check_cpu_cap(lm0, body.n_max)
         for layer, head in body.heads:
             if not (0 <= layer < arch.n_layers and 0 <= head < arch.n_heads):
                 raise HTTPException(
@@ -803,13 +827,16 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 lm = require_model()
                 if cancel.is_set():
                     return None
+                _check_cpu_cap(lm, body.n_max)  # iş kuyruktayken model değişmiş olabilir
                 report(0.1, "Gerçek etki hesaplanıyor")
-                return asdict(
-                    real_effect(
-                        lm, heads, prompts, n_random=body.n_random,
-                        progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
-                    )
+                eff = sequential_real_effect(
+                    lm, heads, prompts, n_max=body.n_max, seed=body.seed,
+                    progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
                 )
+                if cancel.is_set():  # iptal edilen ölçüm sayılmaz
+                    return None
+                session.measure_count += 1
+                return asdict(eff) | {"session_measure_index": session.measure_count}
 
         return start(fn, "effect")
 

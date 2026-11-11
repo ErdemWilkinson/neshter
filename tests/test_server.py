@@ -297,21 +297,92 @@ def test_effect_job(ready):
     job = c.post("/api/effect", json=body, headers=a).json()["job_id"]
     res = wait_done(c, a, job)["result"]
     assert set(res) == {
-        "kl", "kl_std", "kl_se", "n_prompts", "random_kl", "random_kls", "random_p05", "random_p95",
-        "percentile", "p_value", "n_random", "layer_matched", "direction_control",
+        "kl", "kl_std", "kl_se", "n_prompts", "random_kls", "random_kl", "random_p05", "random_p95",
+        "percentile", "n_drawn", "n_max", "k_exceed", "tau", "p_value", "p_kind", "p_min", "significant",
+        "stopped_early", "layer_matched", "seed", "session_measure_index",
     }
-    assert res["n_prompts"] == 2 and res["n_random"] == 30 and len(res["random_kls"]) == 30
-    assert 0 <= res["percentile"] <= 100 and 0 < res["p_value"] <= 1
-    assert res["layer_matched"] is True and res["direction_control"] is None
+    assert res["n_prompts"] == 2 and len(res["random_kls"]) == res["n_drawn"] <= res["n_max"]
+    assert 0 < res["p_value"] <= 1 and res["p_kind"] in ("full", "besag_clifford")
+    assert res["layer_matched"] is True
 
 
-def test_effect_n_random_bounds(ready):
+def test_effect_returns_sequential_fields(ready):
     c, a = ready
-    for bad in (19, 51):
-        assert c.post("/api/effect", json={"heads": [[0, 0]], "n_random": bad}, headers=a).status_code == 422
-    body = {"heads": [[0, 0]], "prompts": ["bir iki"], "n_random": 20}
+    body = {"heads": [[0, 1]], "prompts": ["merhaba dünya"]}
     res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
-    assert res["n_random"] == 20
+    assert {"kl", "n_drawn", "n_max", "k_exceed", "p_value", "p_kind", "p_min", "tau", "significant",
+            "stopped_early", "seed", "session_measure_index"} <= res.keys()
+    assert res["n_max"] == 39 and res["p_min"] == pytest.approx(0.025) and res["seed"] == 0
+    assert res["tau"] == pytest.approx(0.05)
+
+
+def test_effect_n_max_bounds(ready):
+    c, a = ready
+    for bad in (18, 1000):
+        r = c.post("/api/effect", json={"heads": [[0, 0]], "n_max": bad}, headers=a)
+        assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert c.post("/api/effect", json={"heads": [[0, 0]], "n_random": 30}, headers=a).status_code == 422  # kaldırıldı
+    body = {"heads": [[0, 0]], "prompts": ["bir iki"], "n_max": 19, "seed": 4}
+    res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+    assert res["n_max"] == 19 and res["seed"] == 4 and res["p_min"] == pytest.approx(0.05)
+
+
+def test_effect_cpu_cap(ready):
+    c, a = ready
+    assert c.get("/api/session", headers=a).json()["device"] == "cpu"
+    r = c.post("/api/effect", json={"heads": [[0, 0]], "n_max": 200}, headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert "CPU'da en çok 199 çekiş" in r.json()["detail"]
+
+
+def test_session_measure_count_increments(ready):
+    c, a = ready
+    before = c.get("/api/session", headers=a).json()["measure_count"]
+    body = {"heads": [[0, 1]], "prompts": ["bir iki"], "n_max": 19}
+    for i in (1, 2):
+        res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+        assert res["session_measure_index"] == before + i
+        assert c.get("/api/session", headers=a).json()["measure_count"] == before + i
+
+
+def _fake_sequential_effect(n_prompts: int):
+    from neshter.metrics import SequentialEffect
+
+    return SequentialEffect(
+        kl=0.0, kl_std=0.0, kl_se=0.0, n_prompts=n_prompts, random_kls=[0.0] * 19, random_kl=0.0,
+        random_p05=0.0, random_p95=0.0, percentile=0.0, n_drawn=19, n_max=19, k_exceed=0, tau=0.05,
+        p_value=0.05, p_kind="full", p_min=0.05, significant=True, stopped_early=False, layer_matched=True, seed=0,
+    )
+
+
+@pytest.mark.parametrize("raise_cancelled", [True, False])
+def test_session_measure_count_not_incremented_by_cancelled_effect(ready, monkeypatch, raise_cancelled):
+    from neshter.progress import Cancelled
+
+    def fake(lm, heads, prompts, cancel=None, **kw):
+        cancel.set()  # kullanıcı iptali (çekişler arasında ya da sonuç dönerken)
+        if raise_cancelled:
+            raise Cancelled()
+        return _fake_sequential_effect(len(prompts))
+
+    c, a = ready
+    before = c.get("/api/session", headers=a).json()["measure_count"]
+    monkeypatch.setattr(app_module, "sequential_real_effect", fake)
+    job = c.post("/api/effect", json={"heads": [[0, 1]], "prompts": ["bir"]}, headers=a).json()["job_id"]
+    wait_done(c, a, job, expect="cancelled")
+    assert c.get("/api/session", headers=a).json()["measure_count"] == before
+
+
+def test_session_measure_count_resets_on_load(tiny_model_dir):
+    c, a = _make(), {"X-Neshter-Token": TOKEN}
+    load = {"path": str(tiny_model_dir), "dtype": "float32"}
+    wait_done(c, a, c.post("/api/session/load", json=load, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 0
+    body = {"heads": [[0, 1]], "prompts": ["bir iki"], "n_max": 19}
+    wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 1
+    wait_done(c, a, c.post("/api/session/load", json=load, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 0
 
 
 def test_recipe_metrics_adds_percentile_and_p(lm):
@@ -951,15 +1022,15 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
     seen = {}
 
     def fake(lm, heads, prompts, **kw):
-        from neshter.metrics import EffectResult
-
         seen["prompts"] = prompts
-        return EffectResult(0.0, 0.0, 0.0, len(prompts), 0.0, [0.0] * 20, 0.0, 0.0, 0.0, 1.0, 20, True, None)
+        seen["kw"] = {k: kw[k] for k in ("n_max", "seed")}
+        return _fake_sequential_effect(len(prompts))
 
-    monkeypatch.setattr(app_module, "real_effect", fake)
+    monkeypatch.setattr(app_module, "sequential_real_effect", fake)
     c, a = ready
     wait_done(c, a, c.post("/api/effect", json={"heads": [[0, 1]]}, headers=a).json()["job_id"])
     assert seen["prompts"] == load_neutral()
+    assert seen["kw"] == {"n_max": 39, "seed": 0}
 
 
 # --- Fix wave: I1 (SHA doğrulama), I2 (güvenlik etiketi), Minor 7/11 ---------------------------------
