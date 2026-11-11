@@ -1,4 +1,4 @@
-import { FIXTURE_SCHEMAS, session } from '../schemas';
+import { FIXTURE_SCHEMAS, models, session } from '../schemas';
 
 const fixtures = import.meta.glob<unknown>('../__fixtures__/*.json', { eager: true, import: 'default' });
 
@@ -43,4 +43,17 @@ test('the effect result carries the sequential-test fields', () => {
   for (const key of ['n_drawn', 'n_max', 'k_exceed', 'p_kind', 'stopped_early', 'significant', 'session_measure_index']) {
     expect(job.result).toHaveProperty(key);
   }
+});
+
+test('a model whose header gave no layer/head counts still parses (scan returns null ints)', () => {
+  const [entry] = load('models') as Record<string, unknown>[];
+  const odd = {
+    ...entry,
+    supported: false,
+    unsupported_reason: 'unsupported_family',
+    arch: { family: 'clip', n_layers: null, n_heads: null, n_kv_heads: null, d_mlp: null },
+  };
+  const parsed = FIXTURE_SCHEMAS['models'].parse([entry, odd, { ...entry, arch: null }]);
+  expect(parsed).toHaveLength(3);
+  expect(models.safeParse([{ ...entry, arch: { family: 'x', n_layers: 'two' } }]).success).toBe(false);
 });

@@ -24,7 +24,7 @@ export function startHeartbeat(api: Api, onDown: () => void, options: number | H
       await api.session();
       if (down) {
         down = false;
-        onUp?.();
+        if (!stopped) onUp?.();
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === 'network') {

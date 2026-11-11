@@ -1,4 +1,5 @@
-import type { Api } from '../client';
+import { createApi, type Api } from '../client';
+import { jsonResponse, sseResponse } from './helpers';
 import { ApiError } from '../errors';
 import { attachJob } from '../jobs';
 import type { JobState } from '../schemas';
@@ -190,4 +191,23 @@ test('ignores stream events that are not job states', async () => {
   const seen: number[] = [];
   await attachJob(api, 'j1', (s) => seen.push(s.progress), new AbortController().signal, fast);
   expect(seen).toEqual([0, 1]);
+});
+
+test('an error thrown by onUpdate during streaming rejects instead of retrying forever', async () => {
+  const bug = new TypeError('consumer bug');
+  const fetchFn = vi.fn(async (input: RequestInfo | URL) =>
+    String(input).endsWith('/events')
+      ? sseResponse([`event: progress
+data: ${JSON.stringify(state({ progress: 0.5 }))}
+
+`])
+      : jsonResponse(200, state({})),
+  );
+  const api = createApi({ token: 't', fetchFn: fetchFn as unknown as typeof fetch, onStale: vi.fn() });
+  const onUpdate = vi.fn((s: JobState<Result>) => {
+    if (s.progress === 0.5) throw bug;
+  });
+  await expect(attachJob<Result>(api, 'j1', onUpdate, new AbortController().signal, fast)).rejects.toBe(bug);
+  expect(fetchFn.mock.calls.filter(([url]) => String(url).endsWith('/events'))).toHaveLength(1);
+  expect(active()).toBeNull();
 });
