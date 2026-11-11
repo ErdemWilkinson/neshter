@@ -17,5 +17,5 @@
     "types": ["vite/client", "vitest/globals", "node"],
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src", "scripts", "vitest.setup.ts", "vite.config.ts"]
+  "include": ["src", "scripts", "e2e", "vitest.setup.ts", "vite.config.ts", "playwright.config.ts"]
 }
