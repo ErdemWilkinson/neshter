@@ -2260,6 +2260,14 @@ def test_shutdown_calls_request_exit(client, auth):
     assert r.status_code == 202 and r.json() == {"ok": True} and called == [1]
 
 
+def test_shutdown_refuses_bad_origin_and_host_even_with_token(client, auth):
+    called = []
+    client.app.state.request_exit = lambda: called.append(1)
+    assert client.post("/api/shutdown", headers={**auth, "Origin": "http://evil.example"}).status_code == 403
+    assert client.post("/api/shutdown", headers={**auth, "Host": "evil.example"}).status_code == 403
+    assert called == []
+
+
 def test_shutdown_without_hook_is_501(client, auth):
     r = client.post("/api/shutdown", headers=auth)
     assert r.status_code == 501 and r.json()["error_code"] == "unsupported"
