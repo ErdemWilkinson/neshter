@@ -997,3 +997,63 @@ select {
   justify-content: space-between;
   gap: 12px;
 }
+
+.save-screen,
+.save-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.save-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.save-form input[type='text'] {
+  padding: 6px 8px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+.field-error {
+  margin: 0;
+  min-height: 1em;
+  color: var(--badge-explore);
+}
+
+.save-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.save-format {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge-safety {
+  align-self: flex-start;
+  color: var(--badge-explore);
+}
+
+.result-card {
+  padding: 16px;
+}
+
+.result-card dt {
+  color: var(--text-2);
+}
+
+.result-card dd {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}

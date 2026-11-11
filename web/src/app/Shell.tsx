@@ -8,6 +8,7 @@ import { Concept } from '@/screens/Concept';
 import { Explore } from '@/screens/Explore';
 import { Home } from '@/screens/Home';
 import { Models } from '@/screens/Models';
+import { Save } from '@/screens/Save';
 import { useT } from '@/i18n';
 import { LiveRegion, announce } from '@/ui/LiveRegion';
 import { BusyBanner } from './BusyBanner';
@@ -16,19 +17,9 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { Header } from './Header';
 import { STEP_LABELS, Stepper } from './Stepper';
 
-function Placeholder({ route }: { route: Route }) {
-  const t = useT();
-  return <h1>{t(STEP_LABELS[route])}</h1>;
-}
-
-const placeholder = (route: Route): ComponentType =>
-  function PlaceholderScreen() {
-    return <Placeholder route={route} />;
-  };
-
 /**
- * The route table. Tasks 9-14 each replace their own entries here with the real screen; every key of the Route
- * union must have an entry (the type enforces it, `Shell.test` pins it at run time).
+ * The route table: every key of the Route union must have an entry (the type enforces it, `Shell.test` pins it at
+ * run time).
  */
 export const SCREENS: Record<Route, ComponentType> = {
   home: Home,
@@ -36,7 +27,7 @@ export const SCREENS: Record<Route, ComponentType> = {
   explore: Explore,
   concept: Concept,
   compare: Compare,
-  save: placeholder('save'),
+  save: Save,
 };
 
 export function Shell({ onClose }: { onClose: () => void }) {
