@@ -88,7 +88,7 @@ class ApiError(HTTPException):
         self.code = code
 
 
-_STATUS_CODES = {403: "forbidden", 404: "not_found", 409: "busy", 422: "invalid_input"}
+_STATUS_CODES = {403: "forbidden", 404: "not_found", 409: "busy", 413: "too_large", 422: "invalid_input"}
 
 
 def _http_code(exc: StarletteHTTPException) -> str:
