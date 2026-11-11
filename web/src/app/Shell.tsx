@@ -3,6 +3,8 @@ import { useStore } from 'zustand';
 import { uiStore, type Route } from '@/core/stores/ui';
 import { DraftNotice } from '@/features/draft/DraftNotice';
 import { RestorePrompt } from '@/features/draft/RestorePrompt';
+import { Home } from '@/screens/Home';
+import { Models } from '@/screens/Models';
 import { useT } from '@/i18n';
 import { LiveRegion, announce } from '@/ui/LiveRegion';
 import { BusyBanner } from './BusyBanner';
@@ -26,8 +28,8 @@ const placeholder = (route: Route): ComponentType =>
  * union must have an entry (the type enforces it, `Shell.test` pins it at run time).
  */
 export const SCREENS: Record<Route, ComponentType> = {
-  home: placeholder('home'),
-  models: placeholder('models'),
+  home: Home,
+  models: Models,
   explore: placeholder('explore'),
   concept: placeholder('concept'),
   compare: placeholder('compare'),
