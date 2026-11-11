@@ -1,0 +1,26 @@
+[
+  {
+    "id": "287805a227ef430394632d0e444dcc96",
+    "state": "done",
+    "progress": 1.0,
+    "message": "SHA-256 hazır",
+    "error": null,
+    "kind": "load",
+    "error_code": null,
+    "created_at": "2026-11-11T08:22:23.653479+00:00",
+    "started_at": "2026-11-11T08:22:23.656195+00:00",
+    "finished_at": "2026-11-11T08:22:23.989932+00:00"
+  },
+  {
+    "id": "56c8ae7f07094eb7b6d80888f6ca4457",
+    "state": "done",
+    "progress": 1.0,
+    "message": "Rastgele kontrol 39/39 (erken durabilir)",
+    "error": null,
+    "kind": "effect",
+    "error_code": null,
+    "created_at": "2026-11-11T08:22:24.203903+00:00",
+    "started_at": "2026-11-11T08:22:24.204066+00:00",
+    "finished_at": "2026-11-11T08:22:24.561824+00:00"
+  }
+]

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import random
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Literal
@@ -212,7 +212,7 @@ def kl_effect(
     return _kl_from(lm, base, prompts, interventions, last_k)
 
 
-DEFAULT_N_RANDOM = 30  # rastgele kontrol çekilişi sayısı (kullanıcıya dönük alt sınır sunucuda: 20)
+DEFAULT_N_RANDOM = 30  # suite/tarif yolunun sabit rastgele kontrol çekiş sayısı (/api/effect sıralı test kullanır)
 
 
 @dataclass
@@ -311,6 +311,33 @@ def random_control(
     return control, matched
 
 
+def _draw_controls(
+    lm: LoadedModel, interventions: Sequence[Intervention], n: int, seed: int
+) -> tuple[list[list[Intervention]], bool]:
+    """n rastgele kontrol (tek random.Random + torch.Generator, tohum `seed`; çekiş sırası sabit) ve
+    hepsinin katman eşleşmeli olup olmadığı. Havuz yetmezse ValueError (ölçümden önce)."""
+    rng, gen = random.Random(seed), torch.Generator().manual_seed(seed)
+    drawn = [random_control(lm, interventions, rng, gen) for _ in range(n)]
+    return [control for control, _ in drawn], all(matched for _, matched in drawn)
+
+
+def _target_kl(
+    lm: LoadedModel,
+    base: list[torch.Tensor],
+    prompts: list[str],
+    interventions: Sequence[Intervention],
+    last_k: int,
+    progress: ProgressFn | None,
+) -> tuple[float, float]:
+    """Seçili müdahalenin ortalama KL'si ve popülasyon standart sapması (prompt başına değerlerden)."""
+    per_prompt = _kl_from(lm, base, prompts, interventions, last_k)
+    kl = sum(per_prompt) / len(per_prompt)
+    kl_std = math.sqrt(sum((v - kl) ** 2 for v in per_prompt) / len(per_prompt))  # popülasyon
+    if progress is not None:
+        progress(0.05, "Seçili müdahalenin etkisi ölçüldü")
+    return kl, kl_std
+
+
 def recipe_effect(
     lm: LoadedModel,
     interventions: Sequence[Intervention],
@@ -333,19 +360,13 @@ def recipe_effect(
         raise ValueError(f"n_random en az 1 olmalı: {n_random}.")
     check_cancel(cancel)
     interventions = _dedupe(interventions)
-    rng, gen = random.Random(seed), torch.Generator().manual_seed(seed)
-    drawn = [random_control(lm, interventions, rng, gen) for _ in range(n_random)]  # önce doğrula
-    layer_matched = all(matched for _, matched in drawn)
+    drawn, layer_matched = _draw_controls(lm, interventions, n_random, seed)  # önce doğrula
 
     base = _log_probs_batch(lm, prompts, last_k, cancel)
-    per_prompt = _kl_from(lm, base, prompts, interventions, last_k)
-    kl = sum(per_prompt) / len(per_prompt)
-    kl_std = math.sqrt(sum((v - kl) ** 2 for v in per_prompt) / len(per_prompt))  # popülasyon
-    if progress is not None:
-        progress(0.05, "Seçili müdahalenin etkisi ölçüldü")
+    kl, kl_std = _target_kl(lm, base, prompts, interventions, last_k, progress)
 
     random_kls: list[float] = []
-    for i, (control, _) in enumerate(drawn):
+    for i, control in enumerate(drawn):
         check_cancel(cancel)
         values = _kl_from(lm, base, prompts, control, last_k)
         random_kls.append(sum(values) / len(values))
@@ -380,6 +401,149 @@ def real_effect(
 ) -> EffectResult:
     """Seçili head'lerin KL etkisi; katman eşleşmeli rastgele head kümeleriyle (seçilenler hariç) kontrol."""
     return recipe_effect(lm, heads, prompts, n_random=n_random, seed=seed, progress=progress, cancel=cancel)
+
+
+# --- Sıralı (Besag–Clifford) permütasyon testi: /api/effect ----------------------------------------------
+#
+# N_max çekiş baştan seçilir (sonuca bakıp uzatılmaz); karar tam N_max kuralıdır: p = (1 + k)/(1 + N_max) <= τ.
+# k, bu kuralın hâlâ sağlanabileceği en büyük değeri (futility_k) aşınca kalan çekişler kararı değiştiremez:
+# çekim durur ve Besag–Clifford p = k/n raporlanır (asla yeniden hesaplanmış (1 + k)/(1 + n) değil).
+
+DEFAULT_N_MAX = 39  # p_min = 1/40 = 0.025: m = 2 ölçümde Holm'a dayanır
+MIN_N_MAX = 19  # p_min = 0.05: tek ölçümde anlamlılık gösterebilen en küçük N
+CPU_N_MAX_CAP = 199  # CPU'da en çok çekiş (sunucu 422 verir)
+TAU = 0.05
+
+
+def futility_k(n_max: int, tau: float = TAU) -> int:
+    """(1 + k)/(1 + n_max) <= tau koşulunu sağlayan en büyük k (hiçbiri sağlamıyorsa -1)."""
+    return math.floor(tau * (n_max + 1) + 1e-9) - 1
+
+
+@dataclass
+class PermutationOutcome:
+    n_drawn: int
+    k_exceed: int  # #{çekiş >= hedef}
+    p_value: float  # "full": (1 + k)/(1 + n_max); "besag_clifford": k/n_drawn
+    p_kind: Literal["full", "besag_clifford"]
+    significant: bool  # her zaman tam n_max kuralının kararı
+    stopped_early: bool
+
+
+def sequential_permutation(
+    target: float, draws: Iterable[float], n_max: int, tau: float = TAU
+) -> tuple[PermutationOutcome, list[float]]:
+    """Çekişleri teker teker tüketir; durduktan sonra bir sonraki değeri istemez. (sonuç, görülen değerler).
+
+    Karar, n_max çekişin hepsiyle verilecek kararla aynıdır (anlamlı ⇔ k <= futility_k). Son çekişte durma
+    eşiği aşılırsa tüm çekişler yapılmış sayılır ve tam p raporlanır.
+    """
+    if n_max < 1:
+        raise ValueError(f"n_max en az 1 olmalı: {n_max}.")
+    k_max = futility_k(n_max, tau)
+    if k_max < 0:
+        raise ValueError(f"{n_max} çekişle p en az {1 / (n_max + 1):.4g} olur; τ = {tau} hiç sağlanamaz.")
+    it = iter(draws)
+    seen: list[float] = []
+    k = 0
+    while len(seen) < n_max:
+        try:
+            value = next(it)
+        except StopIteration:
+            raise ValueError(f"Çekişler bitti: {len(seen)}/{n_max}.") from None
+        seen.append(value)
+        k += value >= target  # eşitlik aşım sayılır (muhafazakâr)
+        if k > k_max and len(seen) < n_max:
+            return PermutationOutcome(len(seen), k, k / len(seen), "besag_clifford", False, True), seen
+    return PermutationOutcome(n_max, k, (1 + k) / (1 + n_max), "full", k <= k_max, False), seen
+
+
+@dataclass
+class SequentialEffect:
+    kl: float
+    kl_std: float
+    kl_se: float  # kl_std / sqrt(n_prompts)
+    n_prompts: int
+    random_kls: list[float]  # yalnız çekilenler (n_drawn tane), çekiş sırasıyla
+    random_kl: float | None  # çekilenlerin ortalaması; n_drawn < 2 ise None
+    random_p05: float | None
+    random_p95: float | None
+    percentile: float | None  # 100 * #{rastgele < kl} / n_drawn; n_drawn < 2 ise None
+    n_drawn: int
+    n_max: int
+    k_exceed: int
+    tau: float
+    p_value: float
+    p_kind: str  # "full" | "besag_clifford"
+    p_min: float  # 1/(n_max + 1): bu N ile ulaşılabilecek en küçük p
+    significant: bool
+    stopped_early: bool
+    layer_matched: bool
+    seed: int
+
+
+def sequential_real_effect(
+    lm: LoadedModel,
+    heads: list[HeadAblation],
+    prompts: list[str],
+    n_max: int = DEFAULT_N_MAX,
+    tau: float = TAU,
+    seed: int = 0,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> SequentialEffect:
+    """Seçili head'lerin KL etkisi; katman eşleşmeli rastgele kontrollerle sıralı permütasyon testi.
+
+    Kontroller recipe_effect ile aynı sırada çekilir (aynı tohum ⇒ aynı önek). Çekişler teker teker ölçülür;
+    sonuç belli olunca (futility) durulur.
+    """
+    if n_max < MIN_N_MAX:
+        raise ValueError(f"n_max en az {MIN_N_MAX} olmalı: {n_max}.")
+    if not prompts:
+        raise ValueError("En az bir prompt gerekli.")
+    if futility_k(n_max, tau) < 0:  # ölçmeden önce: bu N ile τ hiç sağlanamaz
+        raise ValueError(f"{n_max} çekişle p en az {1 / (n_max + 1):.4g} olur; τ = {tau} hiç sağlanamaz.")
+    check_cancel(cancel)
+    last_k = 16  # recipe_effect varsayılanıyla aynı (önek eşliği)
+    interventions = _dedupe(heads)
+    controls, layer_matched = _draw_controls(lm, interventions, n_max, seed)  # önce doğrula
+
+    base = _log_probs_batch(lm, prompts, last_k, cancel)
+    kl, kl_std = _target_kl(lm, base, prompts, interventions, last_k, progress)
+
+    def draws() -> Iterator[float]:
+        for i, control in enumerate(controls):
+            check_cancel(cancel)
+            values = _kl_from(lm, base, prompts, control, last_k)
+            if progress is not None:
+                progress(0.05 + 0.95 * (i + 1) / n_max, f"Rastgele kontrol {i + 1}/{n_max} (erken durabilir)")
+            yield sum(values) / len(values)
+
+    out, random_kls = sequential_permutation(kl, draws(), n_max, tau)
+    band = len(random_kls) >= 2
+    p05, p95 = (float(x) for x in np.percentile(random_kls, [5, 95])) if band else (None, None)
+    return SequentialEffect(
+        kl=kl,
+        kl_std=kl_std,
+        kl_se=kl_std / math.sqrt(len(prompts)),
+        n_prompts=len(prompts),
+        random_kls=random_kls,
+        random_kl=sum(random_kls) / len(random_kls) if band else None,
+        random_p05=p05,
+        random_p95=p95,
+        percentile=100.0 * sum(r < kl for r in random_kls) / len(random_kls) if band else None,
+        n_drawn=out.n_drawn,
+        n_max=n_max,
+        k_exceed=out.k_exceed,
+        tau=tau,
+        p_value=out.p_value,
+        p_kind=out.p_kind,
+        p_min=1 / (n_max + 1),
+        significant=out.significant,
+        stopped_early=out.stopped_early,
+        layer_matched=layer_matched,
+        seed=seed,
+    )
 
 
 def perplexity(

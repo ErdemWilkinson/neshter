@@ -3,6 +3,8 @@
 import base64
 import functools
 import json
+import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -136,6 +138,13 @@ def test_every_api_route_needs_token(client):
         ("get", "/api/system"),
         ("post", "/api/activity"),
         ("post", "/api/export/estimate"),
+        ("post", "/api/shutdown"),
+        ("get", "/api/drafts"),
+        ("get", f"/api/draft/{'a' * 64}"),
+        ("put", f"/api/draft/{'a' * 64}"),
+        ("delete", f"/api/draft/{'a' * 64}"),
+        ("get", "/api/prefs"),
+        ("put", "/api/prefs"),
         ("get", "/api/yok-boyle-bir-uc"),
     ]:
         assert getattr(client, method)(path).status_code == 403, path
@@ -157,7 +166,7 @@ def test_every_registered_api_route_is_behind_the_guard(client):
     paths = {r.path for r in routes}
     assert {"/api/jobs", "/api/session", "/api/system", "/api/export/estimate"} <= paths
     for r in routes:
-        url = r.path.replace("{job_id}", "x")
+        url = r.path.replace("{job_id}", "x").replace("{sha}", "a" * 64)
         for method in r.methods - {"HEAD", "OPTIONS"}:
             assert client.request(method, url).status_code == 403, (method, r.path)
             bad = client.request(method, url, headers={"X-Neshter-Token": "yanlis"})
@@ -288,21 +297,92 @@ def test_effect_job(ready):
     job = c.post("/api/effect", json=body, headers=a).json()["job_id"]
     res = wait_done(c, a, job)["result"]
     assert set(res) == {
-        "kl", "kl_std", "kl_se", "n_prompts", "random_kl", "random_kls", "random_p05", "random_p95",
-        "percentile", "p_value", "n_random", "layer_matched", "direction_control",
+        "kl", "kl_std", "kl_se", "n_prompts", "random_kls", "random_kl", "random_p05", "random_p95",
+        "percentile", "n_drawn", "n_max", "k_exceed", "tau", "p_value", "p_kind", "p_min", "significant",
+        "stopped_early", "layer_matched", "seed", "session_measure_index",
     }
-    assert res["n_prompts"] == 2 and res["n_random"] == 30 and len(res["random_kls"]) == 30
-    assert 0 <= res["percentile"] <= 100 and 0 < res["p_value"] <= 1
-    assert res["layer_matched"] is True and res["direction_control"] is None
+    assert res["n_prompts"] == 2 and len(res["random_kls"]) == res["n_drawn"] <= res["n_max"]
+    assert 0 < res["p_value"] <= 1 and res["p_kind"] in ("full", "besag_clifford")
+    assert res["layer_matched"] is True
 
 
-def test_effect_n_random_bounds(ready):
+def test_effect_returns_sequential_fields(ready):
     c, a = ready
-    for bad in (19, 51):
-        assert c.post("/api/effect", json={"heads": [[0, 0]], "n_random": bad}, headers=a).status_code == 422
-    body = {"heads": [[0, 0]], "prompts": ["bir iki"], "n_random": 20}
+    body = {"heads": [[0, 1]], "prompts": ["merhaba dünya"]}
     res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
-    assert res["n_random"] == 20
+    assert {"kl", "n_drawn", "n_max", "k_exceed", "p_value", "p_kind", "p_min", "tau", "significant",
+            "stopped_early", "seed", "session_measure_index"} <= res.keys()
+    assert res["n_max"] == 39 and res["p_min"] == pytest.approx(0.025) and res["seed"] == 0
+    assert res["tau"] == pytest.approx(0.05)
+
+
+def test_effect_n_max_bounds(ready):
+    c, a = ready
+    for bad in (18, 1000):
+        r = c.post("/api/effect", json={"heads": [[0, 0]], "n_max": bad}, headers=a)
+        assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert c.post("/api/effect", json={"heads": [[0, 0]], "n_random": 30}, headers=a).status_code == 422  # kaldırıldı
+    body = {"heads": [[0, 0]], "prompts": ["bir iki"], "n_max": 19, "seed": 4}
+    res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+    assert res["n_max"] == 19 and res["seed"] == 4 and res["p_min"] == pytest.approx(0.05)
+
+
+def test_effect_cpu_cap(ready):
+    c, a = ready
+    assert c.get("/api/session", headers=a).json()["device"] == "cpu"
+    r = c.post("/api/effect", json={"heads": [[0, 0]], "n_max": 200}, headers=a)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert "CPU'da en çok 199 çekiş" in r.json()["detail"]
+
+
+def test_session_measure_count_increments(ready):
+    c, a = ready
+    before = c.get("/api/session", headers=a).json()["measure_count"]
+    body = {"heads": [[0, 1]], "prompts": ["bir iki"], "n_max": 19}
+    for i in (1, 2):
+        res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+        assert res["session_measure_index"] == before + i
+        assert c.get("/api/session", headers=a).json()["measure_count"] == before + i
+
+
+def _fake_sequential_effect(n_prompts: int):
+    from neshter.metrics import SequentialEffect
+
+    return SequentialEffect(
+        kl=0.0, kl_std=0.0, kl_se=0.0, n_prompts=n_prompts, random_kls=[0.0] * 19, random_kl=0.0,
+        random_p05=0.0, random_p95=0.0, percentile=0.0, n_drawn=19, n_max=19, k_exceed=0, tau=0.05,
+        p_value=0.05, p_kind="full", p_min=0.05, significant=True, stopped_early=False, layer_matched=True, seed=0,
+    )
+
+
+@pytest.mark.parametrize("raise_cancelled", [True, False])
+def test_session_measure_count_not_incremented_by_cancelled_effect(ready, monkeypatch, raise_cancelled):
+    from neshter.progress import Cancelled
+
+    def fake(lm, heads, prompts, cancel=None, **kw):
+        cancel.set()  # kullanıcı iptali (çekişler arasında ya da sonuç dönerken)
+        if raise_cancelled:
+            raise Cancelled()
+        return _fake_sequential_effect(len(prompts))
+
+    c, a = ready
+    before = c.get("/api/session", headers=a).json()["measure_count"]
+    monkeypatch.setattr(app_module, "sequential_real_effect", fake)
+    job = c.post("/api/effect", json={"heads": [[0, 1]], "prompts": ["bir"]}, headers=a).json()["job_id"]
+    wait_done(c, a, job, expect="cancelled")
+    assert c.get("/api/session", headers=a).json()["measure_count"] == before
+
+
+def test_session_measure_count_resets_on_load(tiny_model_dir):
+    c, a = _make(), {"X-Neshter-Token": TOKEN}
+    load = {"path": str(tiny_model_dir), "dtype": "float32"}
+    wait_done(c, a, c.post("/api/session/load", json=load, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 0
+    body = {"heads": [[0, 1]], "prompts": ["bir iki"], "n_max": 19}
+    wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 1
+    wait_done(c, a, c.post("/api/session/load", json=load, headers=a).json()["job_id"])
+    assert c.get("/api/session", headers=a).json()["measure_count"] == 0
 
 
 def test_recipe_metrics_adds_percentile_and_p(lm):
@@ -701,7 +781,7 @@ def test_security_headers_on_all_responses(client, auth):
         assert r.headers["x-frame-options"] == "DENY"
     assert client.get("/api/system").status_code == 403  # 403 yanıtı da başlık taşır
     csp = client.get("/").headers["content-security-policy"]
-    assert "script-src" not in csp and "'unsafe-inline'" not in csp.split("style-src")[0]
+    assert "script-src 'self'" in csp and "'unsafe-inline'" not in csp.split("style-src")[0]
     assert "default-src 'self'" in csp and "connect-src 'self'" in csp and "img-src 'self' data:" in csp
 
 
@@ -709,7 +789,8 @@ def test_security_headers_on_all_responses(client, auth):
 
 
 def test_static_dist_is_mounted_only_if_it_exists(tmp_path, monkeypatch, auth):
-    r = _make().get("/")  # dist yok (varsayılan): belirteçsiz küçük bilgi sayfası
+    monkeypatch.setattr(app_module, "WEB_DIST", tmp_path / "yok")  # dist yok: yerel derlemeden bağımsız
+    r = _make().get("/")  # belirteçsiz küçük bilgi sayfası
     assert r.status_code == 200 and "API" in r.text and "derlenmedi" in r.text
     (tmp_path / "index.html").write_text("<h1>ada</h1>", encoding="utf-8")
     monkeypatch.setattr(app_module, "WEB_DIST", tmp_path)
@@ -941,15 +1022,15 @@ def test_effect_defaults_to_reserved_neutral_prompts(ready, monkeypatch):
     seen = {}
 
     def fake(lm, heads, prompts, **kw):
-        from neshter.metrics import EffectResult
-
         seen["prompts"] = prompts
-        return EffectResult(0.0, 0.0, 0.0, len(prompts), 0.0, [0.0] * 20, 0.0, 0.0, 0.0, 1.0, 20, True, None)
+        seen["kw"] = {k: kw[k] for k in ("n_max", "seed")}
+        return _fake_sequential_effect(len(prompts))
 
-    monkeypatch.setattr(app_module, "real_effect", fake)
+    monkeypatch.setattr(app_module, "sequential_real_effect", fake)
     c, a = ready
     wait_done(c, a, c.post("/api/effect", json={"heads": [[0, 1]]}, headers=a).json()["job_id"])
     assert seen["prompts"] == load_neutral()
+    assert seen["kw"] == {"n_max": 39, "seed": 0}
 
 
 # --- Fix wave: I1 (SHA doğrulama), I2 (güvenlik etiketi), Minor 7/11 ---------------------------------
@@ -1693,7 +1774,7 @@ def test_system_extras(client, auth):
     import shutil
 
     r = client.get("/api/system", headers=auth).json()
-    assert r["default_out_dir"] == str(Path.home() / "Neshter")
+    assert r["default_out_dir"] == os.environ["NESHTER_HOME"]
     assert set(r["llama_cpp"]) == {"found", "path", "converter"}
     assert isinstance(r["llama_cpp"]["found"], bool) and isinstance(r["llama_cpp"]["converter"], bool)
     assert (r["llama_cpp"]["path"] is None) == (not r["llama_cpp"]["found"])
@@ -1765,7 +1846,7 @@ def test_export_estimate(unlabelled, tmp_path):
     lm = c.app.state.session.lm
     out = tmp_path / "yeni" / "alt"  # yok: en yakın var olan ata (tmp_path) ölçülür
     r = c.post("/api/export/estimate", json={"format": "safetensors", "out_dir": str(out)}, headers=a).json()
-    assert set(r) == {"bytes_needed", "free_bytes", "enough", "suggested_name"}
+    assert set(r) == {"bytes_needed", "free_bytes", "enough", "suggested_name", "safety_ablated"}
     assert r["bytes_needed"] == int(estimate_export_bytes(lm, "safetensors", False) * 1.1) > 0
     assert r["free_bytes"] > 0 and r["enough"] is True
     assert r["suggested_name"].endswith("-neshter") and "abliterated" not in r["suggested_name"]
@@ -2150,3 +2231,160 @@ def test_export_capitalised_refusal_concept_is_labelled(unlabelled, tmp_path):
     body = _export_body(tmp_path / "cap", concept="Refusal")
     res = wait_done(c, a, c.post("/api/export", json=body, headers=a).json()["job_id"], timeout=120)["result"]
     assert res["safety_ablated"] is True
+
+
+# --- Sunucu tarafı taslak/tercih, source_sha256, tahmin güvenlik bayrağı (Plan 2 Task 2) ----------
+
+
+@pytest.fixture
+def home_client(tmp_path, monkeypatch):
+    """Kendi NESHTER_HOME'u (test tmp_path) olan istemci; gerçek ~/Neshter'e ve diğer testlere dokunmaz."""
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    return _make()
+
+
+DRAFT_SHA = "a" * 64
+
+
+def _draft_body(sha=DRAFT_SHA, **over):
+    body = {
+        "schema_version": 1, "sha256": sha, "model_name": "m", "unsaved_count": 1,
+        "basket": HEAD_OPS, "shelf": [], "saved_ops": [], "prompts": ["merhaba"],
+    }
+    return {**body, **over}
+
+
+def test_draft_routes_roundtrip(home_client, auth):
+    c = home_client
+    r = c.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(), headers=auth)
+    assert r.status_code == 200 and r.json()["basket"] == HEAD_OPS and r.json()["updated_at"]
+    assert c.get(f"/api/draft/{DRAFT_SHA}", headers=auth).json()["basket"] == HEAD_OPS
+    listing = c.get("/api/drafts", headers=auth).json()
+    assert [(d["sha256"], d["model_name"], d["unsaved_count"]) for d in listing] == [(DRAFT_SHA, "m", 1)]
+    assert set(listing[0]) == {"sha256", "model_name", "updated_at", "unsaved_count"}
+    assert c.delete(f"/api/draft/{DRAFT_SHA}", headers=auth).status_code == 204
+    gone = c.get(f"/api/draft/{DRAFT_SHA}", headers=auth)
+    assert gone.status_code == 404 and gone.json()["error_code"] == "not_found"
+
+
+def test_draft_state_lives_under_neshter_home(home_client, auth, tmp_path):
+    home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(), headers=auth)
+    assert (tmp_path / ".state" / "drafts" / f"{DRAFT_SHA}.json").is_file()
+
+
+def test_draft_bad_sha_path_is_422(home_client, auth):
+    for bad in ("g" * 64, "A" * 64, "a" * 63):
+        r = home_client.put(f"/api/draft/{bad}", json=_draft_body(bad), headers=auth)
+        assert r.status_code == 422, bad
+        assert home_client.get(f"/api/draft/{bad}", headers=auth).status_code == 422, bad
+        assert home_client.delete(f"/api/draft/{bad}", headers=auth).status_code == 422, bad
+
+
+def test_draft_body_sha_must_match_path(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body("b" * 64), headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_draft_too_large_is_413(home_client, auth):
+    big = _draft_body(prompts=["x" * 8000] * 20)
+    big["basket"] = [{"type": "head", "layer": 0, "head": 1, "pad": "y" * 9000}] * 1000
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=big, headers=auth)
+    assert r.status_code == 413 and r.json()["error_code"] == "too_large"
+
+
+def test_draft_too_large_by_content_length_is_413_without_parsing(home_client, auth):
+    r = home_client.put(
+        f"/api/draft/{DRAFT_SHA}", content=b"{bozuk", headers={**auth, "content-length": str(9 * 1024 * 1024)}
+    )
+    assert r.status_code == 413 and r.json()["error_code"] == "too_large"
+
+
+def test_draft_unparsable_body_is_422(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", content=b"{bozuk", headers=auth)
+    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+
+
+def test_draft_unknown_field_rejected(home_client, auth):
+    r = home_client.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(extra=1), headers=auth)
+    assert r.status_code == 422
+
+
+def test_prefs_roundtrip_and_bad_lang(home_client, auth):
+    c = home_client
+    assert c.get("/api/prefs", headers=auth).json() == {
+        "lang": None, "quality": "balanced", "reduced_motion": "system", "refusal_card_seen": False,
+    }
+    r = c.put("/api/prefs", json={"lang": "en"}, headers=auth)
+    assert r.status_code == 200 and r.json()["lang"] == "en"
+    assert c.get("/api/prefs", headers=auth).json()["lang"] == "en"
+    assert c.put("/api/prefs", json={"lang": "de"}, headers=auth).status_code == 422
+    assert c.put("/api/prefs", json={"ekstra": 1}, headers=auth).status_code == 422
+    assert c.get("/api/prefs", headers=auth).json()["lang"] == "en"  # geçersiz PUT eskisini bozmaz
+    # PUT tüm nesneyi değiştirir: gönderilmeyen alan varsayılana döner
+    assert c.put("/api/prefs", json={"refusal_card_seen": True}, headers=auth).json()["lang"] is None
+
+
+def test_shutdown_calls_request_exit(client, auth):
+    called = []
+    client.app.state.request_exit = lambda: called.append(1)
+    r = client.post("/api/shutdown", headers=auth)
+    assert r.status_code == 202 and r.json() == {"ok": True} and called == [1]
+
+
+def test_shutdown_refuses_bad_origin_and_host_even_with_token(client, auth):
+    called = []
+    client.app.state.request_exit = lambda: called.append(1)
+    assert client.post("/api/shutdown", headers={**auth, "Origin": "http://evil.example"}).status_code == 403
+    assert client.post("/api/shutdown", headers={**auth, "Host": "evil.example"}).status_code == 403
+    assert called == []
+
+
+def test_shutdown_without_hook_is_501(client, auth):
+    r = client.post("/api/shutdown", headers=auth)
+    assert r.status_code == 501 and r.json()["error_code"] == "unsupported"
+
+
+def test_lifespan_prints_unsaved_line(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    with TestClient(create_app(TOKEN, PORT, roots={}), base_url=f"http://127.0.0.1:{PORT}") as c:
+        c.put(f"/api/draft/{DRAFT_SHA}", json=_draft_body(unsaved_count=2), headers={"X-Neshter-Token": TOKEN})
+    assert "2 kaydedilmemiş kesim taslağa yazıldı; sonraki açılışta geri yüklenir." in capsys.readouterr().out
+
+
+def test_lifespan_silent_without_unsaved(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    with TestClient(create_app(TOKEN, PORT, roots={}), base_url=f"http://127.0.0.1:{PORT}") as c:
+        c.get("/api/system", headers={"X-Neshter-Token": TOKEN})
+    assert "taslağa yazıldı" not in capsys.readouterr().out
+
+
+def test_session_reports_source_sha256(ready):
+    c, a = ready
+    assert re.fullmatch("[0-9a-f]{64}", c.get("/api/session", headers=a).json()["source_sha256"])
+
+
+def test_load_job_result_reports_source_sha256(tiny_model_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("NESHTER_HOME", str(tmp_path))
+    c, a = _make(), {"X-Neshter-Token": TOKEN}
+    job = c.post("/api/session/load", json={"path": str(tiny_model_dir), "dtype": "float32"}, headers=a).json()["job_id"]
+    res = wait_done(c, a, job)["result"]
+    assert re.fullmatch("[0-9a-f]{64}", res["source_sha256"])
+    assert res["source_sha256"] == c.get("/api/session", headers=a).json()["source_sha256"]
+
+
+def test_system_default_out_dir_follows_neshter_home(home_client, auth, tmp_path):
+    assert home_client.get("/api/system", headers=auth).json()["default_out_dir"] == str(tmp_path)
+
+
+def test_estimate_reports_safety_flag(unlabelled):
+    c, a = unlabelled
+    refusal = c.post(
+        "/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS, "concept": "refusal"}, headers=a
+    ).json()
+    assert refusal["safety_ablated"] is True and refusal["suggested_name"].endswith("-abliterated")
+    plain = c.post("/api/export/estimate", json={"format": "safetensors", "recipe_ops": HEAD_OPS}, headers=a).json()
+    assert plain["safety_ablated"] is False
+
+
+def test_autouse_home_is_not_real_home():
+    assert Path(os.environ["NESHTER_HOME"]) != Path.home() / "Neshter"

@@ -24,7 +24,8 @@ from typing import Annotated, Literal
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Path as PathParam, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub import snapshot_download
@@ -62,12 +63,32 @@ from neshter.loader import (
     pick_compute_dtype,
     planned_device,
 )
-from neshter.metrics import DEFAULT_N_RANDOM, kl_effect, load_neutral, perplexity, real_effect, recipe_effect
+from neshter.metrics import (
+    CPU_N_MAX_CAP,
+    DEFAULT_N_MAX,
+    DEFAULT_N_RANDOM,
+    MIN_N_MAX,
+    kl_effect,
+    load_neutral,
+    perplexity,
+    recipe_effect,
+    sequential_real_effect,
+)
 from neshter.progress import Cancelled, ProgressFn, check_cancel, sub_progress
 from neshter.recipe import RECIPE_TEXT, DirectionOp, HeadOp, Recipe, SourceRef, check_against, to_interventions
 from neshter.scan import scan_all
 from neshter.server.errors import SECURITY_HEADERS, ApiError, NoModel, install_handlers
 from neshter.server.jobs import TERMINAL, JobManager
+from neshter.server.state import (
+    DRAFT_MAX_BYTES,
+    SHA_RE,
+    Draft,
+    DraftIn,
+    DraftSummary,
+    Prefs,
+    StateStore,
+    neshter_home,
+)
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 SAMPLE_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -81,7 +102,7 @@ Op = Annotated[HeadOp | DirectionOp, Field(discriminator="type")]
 
 QUICK_GUARD = "general"  # hızlı kip: hedef kategori + bu "kimseyi bozmadım" kontrol kategorisi
 QUICK_MAX_NEW_TOKENS = 64
-QUICK_N_RANDOM = 20  # kullanıcıya dönük alt sınır (EffectReq.n_random ge=20)
+QUICK_N_RANDOM = 20  # hızlı kipte tarif KL kontrolünün sabit çekiş sayısı (/api/effect sıralı testi ayrı: EffectReq.n_max)
 MAX_ACTIVITY_TOKENS = 512  # /api/activity yanıtı L×H×T'ye büyür: token sayısı sınırlanır
 MAX_ACTIVITY_CHARS = 8000  # tokenlaştırmadan önce ucuz üst sınır
 
@@ -113,7 +134,8 @@ class LoadReq(_Req):
 class EffectReq(_Req):
     heads: list[tuple[int, int]] = Field(min_length=1)
     prompts: list[str] | None = Field(default=None, min_length=1)
-    n_random: int = Field(DEFAULT_N_RANDOM, ge=20, le=50)  # kullanıcıya dönük alt sınır 20; kütüphane en az 1
+    n_max: int = Field(DEFAULT_N_MAX, ge=MIN_N_MAX, le=999)  # sıralı testin en çok çekişi; CPU'da en çok CPU_N_MAX_CAP
+    seed: int = Field(0, ge=0, le=2**32 - 1)  # sabit tohum: aynı istek aynı çekişleri verir
 
 
 class HuntReq(_Req):
@@ -205,6 +227,8 @@ class Session:
         self.safety_dirs: list[torch.Tensor] = []
         # Aynı kavramlardan bulunmuş (katman, head) çiftleri (avın ölçülen ilk MEASURE_TOP_K head'i).
         self.safety_heads: set[tuple[int, int]] = set()
+        # Bu modelle tamamlanan (iptal edilmemiş) /api/effect ölçümleri: seçilerek bulunan sonuç hipotezdir.
+        self.measure_count = 0
 
     def require(self) -> LoadedModel:
         if self.lm is None:
@@ -215,6 +239,7 @@ class Session:
         self.lm = None
         self.safety_dirs = []
         self.safety_heads = set()
+        self.measure_count = 0
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -411,6 +436,12 @@ def _free_bytes(out_dir: str) -> int:
         raise HTTPException(422, "Hedef klasörün sürücüsü bulunamadı.") from e
 
 
+def _check_cpu_cap(lm: LoadedModel, n_max: int) -> None:
+    """CPU'da sıralı testin çekiş üst sınırı (ValueError -> 422 / invalid_input)."""
+    if next(lm.model.parameters()).device.type == "cpu" and n_max > CPU_N_MAX_CAP:
+        raise ValueError(f"CPU'da en çok {CPU_N_MAX_CAP} çekiş yapılabilir (istenen: {n_max}).")
+
+
 def _default_effect_prompts() -> list[str]:
     """Ayrılmış nötr istekler (asla test setinden değil; spec §3)."""
     return load_neutral()
@@ -509,10 +540,15 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         yield
         jobs.shutdown()
+        line = store.exit_line()  # Ctrl+C / /api/shutdown: taslağa yazılan kesimler için tek satır
+        if line is not None:
+            print(line, flush=True)
 
     app = FastAPI(title="Neşter", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
     app.state.jobs = jobs
+    app.state.request_exit = None  # cli._run_server bağlar; yoksa /api/shutdown 501 döner
+    store = app.state.store = StateStore(neshter_home() / ".state")
     app.add_middleware(_Guard, token=token, port=port)
 
     install_handlers(app)
@@ -530,7 +566,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         llama = find_llama_cpp()
         return {
             **asdict(system_info()),
-            "default_out_dir": str(Path.home() / "Neshter"),
+            "default_out_dir": str(neshter_home()),
             "llama_cpp": {
                 "found": llama is not None,
                 "path": None if llama is None else str(llama),
@@ -643,6 +679,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "device": next(lm.model.parameters()).device.type,
                 "device_note": lm.device_note,
                 "dtype": str(next(lm.model.parameters()).dtype).removeprefix("torch."),
+                "source_sha256": lm.source_sha256,
             }
 
         return start(fn, "load")
@@ -665,10 +702,59 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             "memory_bytes": sum(p.numel() * p.element_size() for p in lm.model.parameters()),
             "device_note": lm.device_note,
             "source_path": str(lm.source_path),
+            "source_sha256": lm.source_sha256,
             "default_method": default_method(lm),
             "safety_dirs": len(session.safety_dirs),
             "safety_heads": len(session.safety_heads),
+            "measure_count": session.measure_count,
         }
+
+    # -- sunucu tarafı taslak / tercih (model SHA-256'sına göre; sepetin aynası, doğruluk kaynağı değil) --
+
+    @app.get("/api/drafts")
+    def list_drafts() -> list[DraftSummary]:
+        return store.list_drafts()
+
+    @app.get("/api/draft/{sha}")
+    def get_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)]) -> Draft:
+        d = store.get_draft(sha)
+        if d is None:
+            raise HTTPException(404, "Bu model için taslak yok.")
+        return d
+
+    @app.put("/api/draft/{sha}")
+    async def put_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)], request: Request) -> Draft:
+        # Ayrıştırmadan ÖNCE boyut sınırı: önce content-length, sonra gerçek gövde.
+        too_large = ApiError(413, "Taslak çok büyük (en fazla 8 MB).", "too_large")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > DRAFT_MAX_BYTES:
+            raise too_large
+        raw = await request.body()
+        if len(raw) > DRAFT_MAX_BYTES:
+            raise too_large
+        with _bad_input():  # ValidationError ve SHA uyuşmazlığı birer ValueError: 422 invalid_input
+            return await run_in_threadpool(lambda: store.put_draft(sha, DraftIn.model_validate_json(raw)))
+
+    @app.delete("/api/draft/{sha}", status_code=204)
+    def delete_draft(sha: Annotated[str, PathParam(pattern=SHA_RE)]) -> Response:
+        store.delete_draft(sha)
+        return Response(status_code=204)
+
+    @app.get("/api/prefs")
+    def get_prefs() -> Prefs:
+        return store.get_prefs()
+
+    @app.put("/api/prefs")
+    def put_prefs(body: Prefs) -> Prefs:
+        return store.put_prefs(body)
+
+    @app.post("/api/shutdown", status_code=202)
+    def shutdown() -> dict:
+        request_exit = app.state.request_exit
+        if request_exit is None:
+            raise ApiError(501, "Bu çalıştırma biçiminde sunucu arayüzden kapatılamaz.", "unsupported")
+        request_exit()
+        return {"ok": True}
 
     # -- anlık (eşzamanlı) uçlar --
 
@@ -724,7 +810,10 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
 
     @app.post("/api/effect")
     def effect(body: EffectReq):
-        arch = require_model().arch
+        lm0 = require_model()
+        arch = lm0.arch
+        with _bad_input():
+            _check_cpu_cap(lm0, body.n_max)
         for layer, head in body.heads:
             if not (0 <= layer < arch.n_layers and 0 <= head < arch.n_heads):
                 raise HTTPException(
@@ -738,13 +827,16 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 lm = require_model()
                 if cancel.is_set():
                     return None
+                _check_cpu_cap(lm, body.n_max)  # iş kuyruktayken model değişmiş olabilir
                 report(0.1, "Gerçek etki hesaplanıyor")
-                return asdict(
-                    real_effect(
-                        lm, heads, prompts, n_random=body.n_random,
-                        progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
-                    )
+                eff = sequential_real_effect(
+                    lm, heads, prompts, n_max=body.n_max, seed=body.seed,
+                    progress=sub_progress(report, 0.1, 1.0), cancel=cancel,
                 )
+                if cancel.is_set():  # iptal edilen ölçüm sayılmaz
+                    return None
+                session.measure_count += 1
+                return asdict(eff) | {"session_measure_index": session.measure_count}
 
         return start(fn, "effect")
 
@@ -863,12 +955,13 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
             has_directions = body.has_directions
             safety = _is_safety(session, [], body.concept)
         needed = int(estimate_export_bytes(lm, body.format, has_directions) * 1.1)
-        free = _free_bytes(body.out_dir or str(Path.home() / "Neshter"))
+        free = _free_bytes(body.out_dir or str(neshter_home()))
         return {
             "bytes_needed": needed,
             "free_bytes": free,
             "enough": free >= needed,
             "suggested_name": suggest_export_name(lm, safety),
+            "safety_ablated": safety,
         }
 
     @app.post("/api/export")

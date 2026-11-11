@@ -1,0 +1,46 @@
+import { useStore } from 'zustand';
+import { navigate } from '@/app/router';
+import { countExploreOnly, countSavable, sendableOps } from '@/core/basket';
+import { basketStore } from '@/core/stores/basket';
+import { plural, useT } from '@/i18n';
+import { Button } from '@/ui/Button';
+import { BasketRow } from './BasketRow';
+
+/**
+ * The basket: every cut, what each can be used for, undo for the last removal, and the way on to Karşılaştır / Kaydet.
+ * `Modeli kaydet` only navigates: the save flow starts on the Save screen (`SAVE_CLICKED` belongs to its `Kaydet`).
+ */
+export function BasketPanel() {
+  const t = useT();
+  const items = useStore(basketStore, (s) => s.items);
+  const lastRemoved = useStore(basketStore, (s) => s.lastRemoved);
+  const savable = countSavable(items);
+  const exploreOnly = countExploreOnly(items);
+
+  return (
+    <section className="basket-panel glass" aria-labelledby="basket-title">
+      <h2 id="basket-title">{t('basket.title')}</h2>
+      {items.length === 0 ? (
+        <p>{t('basket.empty')}</p>
+      ) : (
+        <ul className="basket-list">
+          {items.map((item) => (
+            <BasketRow key={item.id} item={item} onRemove={(id) => basketStore.getState().remove(id)} />
+          ))}
+        </ul>
+      )}
+      {lastRemoved !== null && (
+        <Button onClick={() => basketStore.getState().undoRemove()}>{t('basket.undo')}</Button>
+      )}
+      <p className="num basket-line">{t('basket.line', { s: savable, e: exploreOnly })}</p>
+      <div className="basket-actions">
+        <Button disabled={sendableOps(items).length === 0} onClick={() => navigate('compare')}>
+          {t('basket.compare')}
+        </Button>
+        <Button variant="primary" disabled={savable === 0} onClick={() => navigate('save')}>
+          {plural('basket.save', savable)}
+        </Button>
+      </div>
+    </section>
+  );
+}

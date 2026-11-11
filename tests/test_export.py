@@ -140,16 +140,16 @@ def test_gemma2_save_reload_direction_equivalent(gemma_lm, tmp_path):
 @pytest.fixture(scope="module")
 def tied_lm(tmp_path_factory):
     """Conftest'teki minik Qwen2 yapılandırmasının bağlı gömmeli (tie_word_embeddings=True) eşi."""
-    import conftest
+    from tiny_models import VOCAB_SIZE, build_tiny_tokenizer
     from transformers import Qwen2Config, Qwen2ForCausalLM
 
     from neshter.loader import load_model
 
     path = tmp_path_factory.mktemp("tiny_qwen2_tied")
-    tokenizer = conftest._build_tokenizer()
+    tokenizer = build_tiny_tokenizer()
     torch.manual_seed(0)
     config = Qwen2Config(
-        vocab_size=conftest.VOCAB_SIZE,
+        vocab_size=VOCAB_SIZE,
         hidden_size=64,
         num_hidden_layers=2,
         num_attention_heads=4,
