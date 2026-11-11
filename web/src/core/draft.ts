@@ -10,8 +10,8 @@ const MAX_PROMPTS = 20;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_MODEL_NAME = 256;
 
-/** Body of `PUT /api/draft/{sha}` (without `updated_at`). */
-export interface DraftPayload {
+/** Body of `PUT /api/draft/{sha}` (without `updated_at`). A type alias, so it is assignable to the client's index-signature body. */
+export type DraftPayload = {
   schema_version: 1;
   sha256: string;
   model_name: string;
@@ -20,7 +20,7 @@ export interface DraftPayload {
   shelf: Record<string, unknown>[];
   saved_ops: string[];
   prompts: string[];
-}
+};
 
 export interface DraftInput {
   items: readonly BasketItem[];

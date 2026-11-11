@@ -4,7 +4,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
 
 /**
  * A native modal `<dialog>`. Esc (the browser's `cancel` event) calls `onCancel` and leaves closing to the parent
- * through `open`. Initial focus goes to the first action.
+ * through `open`; a close the browser does by itself also calls `onCancel`. Initial focus goes to the first action.
  */
 export function Dialog({
   open,
@@ -45,6 +45,11 @@ export function Dialog({
       onCancel={(event) => {
         event.preventDefault(); // the parent decides whether the dialog closes
         onCancel();
+      }}
+      // The browser can close a native dialog on its own (a second Esc ignores preventDefault). When that happens
+      // while the parent still says `open`, tell it; a close the parent asked for arrives with `open` already false.
+      onClose={() => {
+        if (open) onCancel();
       }}
     >
       <h2 id={titleId}>{title}</h2>

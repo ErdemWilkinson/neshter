@@ -275,3 +275,25 @@ select {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+
+.notice-banner,
+.restore-prompt,
+.close-failure {
+  padding: 8px 12px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--badge-explore);
+  border-radius: var(--radius);
+}
+
+.restore-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.unsaved-work ul {
+  margin: 0 0 8px;
+  padding-left: 1.2em;
+}
