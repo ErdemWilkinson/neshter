@@ -11,6 +11,9 @@ import { uiStore } from '@/core/stores/ui';
 import type { BasketItem } from '@/core/basket';
 import { isHeadOp } from '@/core/ops';
 import { normalizeGlobal, normalizePerLayer, sliceToken } from '@/core/normalize';
+import { BasketPanel } from '@/features/basket/BasketPanel';
+import { ShelfView } from '@/features/basket/ShelfView';
+import { SelectionPanel } from '@/features/measure/SelectionPanel';
 import { exploreStore, type Unit } from '@/features/map/exploreStore';
 import { Heatmap } from '@/features/map/Heatmap';
 import { HeatmapTable } from '@/features/map/HeatmapTable';
@@ -166,6 +169,10 @@ export function Explore() {
           )}
         </>
       )}
+
+      <SelectionPanel values={values} />
+      <BasketPanel />
+      <ShelfView />
     </section>
   );
 }
