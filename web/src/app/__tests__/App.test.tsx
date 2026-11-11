@@ -77,7 +77,7 @@ test('the router follows the hash and the stepper marks the current step', async
   expect(nav.querySelector('[aria-current="step"]')).toHaveTextContent('Davranışı bul');
   expect(nav).toHaveTextContent('Ağ haritası');
   expect(screen.getByRole('main')).toHaveFocus(); // a route change moves focus to the new screen...
-  expect(screen.getByRole('status')).toHaveTextContent('Davranışı bul'); // ...and announces it
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Davranışı bul')); // ...and announces it
   act(() => {
     window.location.hash = '#/no-such-screen';
   });

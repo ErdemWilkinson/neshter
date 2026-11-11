@@ -740,3 +740,142 @@ select {
   color: var(--text-2);
   font-size: 0.875rem;
 }
+
+/* Concept hunt: presets, examples, method, results. */
+.concept-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.concept-lead {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.concept-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 24rem;
+}
+
+.concept-name input,
+.example-side textarea {
+  padding: 6px 8px;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+.example-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 12px;
+}
+
+.example-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.example-side label,
+.example-note,
+.method-note {
+  color: var(--text-2);
+}
+
+.example-count,
+.example-note {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.example-count-low {
+  color: var(--badge-explore);
+}
+
+.method-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.method-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.refusal-card,
+.found-heads,
+.found-direction,
+.layer-chart {
+  padding: 12px;
+}
+
+.concept-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.layer-chart-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.layer-chart-row {
+  display: grid;
+  grid-template-columns: 8rem 1fr 3rem auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.layer-chart-track {
+  height: 10px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.layer-chart-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent-decrease);
+}
+
+.layer-chart-ref .layer-chart-bar {
+  background: var(--accent-increase);
+}
+
+.found-heads-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.found-heads-table th,
+.found-heads-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.found-heads-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
