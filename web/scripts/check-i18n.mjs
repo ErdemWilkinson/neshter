@@ -1,7 +1,7 @@
 // Build guard for the tr/en catalogs: same keys, same {placeholders}, no key without a use in src/**.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** Keys under these prefixes are built at run time (`errors.${code}`), so a literal use is not required. */
 const DYNAMIC_PREFIXES = ['errors.', 'vocab.badge.', 'concept.category.'];
@@ -57,7 +57,17 @@ export function checkI18n({ trPath, enPath, srcDir }) {
   return errors;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** Run as a script? Node resolves the main module to its real path, so compare real paths (a link, junction or other spelling of argv[1] must not turn the guard into a silent no-op). */
+function isMain() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   const web = fileURLToPath(new URL('..', import.meta.url));
   const errors = checkI18n({
     trPath: join(web, 'src/i18n/tr.json'),

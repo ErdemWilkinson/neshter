@@ -6,9 +6,11 @@ import type { SystemInfo } from '@/api/schemas';
 import { newBasketItem } from '@/core/basket';
 import { parseOp } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
+import { jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
 import { setLang } from '@/i18n';
+import { ProgressCard } from '@/ui/ProgressCard';
 import { Header } from '../Header';
 import { BusyBanner } from '../BusyBanner';
 import { DeviceBanner } from '../DeviceBanner';
@@ -84,11 +86,11 @@ test('the model chip is name · dtype · device, rendered as text', () => {
   expect(document.querySelector('img')).toBeNull();
 });
 
-test('Kapat calls onClose', async () => {
+test("Neşter'i kapat calls onClose", async () => {
   useServer();
   const onClose = vi.fn();
   render(<Header onClose={onClose} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
@@ -97,7 +99,7 @@ test('the language select switches the whole header to English', async () => {
   render(<Header onClose={() => undefined} />);
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Dil' }), 'en');
   expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
-  expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Quit Neşter' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'Reduce motion' })).toBeInTheDocument();
 });
 
@@ -108,7 +110,7 @@ test('Stepper is hidden on home and lists the four steps elsewhere', () => {
   const nav = screen.getByRole('navigation', { name: 'Adımlar' });
   const steps = within(nav).getAllByRole('listitem');
   expect(steps).toHaveLength(4);
-  expect(steps.map((li) => li.textContent)).toEqual(['Model', 'Davranışı bulAğ haritası', 'Karşılaştır', 'Kaydet']);
+  expect(steps.map((li) => li.textContent)).toEqual(['Model', 'Davranışı bulveyaAğ haritası', 'Karşılaştır', 'Kaydet']);
   expect(within(nav).getByRole('link', { name: 'Kaydet' })).toHaveAttribute('aria-current', 'step');
   expect(within(nav).getByRole('link', { name: 'Model' })).toHaveAttribute('href', '#/models');
 });
@@ -146,11 +148,23 @@ test('BusyBanner shows for a held model and clears a 409 flag once the server ha
   expect(container).toBeEmptyDOMElement();
 
   act(() => sessionStore.getState().setBusy(true));
-  expect(await screen.findByRole('status')).toHaveTextContent('Model meşgul');
+  expect(await screen.findByRole('status')).toHaveTextContent('Model şu an çalışıyor');
   await vi.advanceTimersByTimeAsync(3100);
   expect(sessionStore.getState().busy).toBe(true); // a job still runs
   running = false;
   await vi.advanceTimersByTimeAsync(3100);
   expect(sessionStore.getState().busy).toBe(false);
   expect(container).toBeEmptyDOMElement();
+});
+
+test('BusyBanner stays hidden for our own job while a progress card shows it, and floats over the page', () => {
+  const job = { id: 'j1', kind: 'hunt', state: 'running', progress: 0.2, message: '', error: null, error_code: null, started_at: null, created_at: 'x', finished_at: null };
+  act(() => jobsStore.getState().setActive(job as never));
+  render(<BusyBanner />);
+  expect(screen.getByRole('status')).toHaveClass('busy-banner'); // own job, no card: the notice explains the disabled buttons
+  const card = render(<ProgressCard job={job as never} onCancel={() => undefined} />);
+  expect(screen.queryByRole('status')).toBeNull();
+  card.unmount();
+  expect(screen.getByRole('status')).toBeInTheDocument();
+  act(() => jobsStore.getState().clearActive());
 });

@@ -865,6 +865,25 @@ def test_jobs_run_one_at_a_time_in_order():
     assert order == [0, 1, 2, 3] and peak[0] == 1
 
 
+def test_shutdown_marks_queued_jobs_cancelled_and_never_runs_them():
+    jm = JobManager()
+    release = threading.Event()
+    ran = []
+    try:
+        running = jm.submit(lambda report, cancel: release.wait(20))
+        _wait_state(jm, running, {"running"})
+        queued = jm.submit(lambda report, cancel: ran.append("x"))
+        assert jm.status(queued).state == "queued"
+        jm.shutdown()
+        st = jm.status(queued)
+        assert st.state == "cancelled" and st.finished_at is not None  # cancel() ile aynı
+        release.set()
+        _wait_state(jm, running, {"cancelled", "done"})
+        assert ran == []
+    finally:
+        release.set()
+
+
 def test_cancel_running_job_ends_cancelled():
     jm = JobManager()
 

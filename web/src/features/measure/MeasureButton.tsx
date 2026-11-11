@@ -13,6 +13,7 @@ import { measureStore } from '@/core/stores/measure';
 import { sessionStore } from '@/core/stores/session';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
+import { useProgressShown } from '@/ui/useProgressShown';
 import { ErrorCard } from '@/ui/ErrorCard';
 import { duration } from '@/ui/ProgressCard';
 import { formatStat } from './format';
@@ -27,6 +28,7 @@ const asFailure = (error: unknown): Failure =>
   error instanceof ApiError ? { code: error.code, detail: error.detail } : { code: 'internal', detail: String(error) };
 
 function Progress({ message, progress, startedAt }: { message: string; progress: number; startedAt: string | null }) {
+  useProgressShown();
   const t = useT();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

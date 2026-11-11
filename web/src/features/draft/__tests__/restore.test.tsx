@@ -8,6 +8,7 @@ import { sessionLoaded } from '@/app/__tests__/fakeServer';
 import { encodeDraft } from '@/core/draft';
 import { basketStore } from '@/core/stores/basket';
 import { compareStore } from '@/core/stores/compare';
+import { jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
 import { head, item } from '@/core/__tests__/fixtures/items';
 import { setLang } from '@/i18n';
@@ -27,7 +28,7 @@ function mockApi(patch: Partial<Record<keyof Api, unknown>>) {
     draft: vi.fn(async () => draftBody()),
     deleteDraft: vi.fn(async () => undefined),
     recipeCheck: vi.fn(async () => ({ ok: true, errors: [], sha_mismatch: false })),
-    drafts: vi.fn(async () => []),
+    drafts: vi.fn(async () => [{ sha256: SHA, model_name: model.name, updated_at: 'x', unsaved_count: 2 }]),
     ...patch,
   };
   setApi(api as unknown as Api);
@@ -44,6 +45,8 @@ afterEach(() => {
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   compareStore.setState({ lastPrompt: null });
   draftStatusStore.setState({ hasDraft: false, tooLarge: false, pendingSha: null });
+  jobsStore.setState({ active: null });
+  sessionStore.getState().setBusy(false);
 });
 
 test('restore prompt shows count and restores after recipe check', async () => {
@@ -192,4 +195,43 @@ test('deleting every draft from the Home list also closes the prompt and release
   await waitFor(() => expect(api.deleteDraft).toHaveBeenCalledWith(SHA));
   await waitFor(() => expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull());
   expect(draftStatusStore.getState().pendingSha).toBeNull();
+});
+
+test('Geri yükle is disabled with a reason while a job holds the model, and works once it is free', async () => {
+  const api = mockApi({});
+  jobsStore.getState().setActive({ id: 'j1', kind: 'load', state: 'running' } as never);
+  render(<RestorePrompt />);
+  const restore = await screen.findByRole('button', { name: 'Geri yükle' });
+  expect(restore).toBeDisabled();
+  expect(screen.getByText('Model yüklenirken geri yüklenemez; iş bitince açılır.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Sil' })).toBeEnabled();
+  expect(api.recipeCheck).not.toHaveBeenCalled();
+  act(() => jobsStore.getState().clearActive());
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Geri yükle' })).toBeEnabled());
+  expect(screen.queryByText(/iş bitince açılır/)).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Geri yükle' }));
+  await waitFor(() => expect(basketStore.getState().items).toHaveLength(2));
+});
+
+test('a 409 busy flag also disables Geri yükle', async () => {
+  mockApi({});
+  sessionStore.getState().setBusy(true);
+  render(<RestorePrompt />);
+  expect(await screen.findByRole('button', { name: 'Geri yükle' })).toBeDisabled();
+});
+
+test('no draft request (so no 404 in the console) when the draft list has none for this model', async () => {
+  const api = mockApi({ drafts: vi.fn(async () => [{ sha256: 'f'.repeat(64), model_name: 'other', updated_at: 'x', unsaved_count: 3 }]) });
+  render(<RestorePrompt />);
+  await waitFor(() => expect(api.drafts).toHaveBeenCalledTimes(1));
+  expect(api.draft).not.toHaveBeenCalled();
+  expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull();
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
+});
+
+test('an unreachable draft list offers nothing and does not throw', async () => {
+  const api = mockApi({ drafts: vi.fn(async () => Promise.reject(new ApiError(500, 'internal', 'x'))) });
+  render(<RestorePrompt />);
+  await waitFor(() => expect(api.drafts).toHaveBeenCalled());
+  expect(api.draft).not.toHaveBeenCalled();
 });

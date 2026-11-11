@@ -1,6 +1,7 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { getApi } from '@/api/currentApi';
+import { getExplorePrompt, setExplorePrompt } from '@/app/sessionStorage';
 import { ApiError, BusyError, type ErrorCode } from '@/api/errors';
 import type { NodeId } from '@/core/ids';
 import { headId } from '@/core/ids';
@@ -59,6 +60,13 @@ export function Explore() {
   const [failure, setFailure] = useState<Failure | null>(null);
   const runId = useRef(0);
 
+  // After a reload the text field gets its prompt back (tab-only convenience; the heatmap itself is not kept).
+  useEffect(() => {
+    if (exploreStore.getState().prompt !== '') return;
+    const saved = getExplorePrompt();
+    if (saved !== null) exploreStore.getState().setPrompt(saved);
+  }, []);
+
   const tokens = result?.tokens ?? [];
   const chosen = tokens.length === 0 ? -1 : Math.min(tokenIndex ?? tokens.length - 1, tokens.length - 1);
 
@@ -116,7 +124,10 @@ export function Explore() {
           id={promptId}
           rows={2}
           value={prompt}
-          onChange={(event) => exploreStore.getState().setPrompt(event.target.value)}
+          onChange={(event) => {
+            exploreStore.getState().setPrompt(event.target.value);
+            setExplorePrompt(event.target.value);
+          }}
         />
         <Button type="submit" variant="primary" disabled={locked || running || prompt.trim() === ''}>
           {t('map.run')}
@@ -158,6 +169,11 @@ export function Explore() {
               <p id={legendId} className="map-legend">
                 <span>{scale === 'layer' ? t('map.legend') : t('map.legend.global')}</span>{' '}
                 <span className="badge-estimated">{t('map.badge.estimated')}</span>
+                <span className="legend-scale" aria-hidden="true">
+                  <span>{t('map.legend.low')}</span>
+                  <span className="legend-bar" />
+                  <span>{t('map.legend.high')}</span>
+                </span>
                 <span className="map-axes">{t('map.axes')}</span>
               </p>
               {view === 'list' ? (

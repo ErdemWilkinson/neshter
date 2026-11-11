@@ -8,6 +8,7 @@ import { CutButton } from '@/features/basket/CutButton';
 import { formatPower } from '@/features/map/format';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
+import { TechDetail } from '@/ui/TechDetail';
 import { ControlStatsCard } from './ControlStatsCard';
 import { MeasureButton } from './MeasureButton';
 import { selectedHeadOps } from './selectionOps';
@@ -51,6 +52,7 @@ export function SelectionPanel({ values }: { values: number[][] | null }) {
         </p>
       )}
       <p>{t('measure.zero')}</p>
+      <TechDetail>{t('measure.zero.tech')}</TechDetail>
       <MeasureButton ops={ops} />
       {measurement !== undefined && <ControlStatsCard m={measurement} />}
       <CutButton selection={ops} />

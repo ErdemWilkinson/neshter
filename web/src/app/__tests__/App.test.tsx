@@ -176,8 +176,19 @@ test('unsaved cuts without a server draft do not claim a draft on the down scree
 test('Kapat shuts the server down and shows the closed screen', async () => {
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
+  expect(server.count('POST /api/shutdown')).toBe(1);
+});
+
+test('the closed screen does not promise new cuts in the draft while an earlier draft holds autosave back', async () => {
+  const { server } = mount();
+  await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
+  act(() => draftStatusStore.setState({ hasDraft: true, pendingSha: SHA }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
+  expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
+  expect(screen.queryByText(/Kaydedilmemiş kesimleriniz taslakta/)).toBeNull();
+  expect(screen.getByText(/bu oturumdaki yeni kesimler taslağa yazılmadı/)).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(1);
 });
 
@@ -187,8 +198,8 @@ test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', as
   act(() => {
     basketStore.getState().add([aCut()]);
   });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
-  expect(await screen.findByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
+  expect(await screen.findByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi henüz kaydetmediniz' })).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(0);
   await userEvent.click(screen.getByRole('button', { name: 'Kaydetmeden çık' }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
@@ -200,7 +211,7 @@ test('a failed shutdown shows an error card and leaves the app and its state unt
     fakeServer({ 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
   );
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(await screen.findByText('Neşter kapatılamadı')).toBeInTheDocument();
   expect(screen.getByText('Beklenmeyen bir hata oldu.')).toBeInTheDocument();
   expect(screen.getByText('kapanmadı <b>x</b>').closest('details')).not.toBeNull();
@@ -228,6 +239,7 @@ test('a restorable server draft is offered after boot and restoring fills the ba
   const stored = encodeDraft({ items: [aCut()], shelf: [], savedOps: [], model: { name: 'abc123', sha256: SHA }, prompts: [] });
   const { server } = mount(
     fakeServer({
+      'GET /api/drafts': () => jsonResponse(200, [{ sha256: SHA, model_name: 'abc123', updated_at: 'x', unsaved_count: 1 }]),
       [`GET /api/draft/${SHA}`]: () => jsonResponse(200, { ...stored, updated_at: 'x' }),
       'POST /api/recipe/check': () => jsonResponse(200, { ok: true, errors: [], sha_mismatch: false }),
       [`PUT /api/draft/${SHA}`]: (init) => jsonResponse(200, { ...(bodyOf(init) as object), updated_at: 'x' }),

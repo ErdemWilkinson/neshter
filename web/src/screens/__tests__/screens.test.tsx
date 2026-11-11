@@ -175,7 +175,7 @@ test('opening a model while dirty asks the leave guard first', async () => {
     basketStore.getState().add([head(0, 1)]);
   });
   await userEvent.click(open);
-  expect(await screen.findByText('Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz')).toBeInTheDocument();
+  expect(await screen.findByText('Ayrılıyorsunuz, kesimlerinizi henüz kaydetmediniz')).toBeInTheDocument();
   expect(api.loadModel).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: 'Kaydetmeden çık' }));
   await waitFor(() => expect(api.loadModel).toHaveBeenCalledTimes(1));

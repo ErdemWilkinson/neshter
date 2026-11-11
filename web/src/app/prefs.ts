@@ -13,22 +13,40 @@ export const systemMatchMedia = (): MatchMedia =>
 
 // The server PUT replaces the whole object, so the UI always sends the last known prefs plus its change.
 let current: Prefs = DEFAULT_PREFS;
+/** `current` came from the server (a GET or a PUT answer), not from the defaults a failed GET left behind. */
+let known = false;
+/** Saves run one after another, so a patch always builds on the result of the one before it. */
+let queue: Promise<unknown> = Promise.resolve();
 
-/** GET the prefs; on any failure the defaults stand (preferences must never block the app). */
+/** GET the prefs; on any failure the defaults stand for the UI, but they are never written back (`known` stays false). */
 export async function loadPrefs(api: Api): Promise<Prefs> {
   try {
     current = await api.prefs();
+    known = true;
   } catch {
     current = DEFAULT_PREFS;
+    known = false;
   }
   return current;
 }
 
-/** The only way the UI writes prefs: PUT of `{...current, ...patch}`; resolves with what the server stored. */
-export async function savePrefs(api: Api, patch: Partial<Prefs>): Promise<Prefs> {
+async function saveNow(api: Api, patch: Partial<Prefs>): Promise<Prefs> {
+  if (!known) {
+    // The first read failed: read again, and refuse to write if the stored prefs still cannot be seen. Writing
+    // `{...DEFAULT_PREFS, ...patch}` would reset every other stored preference.
+    current = await api.prefs();
+    known = true;
+  }
   const next = await api.putPrefs({ ...current, ...patch });
   current = next;
   return next;
+}
+
+/** The only way the UI writes prefs: PUT of `{...current, ...patch}`; resolves with what the server stored. */
+export function savePrefs(api: Api, patch: Partial<Prefs>): Promise<Prefs> {
+  const run = queue.then(() => saveNow(api, patch));
+  queue = run.catch(() => undefined); // a failed save does not block the next one
+  return run;
 }
 
 /** Whether animations are off right now: the explicit choice, else the operating system's setting. */

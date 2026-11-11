@@ -48,3 +48,13 @@ def test_fit_badge():
     # sınır değerleri
     assert fit_badge(int(0.9 * 10 * G), 10 * G, 0) == "ok"
     assert fit_badge(1, 0, 0) == "no"
+
+
+def test_fit_badge_without_gpu_is_ok_when_it_fits_in_ram():
+    # GPU yok (vram 0): "RAM desteği" bir yedek yol değil, tek yol; sığıyorsa rozet "ok" olmalı.
+    G = 1024**3
+    assert fit_badge(int(0.6 * G), 0, 31 * G) == "ok"
+    assert fit_badge(20 * G, 0, 31 * G) == "ok"
+    assert fit_badge(26 * G, 0, 31 * G) == "no"
+    # GPU var ama model sığmıyor: yine "slow"
+    assert fit_badge(15 * G, 8 * G, 16 * G) == "slow"

@@ -242,20 +242,29 @@ def _hold_sse_then_shutdown(monkeypatch, tmp_path, hook):
     result = {}
 
     def client():
-        headers = {"X-Neshter-Token": token, "Host": f"127.0.0.1:{port}"}
-        for _ in range(100):  # sunucu dinlemeye başlayana dek
-            try:
-                sse = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-                sse.request("GET", f"/api/jobs/{job_id}/events", headers=headers)
-                break
-            except OSError:
-                time.sleep(0.1)
-        result["sse"] = sse  # bağlantı sunucu kapanana dek açık kalmalı (çöp toplayıcı kapatmasın)
-        resp = sse.getresponse()
-        resp.fp.readline()  # akış gerçekten açık
-        assert started.wait(10)
-        result["t0"] = time.monotonic()
-        result["status"] = hook(port, headers)
+        try:
+            headers = {"X-Neshter-Token": token, "Host": f"127.0.0.1:{port}"}
+            for _ in range(100):  # sunucu dinlemeye başlayana dek
+                try:
+                    sse = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    sse.request("GET", f"/api/jobs/{job_id}/events", headers=headers)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            result["sse"] = sse  # bağlantı sunucu kapanana dek açık kalmalı (çöp toplayıcı kapatmasın)
+            resp = sse.getresponse()
+            resp.fp.readline()  # akış gerçekten açık
+            assert started.wait(10)
+            result["t0"] = time.monotonic()
+            result["status"] = hook(port, headers)
+        except BaseException as e:  # istemci düşerse sunucu kapat isteği almaz ve test sonsuza dek takılırdı
+            result["error"] = e
+        finally:
+            for _ in range(100):  # request_exit, _run_server içinde bağlanır
+                if app.state.request_exit is not None:
+                    app.state.request_exit()  # idempotent
+                    break
+                time.sleep(0.05)
 
     t = threading.Thread(target=client, daemon=True)
     t.start()
@@ -274,8 +283,17 @@ def test_shutdown_returns_promptly_with_open_sse_stream(monkeypatch, tmp_path):
         return c.getresponse().status
 
     result, t1 = _hold_sse_then_shutdown(monkeypatch, tmp_path, post_shutdown)
+    assert "error" not in result, result.get("error")
     assert result["status"] == 202
     assert t1 - result["t0"] < 3  # iş 30 sn sürerdi; kapat isteği işi iptal edip akışı bitirir
+
+
+def test_sse_shutdown_helper_does_not_hang_when_the_client_thread_fails(monkeypatch, tmp_path):
+    def boom(port, headers):
+        raise RuntimeError("istemci düştü")
+
+    result, _ = _hold_sse_then_shutdown(monkeypatch, tmp_path, boom)  # eski hali burada sonsuza dek beklerdi
+    assert isinstance(result["error"], RuntimeError)
 
 
 def test_graceful_shutdown_has_an_upper_bound(monkeypatch):

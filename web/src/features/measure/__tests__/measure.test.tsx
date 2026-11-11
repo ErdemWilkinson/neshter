@@ -116,7 +116,7 @@ test('cpu caps n_max input at 199 and shows p_min', async () => {
   render(<SelectionPanel values={null} />);
   select([3, 5]);
   await user.click(screen.getByText('Gelişmiş'));
-  const input = screen.getByLabelText('Rastgele çekiş sayısı (en çok)') as HTMLInputElement;
+  const input = screen.getByLabelText('Rastgele deneme sayısı (en çok)') as HTMLInputElement;
   expect(input.max).toBe('199');
   expect(input.min).toBe('19');
   expect(screen.getByText('en küçük p = 0,025')).toBeTruthy();
@@ -144,7 +144,8 @@ test('selection chips are removable and the zero-ablation sentence is shown', as
   render(<SelectionPanel values={[[0, 0], [0, 0], [0, 0], [0, 0, 0, 0, 0, 0.82]]} />);
   select([3, 5], [4, 1]);
   act(() => selectionStore.getState().setFocus(headId(3, 5)));
-  expect(screen.getByText("Head'in çıktısı sıfırlanır (o_proj sütunları sıfır).")).toBeTruthy();
+  expect(screen.getByText("Kesince bu head'lerin katkısı kapanır; model dosyası değişmez.")).toBeTruthy();
+  expect(screen.getByText("Her head'in çıktısı sıfırlanır (o_proj sütunları sıfır).")).toBeTruthy();
   expect(screen.getByText('Odaktaki head K3·H5: güç 0,82')).toBeTruthy();
   const list = screen.getByRole('list', { name: "Seçili head'ler" });
   expect(within(list).getByText('K3·H5')).toBeTruthy();
@@ -155,23 +156,34 @@ test('selection chips are removable and the zero-ablation sentence is shown', as
 test('ControlStatsCard significant copy', () => {
   render(<ControlStatsCard m={measurementFor(significantEffect)} />);
   expect(
-    screen.getByText("Seçilen head'ler, aynı katmanlardan rastgele seçilen head'lerden daha etkili (p = 0,025, 39 çekiş)."),
+    screen.getByText("Seçilen head'ler, aynı katmanlardan rastgele seçilen head'lerden daha etkili (p = 0,025, 39 rastgele deneme)."),
   ).toBeTruthy();
-  expect(screen.getByText('KL 0,0021 ± 0,0003 · 2 istem')).toBeTruthy();
+  expect(screen.getByText('Çıktı değişimi (KL) 0,0021 ± 0,0003 · 2 istem')).toBeTruthy();
   expect(screen.getByText('ölçülen')).toBeTruthy();
-  expect(screen.queryByText(/rastgele \(yaklaşık\)/)).toBeNull(); // no band in this payload
+  expect(screen.queryByText(/rastgele kesimlerde yaklaşık/)).toBeNull(); // no band in this payload
+});
+
+test('ControlStatsCard leads with a plain verdict, details stay secondary', () => {
+  const { container, rerender } = render(<ControlStatsCard m={measurementFor(significantEffect)} />);
+  const summary = container.querySelector('.control-summary');
+  expect(summary).toHaveTextContent('Bu kesim çıktıyı anlamlı biçimde değiştiriyor.');
+  expect(container.querySelector('.control-detail')?.textContent).toContain('Çıktı değişimi (KL)');
+  expect(summary?.compareDocumentPosition(container.querySelector('.control-detail') as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  rerender(<ControlStatsCard m={measurementFor(notSignificantEffect)} />);
+  expect(container.querySelector('.control-summary')).toHaveTextContent('anlamlı biçimde değiştirmiyor görünüyor');
+  expect(container.textContent).not.toMatch(/çekiş|aşım/);
 });
 
 test('ControlStatsCard full not-significant copy and band', () => {
   render(<ControlStatsCard m={measurementFor(notSignificantEffect)} />);
-  expect(screen.getByText('p = 0,525 > 0,05: rastgele seçimden ayırt edilemedi (39 çekiş).')).toBeTruthy();
-  expect(screen.getByText('rastgele (yaklaşık) 0,0011–0,0038')).toBeTruthy();
+  expect(screen.getByText('p = 0,525 > 0,05: rastgele seçimden ayırt edilemedi (39 rastgele deneme).')).toBeTruthy();
+  expect(screen.getByText('rastgele kesimlerde yaklaşık 0,0011–0,0038')).toBeTruthy();
 });
 
 test('ControlStatsCard futility copy uses tr number format', () => {
   setLang('tr');
   render(<ControlStatsCard m={measurementFor({ ...futilityEffect, n_drawn: 3, k_exceed: 2, tau: 0.05 })} />);
-  expect(screen.getByText('p > 0,05, 3 çekişte durdu (2 aşım): rastgele seçimden ayırt edilemedi.')).toBeTruthy();
+  expect(screen.getByText('p > 0,05: 3 rastgele denemede karar belli oldu (2 rastgele kesim en az bu kesim kadar etkili çıktı); rastgele seçimden ayırt edilemedi.')).toBeTruthy();
 });
 
 test('ControlStatsCard keeps seed and p_kind inside the technical detail', () => {

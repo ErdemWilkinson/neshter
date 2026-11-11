@@ -46,8 +46,8 @@ export function FoundHeads({ heads }: { heads: readonly FoundHead[] }) {
         <caption className="sr-only">{t('concept.heads.caption')}</caption>
         <thead>
           <tr>
-            <th scope="col">{t('map.table.layer')}</th>
-            <th scope="col">{t('map.table.head')}</th>
+            <th scope="col">{t('concept.heads.layer')}</th>
+            <th scope="col">{t('concept.heads.head')}</th>
             <th scope="col">{t('concept.heads.score')}</th>
             <th scope="col">{t('concept.heads.measured')}</th>
           </tr>

@@ -1,6 +1,7 @@
 import { useStore } from 'zustand';
 import { navigate } from '@/app/router';
-import { countExploreOnly, countSavable, sendableOps } from '@/core/basket';
+import { countExploreOnly, countSavable, sendableOps, unsavedCount } from '@/core/basket';
+import { isSavable } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
 import { plural, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -16,6 +17,9 @@ export function BasketPanel() {
   const lastRemoved = useStore(basketStore, (s) => s.lastRemoved);
   const savable = countSavable(items);
   const exploreOnly = countExploreOnly(items);
+  const savedOps = useStore(basketStore, (s) => s.savedOps);
+  // Savable cuts that the last save already wrote out: they stay in the basket but are no longer "to do".
+  const savedCount = savable - unsavedCount(items.filter((item) => isSavable(item.op)), savedOps);
 
   return (
     <section className="basket-panel glass" aria-labelledby="basket-title">
@@ -32,7 +36,9 @@ export function BasketPanel() {
       {lastRemoved !== null && (
         <Button onClick={() => basketStore.getState().undoRemove()}>{t('basket.undo')}</Button>
       )}
-      <p className="num basket-line">{t('basket.line', { s: savable, e: exploreOnly })}</p>
+      <p className="num basket-line">{t('basket.line', { s: savable, e: exploreOnly })}
+        {savedCount > 0 && ` · ${t('basket.line.saved', { n: savedCount })}`}
+      </p>
       <div className="basket-actions">
         <Button disabled={sendableOps(items).length === 0} onClick={() => navigate('compare')}>
           {t('basket.compare')}

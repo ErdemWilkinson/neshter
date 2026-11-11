@@ -1,5 +1,6 @@
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { opKey } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
 import { uiStore } from '@/core/stores/ui';
 import { saveFlowStore } from '@/features/saveflow/saveFlowStore';
@@ -60,7 +61,7 @@ test('remove then Geri al restores the row', async () => {
 test('basket line counts savable and explore-only with the fake explore op', () => {
   basketStore.getState().add([head(3, 5), head(4, 1), explore()]);
   render(<BasketPanel />);
-  expect(screen.getByText('Kaydedilecek: 2 · Yalnızca keşif: 1')).toBeTruthy();
+  expect(screen.getByText('Kaydedilebilir kesim: 2 · Yalnızca keşif: 1')).toBeTruthy();
 });
 
 test('pending-discard rows are struck through and marked atılacak', () => {
@@ -71,7 +72,7 @@ test('pending-discard rows are struck through and marked atılacak', () => {
   const row = rowOf(`Kesim: ${FAKE_EXPLORE_TYPE}`);
   expect(row.className).toContain('basket-row-pending');
   expect(within(row).getByText('atılacak')).toBeTruthy();
-  expect(screen.getByText('Kaydedilecek: 1 · Yalnızca keşif: 0')).toBeTruthy();
+  expect(screen.getByText('Kaydedilebilir kesim: 1 · Yalnızca keşif: 0')).toBeTruthy();
 });
 
 test('Modeli kaydet label counts savable items and navigates to save without dispatching', async () => {
@@ -119,4 +120,14 @@ test('imported direction row shows doğrulanmamış yön; concept direction and 
   basketStore.getState().replaceAll({ items: [direction('concept')], shelf: [], savedOps: [] });
   rerender(<BasketPanel />);
   expect(screen.queryByText('doğrulanmamış yön')).toBeNull();
+});
+
+test('after a save the savable cuts read as saved, not as still to save', () => {
+  const saved = head(3, 5);
+  basketStore.getState().add([saved, head(4, 1)]);
+  basketStore.setState({ savedOps: [opKey(saved.op)] });
+  render(<BasketPanel />);
+  expect(screen.getByText(/Kaydedilebilir kesim: 2 · Yalnızca keşif: 0 · 1 kesim kaydedildi/)).toBeTruthy();
+  expect(within(rowOf('K3 · head 5')).getByText('kaydedildi')).toBeTruthy();
+  expect(within(rowOf('K4 · head 1')).getByText('kaydedilebilir')).toBeTruthy();
 });

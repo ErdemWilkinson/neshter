@@ -60,6 +60,9 @@ def estimate_memory_bytes(n_params: int, dtype_bytes: int = 2) -> int:
 def fit_badge(required: int, vram: int, ram: int) -> Literal["ok", "slow", "no"]:
     if required <= 0.9 * vram:
         return "ok"
+    if vram <= 0:
+        # No GPU: RAM is the only place the weights can live, so "slow, RAM backed" would only be noise.
+        return "ok" if required <= 0.8 * ram else "no"
     if required <= 0.8 * (vram + ram):
         return "slow"
     return "no"

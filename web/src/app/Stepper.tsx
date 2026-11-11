@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useStore } from 'zustand';
 import type { Route } from '@/core/stores/ui';
 import { uiStore } from '@/core/stores/ui';
@@ -24,10 +25,17 @@ export function Stepper() {
       <ol>
         {STEPS.map((entrances) => (
           <li key={entrances.join('|')} className={entrances.includes(route) ? 'is-current' : undefined}>
-            {entrances.map((entrance) => (
-              <a key={entrance} href={`#/${entrance}`} aria-current={entrance === route ? 'step' : undefined}>
-                {t(STEP_LABELS[entrance])}
-              </a>
+            {entrances.map((entrance, i) => (
+              <Fragment key={entrance}>
+                {i > 0 && (
+                  <span className="stepper-or" aria-hidden="true">
+                    {t('app.step.or')}
+                  </span>
+                )}
+                <a href={`#/${entrance}`} aria-current={entrance === route ? 'step' : undefined}>
+                  {t(STEP_LABELS[entrance])}
+                </a>
+              </Fragment>
             ))}
           </li>
         ))}

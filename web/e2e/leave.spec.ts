@@ -27,7 +27,7 @@ test('second tab, leave dialog, beforeunload and a clean close', async ({ page, 
   await cut(page);
   await expect(page.locator('.chip-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
 
-  await page.getByRole('button', { name: 'Kapat' }).click();
+  await page.getByRole('button', { name: "Neşter'i kapat" }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('button', { name: 'Kaydet', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Kaydetmeden çık' })).toBeVisible();
@@ -45,7 +45,7 @@ test('second tab, leave dialog, beforeunload and a clean close', async ({ page, 
   expect(types).toContain('beforeunload');
   await expect(page.locator('.chip-unsaved')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Kapat' }).click();
+  await page.getByRole('button', { name: "Neşter'i kapat" }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Kaydetmeden çık' }).click();
   await expect(page.getByText('Neşter kapandı; bu sekmeyi kapatabilirsiniz')).toBeVisible();
   await Promise.race([
