@@ -68,11 +68,26 @@ def _port(value: str) -> int:
     return port
 
 
+GRACEFUL_SHUTDOWN_SECONDS = 3  # açık SSE akışı (Ctrl+C) kapanışı sonsuza dek bekletmesin
+
+
 def _run_server(app, host: str, port: int) -> None:
-    """uvicorn.Server ile çalıştırır; `/api/shutdown` sunucuyu `should_exit` ile zarifçe durdurur."""
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    """uvicorn.Server ile çalıştırır; `/api/shutdown` sunucuyu `should_exit` ile zarifçe durdurur.
+
+    uvicorn, lifespan kapanışından (işleri iptal eden `jobs.shutdown()`) ÖNCE açık bağlantıların bitmesini
+    bekler; çalışan işin açık SSE akışı varsa iş bitene dek kapanmazdı. Bu yüzden kapat isteği önce işleri
+    iptal eder (akış `cancelled` ile biter), Ctrl+C için de `timeout_graceful_shutdown` üst sınırı vardır."""
+    config = uvicorn.Config(
+        app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS
+    )
+    server = uvicorn.Server(config)
     if hasattr(app, "state"):  # testlerde sahte uygulama (str) olabilir
-        app.state.request_exit = lambda: setattr(server, "should_exit", True)
+
+        def request_exit() -> None:
+            app.state.jobs.shutdown()  # idempotent
+            server.should_exit = True
+
+        app.state.request_exit = request_exit
     server.run()
 
 
