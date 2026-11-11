@@ -1,4 +1,7 @@
-import type { BasketItem } from '@/core/basket';
+import { useStore } from 'zustand';
+import { type BasketItem } from '@/core/basket';
+import { opKey } from '@/core/ops';
+import { basketStore } from '@/core/stores/basket';
 import { isOpaque, isSavable } from '@/core/ops';
 import { isUnverifiedDirection } from '@/features/recipe/unverified';
 import { useT } from '@/i18n';
@@ -7,6 +10,8 @@ import { itemLabel } from './labels';
 
 function Kind({ item }: { item: BasketItem }) {
   const t = useT();
+  const saved = useStore(basketStore, (s) => isSavable(item.op) && s.savedOps.includes(opKey(item.op)));
+  if (saved) return <span className="badge badge-saved">{t('basket.badge.saved')}</span>;
   if (isSavable(item.op)) return <span className="badge badge-savable">{t('basket.badge.savable')}</span>;
   if (isOpaque(item.op)) return <span className="badge badge-unsupported">{t('basket.badge.unsupported')}</span>;
   return <span className="badge badge-explore">{t('basket.badge.explore')}</span>;

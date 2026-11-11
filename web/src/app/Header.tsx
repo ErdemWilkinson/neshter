@@ -59,7 +59,7 @@ export function Header({ onClose }: { onClose: () => void }) {
           />
           <span>{t('header.motion')}</span>
         </label>
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="ghost" title={t('header.close.hint')} onClick={onClose}>
           {t('header.close')}
         </Button>
       </div>

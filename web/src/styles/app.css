@@ -167,6 +167,12 @@ select {
   font-family: var(--font-mono);
 }
 
+.stepper-or {
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: var(--text-2);
+}
+
 .stepper a {
   color: inherit;
   text-decoration: none;
@@ -658,6 +664,11 @@ select {
   border-color: var(--accent-increase);
 }
 
+.badge-saved {
+  color: var(--text-2);
+  border-color: var(--text-2);
+}
+
 .badge-explore,
 .badge-pending {
   color: var(--badge-explore);
@@ -960,6 +971,26 @@ select {
 .pair-mode {
   margin: 0;
   color: var(--text-2);
+}
+
+.pair-truncated {
+  margin: 4px 0 0;
+  color: var(--badge-explore);
+  font-size: 0.8125rem;
+}
+
+.compare-cuts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-2);
+}
+
+.compare-cuts ul {
+  display: contents;
+  list-style: none;
 }
 
 .badge-hit {

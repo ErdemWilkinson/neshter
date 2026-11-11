@@ -5,11 +5,24 @@ import { getApi } from '@/api/currentApi';
 import { ApiError, BusyError, type ErrorCode } from '@/api/errors';
 import { compareStore } from '@/core/stores/compare';
 import { sessionStore } from '@/core/stores/session';
-import { useT } from '@/i18n';
+import { useT, type MessageKey } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ErrorCard } from '@/ui/ErrorCard';
 
 const MAX_NEW_TOKENS = 200;
+
+/** The server's pair mode in words; an unknown mode is shown as it came. */
+const MODE_KEYS: Record<string, MessageKey> = {
+  batch: 'compare.pair.mode.batch',
+  sequential: 'compare.pair.mode.sequential',
+  baked: 'compare.pair.mode.baked',
+};
+
+/** A finished answer ends a sentence, a code block or a list; one that stops elsewhere probably hit the token limit. */
+export function looksTruncated(text: string): boolean {
+  const trimmed = text.trimEnd();
+  return trimmed !== '' && !/[.!?…:;)\]}"'”`»]$/.test(trimmed);
+}
 
 function Side({ title, text, hit }: { title: string; text: string; hit: boolean | null }) {
   const t = useT();
@@ -21,6 +34,7 @@ function Side({ title, text, hit }: { title: string; text: string; hit: boolean 
       )}
       {/* Model output is attacker-influenced: always React text, never markup. */}
       <p className="pair-text">{text}</p>
+      {looksTruncated(text) && <p className="pair-truncated">{t('compare.pair.truncated', { n: MAX_NEW_TOKENS })}</p>}
     </section>
   );
 }
@@ -88,7 +102,10 @@ export function PairView({ ops, conceptId, disabled }: { ops: JsonOp[]; conceptI
             <Side title={t('compare.pair.original')} text={pair.original} hit={pair.target_hit?.original ?? null} />
             <Side title={t('compare.pair.cut')} text={pair.modified} hit={pair.target_hit?.modified ?? null} />
           </div>
-          <p className="pair-mode num">{t('compare.pair.mode', { mode: pair.mode })}</p>
+          <p className="pair-mode num">
+            {t('compare.pair.mode', { mode: pair.mode in MODE_KEYS ? t(MODE_KEYS[pair.mode] as MessageKey) : pair.mode })}
+          </p>
+          <p className="pair-mode">{t('compare.pair.limit', { n: MAX_NEW_TOKENS })}</p>
         </>
       )}
     </section>
