@@ -7,7 +7,7 @@ import { exportResult, type Concept, type ExportEstimate } from '@/api/schemas';
 import { useJob } from '@/api/useJob';
 import { countSavable, savableOps } from '@/core/basket';
 import { basketConcept } from '@/core/basketConcept';
-import { isSavable } from '@/core/ops';
+import { isSavable, opKey } from '@/core/ops';
 import { basketStore } from '@/core/stores/basket';
 import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
@@ -140,6 +140,7 @@ export function SaveForm() {
   const runExport = useCallback(async () => {
     const flowStore = saveFlowStore.getState();
     setFailure(null);
+    const sentKeys = ops.map(opKey); // what this export sends; a cut added meanwhile is not saved by it
     const fail = (cause: Failure | null) => {
       flowStore.dispatch({ type: 'EXPORT_FAILED' });
       if (cause !== null && alive.current) setFailure(cause);
@@ -159,7 +160,7 @@ export function SaveForm() {
       });
       const parsed = exportResult.safeParse(final.result);
       if (final.state === 'done' && parsed.success) {
-        basketStore.getState().markSaved();
+        basketStore.getState().markSaved(sentKeys);
         flowStore.dispatch({ type: 'EXPORT_DONE', result: parsed.data });
       } else if (final.state === 'done') {
         fail({ code: 'internal', detail: parsed.error?.issues });

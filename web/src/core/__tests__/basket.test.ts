@@ -40,6 +40,18 @@ test('markSaved records savable items only, so explore-only items stay unsaved',
   expect(unsavedCount(store.getState().items, store.getState().savedOps)).toBe(2);
 });
 
+test('markSaved(keys) marks only the exported ops, so a cut added during the export stays unsaved', () => {
+  const store = createBasketStore();
+  store.getState().add([head(0, 1), head(0, 2)]);
+  const exported = store.getState().items.map((i) => opKey(i.op));
+  store.getState().add([head(5, 5)]); // cut while the export runs
+  store.getState().markSaved(exported);
+  const { items, savedOps } = store.getState();
+  expect(savedOps).toEqual(exported);
+  expect(unsavedCount(items, savedOps)).toBe(1);
+  expect(isDirty(items, savedOps)).toBe(true);
+});
+
 test('selectors split savable, explore-only, sendable', () => {
   const items = [head(0, 1), explore('a'), explore('b', { pendingDiscard: true }), opaque()];
   expect(countSavable(items)).toBe(1);

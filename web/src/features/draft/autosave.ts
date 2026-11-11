@@ -35,8 +35,9 @@ const modelOf = (session: AutosaveDeps['session']): ModelRef | null => {
 /**
  * Mirrors the basket into `PUT /api/draft/{sha}`: 500 ms after the last change, and at once when the tab goes
  * hidden. An empty shelf with nothing unsaved (nothing added, or right after `markSaved()`) deletes the draft this
- * run wrote instead (F4). It never deletes a draft it did not write: while the restore prompt is still open, the
- * old draft is the only copy. A 413 (large direction vectors) raises `draftStatusStore.tooLarge`; other failures
+ * run wrote instead (F4). It never deletes a draft it did not write, and it never overwrites one either: while the
+ * restore prompt has an unresolved earlier draft for the model (`draftStatusStore.pendingSha`), that draft is the
+ * only copy of those cuts, so nothing is written for the model until it is restored (merged) or deleted. A 413 (large direction vectors) raises `draftStatusStore.tooLarge`; other failures
  * are left to the heartbeat and the stale screen. Returns the stop function.
  */
 export function startAutosave(deps: AutosaveDeps): () => void {
@@ -49,6 +50,7 @@ export function startAutosave(deps: AutosaveDeps): () => void {
   // The basket and prompts are read when the flush is requested, not when the queued write runs.
   async function write(model: ModelRef, allowDelete: boolean, snapshot: Snapshot): Promise<void> {
     const { items, shelf, savedOps, prompts } = snapshot;
+    if (draftStatusStore.getState().pendingSha === model.sha256) return;
     try {
       if (shelf.length === 0 && (items.length === 0 || unsavedCount(items, savedOps) === 0)) {
         if (allowDelete && written.has(model.sha256)) {
@@ -99,12 +101,17 @@ export function startAutosave(deps: AutosaveDeps): () => void {
     if (document.visibilityState === 'hidden' && timer !== null) flush(modelOf(deps.session));
   };
   document.addEventListener('visibilitychange', onVisibility);
+  // The earlier draft was restored or deleted: what was held back goes out now.
+  const unsubStatus = draftStatusStore.subscribe((s, prev) => {
+    if (prev.pendingSha !== null && s.pendingSha === null) schedule();
+  });
 
   return () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
     unsubBasket();
     unsubSession();
+    unsubStatus();
     document.removeEventListener('visibilitychange', onVisibility);
   };
 }

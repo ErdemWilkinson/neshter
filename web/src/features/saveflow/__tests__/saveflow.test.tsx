@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Mock } from 'vitest';
 import type { Api } from '@/api/client';
@@ -12,7 +12,11 @@ import { compareStore } from '@/core/stores/compare';
 import { jobsStore } from '@/core/stores/jobs';
 import { uiStore } from '@/core/stores/ui';
 import { registerFakeExploreOp } from '@/core/__tests__/fixtures/fakeExploreOp';
-import { head, item } from '@/core/__tests__/fixtures/items';
+import { directionOp, head, item } from '@/core/__tests__/fixtures/items';
+import estimateFixture from '@/api/__fixtures__/estimate.json';
+import { system } from '@/app/__tests__/fakeServer';
+import { sessionStore } from '@/core/stores/session';
+import { Save } from '@/screens/Save';
 import { setLang } from '@/i18n';
 import { DiscardDialog } from '../DiscardDialog';
 import { NothingToSaveDialog } from '../NothingToSaveDialog';
@@ -82,6 +86,7 @@ afterEach(() => {
   compareStore.setState({ lastPrompt: null, lastPair: null, lastSuite: null, refreshedDropped: null });
   saveFlowStore.setState({ state: IDLE, error: null });
   jobsStore.setState({ active: null });
+  sessionStore.setState({ system: null });
   uiStore.setState({ route: 'home' });
 });
 
@@ -91,7 +96,7 @@ test('saveflow with a fake explore op: discard → suite with savable ops only �
   render(<Harness />);
   await userEvent.click(screen.getByRole('button', { name: 'Kaydet' }));
   const dialog = await screen.findByRole('dialog');
-  expect(dialog).toHaveTextContent('Şu 1 kesim yalnızca keşif içindir ve kaydedilemez: test_explore. Bunlar sepetten atılacak, karşılaştırma yeniden koşulacak. Devam?');
+  expect(dialog).toHaveTextContent('Şu 1 kesim yalnızca keşif içindir ve kaydedilemez: Kesim: test_explore. Bunlar sepetten atılacak, karşılaştırma yeniden koşulacak. Devam?');
   await userEvent.click(screen.getByRole('button', { name: 'Devam' }));
 
   await waitFor(() => expect(uiStore.getState().route).toBe('compare'));
@@ -222,5 +227,50 @@ test('an opaque explore item is listed as desteklenmeyen kesim', async () => {
   mockApi();
   render(<Harness />);
   await userEvent.click(screen.getByRole('button', { name: 'Kaydet' }));
-  expect(await screen.findByRole('dialog')).toHaveTextContent(/Şu 2 kesim .*: test_explore, desteklenmeyen kesim\./);
+  expect(await screen.findByRole('dialog')).toHaveTextContent(/Şu 2 kesim .*: Kesim: test_explore, desteklenmeyen kesim\./);
+});
+
+test('İptal on the progress card of the Save screen cancels the re-run job started by another hook instance', async () => {
+  sessionStore.setState({ system: system as never });
+  let onEvent: ((event: string, data: unknown) => void) | undefined;
+  let endStream: (() => void) | undefined;
+  const { api } = mockApi({
+    estimate: vi.fn(async () => estimateFixture),
+    job: vi.fn(async () => ({ ...doneJob, state: 'running', result: null })),
+    streamJob: vi.fn(
+      (_id: string, opts: { onEvent: typeof onEvent }) =>
+        new Promise((resolve) => {
+          onEvent = opts.onEvent;
+          endStream = () => resolve('ended');
+        }),
+    ),
+    cancelJob: vi.fn(async () => {
+      onEvent?.('state', { ...doneJob, state: 'cancelled', result: null });
+      endStream?.();
+      return { ...doneJob, state: 'cancelled', result: null };
+    }),
+  });
+  render(<Save />);
+  const save = await screen.findByRole('button', { name: /^Kaydet/ });
+  await waitFor(() => expect(save).toBeEnabled());
+  await userEvent.click(save);
+  await userEvent.click(await screen.findByRole('button', { name: 'Devam' })); // the dialogs' hook instance starts the job
+  await waitFor(() => expect(saveFlowStore.getState().state).toMatchObject({ kind: 'recomparing', jobId: 'j1' }));
+  const card = await screen.findByRole('progressbar');
+  await userEvent.click(within(card.closest('.progress-card') as HTMLElement).getByRole('button', { name: 'İptal' })); // the form's instance
+  await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith('j1'));
+  await waitFor(() => expect(basketStore.getState().items.some((i) => i.pendingDiscard)).toBe(false));
+  expect(basketStore.getState().shelf).toHaveLength(0);
+  expect(saveFlowStore.getState().state).toEqual(IDLE);
+  await waitFor(() => expect(jobsStore.getState().active).toBeNull()); // the model is not held any more
+});
+
+test('the discard dialog names cuts with their row labels, not raw op types', () => {
+  const dir = item(directionOp([1, 0, 0, 0]));
+  const h = head(2, 3);
+  basketStore.getState().add([h, dir]);
+  render(<DiscardDialog open exploreIds={[h.id, dir.id]} onConfirm={() => undefined} onCancel={() => undefined} />);
+  const text = screen.getByRole('dialog').textContent ?? '';
+  expect(text).toContain('K2 · head 3, Yön · 4 boyut');
+  expect(text).not.toContain('direction');
 });

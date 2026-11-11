@@ -39,6 +39,7 @@ export function UnsavedWork() {
       setRows([]);
       setFailure(null);
       draftStatusStore.getState().setHasDraft(false);
+      draftStatusStore.getState().setPendingSha(null); // the prompt's draft is gone too
     } catch (error) {
       setFailure(error instanceof ApiError ? { code: error.code, detail: error.detail } : { code: 'internal', detail: String(error) });
     }

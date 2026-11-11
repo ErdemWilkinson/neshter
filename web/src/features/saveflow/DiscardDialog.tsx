@@ -1,14 +1,15 @@
 import { useStore } from 'zustand';
 import { isOpaque } from '@/core/ops';
 import type { BasketItem } from '@/core/basket';
+import { itemLabel } from '@/features/basket/labels';
 import { basketStore } from '@/core/stores/basket';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Dialog } from '@/ui/Dialog';
 
-/** Opaque ops (written by a newer version) have no label this version could know. Text only, never markup. */
+/** The basket row's label; opaque ops (written by a newer version) get the short opaque label. Text only. */
 export function exploreLabel(item: BasketItem, opaqueLabel: string): string {
-  return isOpaque(item.op) ? opaqueLabel : item.op.type;
+  return isOpaque(item.op) ? opaqueLabel : itemLabel(item);
 }
 
 /** "These N cuts are for exploring only..." for the explore items in `exploreIds`; one question, no second modal. */

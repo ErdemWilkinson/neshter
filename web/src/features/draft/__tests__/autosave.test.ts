@@ -25,7 +25,7 @@ const putBody = (api: ReturnType<typeof setup>['api'], call = 0) => (api.putDraf
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.useRealTimers();
-  draftStatusStore.setState({ hasDraft: false, tooLarge: false });
+  draftStatusStore.setState({ hasDraft: false, tooLarge: false, pendingSha: null });
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
 });
 
@@ -161,4 +161,33 @@ test('stop removes the listeners', async () => {
   basket.getState().add([head(0, 1)]);
   await vi.advanceTimersByTimeAsync(1000);
   expect(api.putDraft).not.toHaveBeenCalled();
+});
+
+test('an unresolved earlier draft is never overwritten or deleted; the write goes out once it is resolved', async () => {
+  draftStatusStore.getState().setPendingSha(SHA);
+  const { basket, api, stop } = setup();
+  const cut = head(0, 1);
+  basket.getState().add([cut]);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.putDraft).not.toHaveBeenCalled();
+  basket.getState().remove(cut.id);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.deleteDraft).not.toHaveBeenCalled();
+  basket.getState().add([head(0, 2)]);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.putDraft).not.toHaveBeenCalled();
+  draftStatusStore.getState().setPendingSha(null); // restored or deleted
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.putDraft).toHaveBeenCalledTimes(1);
+  expect(putBody(api)).toMatchObject({ unsaved_count: 1 });
+  stop();
+});
+
+test('a pending draft of another model does not block this model', async () => {
+  draftStatusStore.getState().setPendingSha('c'.repeat(64));
+  const { basket, api, stop } = setup();
+  basket.getState().add([head(0, 1)]);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.putDraft).toHaveBeenCalledTimes(1);
+  stop();
 });

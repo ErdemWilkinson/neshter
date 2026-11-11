@@ -248,6 +248,21 @@ test('export done marks basket saved and the unsaved chip disappears', async () 
   expect(basketStore.getState().savedOps).toHaveLength(2);
 });
 
+test('a cut added while the export runs is not marked saved', async () => {
+  const user = userEvent.setup();
+  mount({
+    'POST /api/export': () => {
+      basketStore.getState().add([head(7, 7)]); // CutButton does not check the job lock
+      return jsonResponse(200, { job_id: jobExport.id });
+    },
+  });
+  await ready();
+  await user.click(saveButton());
+  await screen.findByText('Kaydedildi');
+  expect(basketStore.getState().savedOps).toHaveLength(2);
+  expect(screen.getByText('Kaydedilmemiş 1 kesim')).toBeInTheDocument();
+});
+
 test('export error shows an error card by code and keeps the form', async () => {
   const failed = { ...jobExport, state: 'error', result: null, error: 'folder exists: C:\\x', error_code: 'exists' };
   const user = userEvent.setup();
@@ -273,7 +288,7 @@ test('Kaydet with an explore item opens the discard dialog first', async () => {
   await user.click(saveButton());
   const dialog = await screen.findByRole('dialog');
   expect(dialog).toHaveTextContent(
-    'Şu 1 kesim yalnızca keşif içindir ve kaydedilemez: test_explore. Bunlar sepetten atılacak, karşılaştırma yeniden koşulacak. Devam?',
+    'Şu 1 kesim yalnızca keşif içindir ve kaydedilemez: Kesim: test_explore. Bunlar sepetten atılacak, karşılaştırma yeniden koşulacak. Devam?',
   );
   expect(server.count('POST /api/export')).toBe(0);
   expect(saveFlowStore.getState().state.kind).toBe('needsDiscard');

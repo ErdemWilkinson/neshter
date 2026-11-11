@@ -43,7 +43,7 @@ afterEach(() => {
   sessionStore.setState({ model: null });
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   compareStore.setState({ lastPrompt: null });
-  draftStatusStore.setState({ hasDraft: false, tooLarge: false });
+  draftStatusStore.setState({ hasDraft: false, tooLarge: false, pendingSha: null });
 });
 
 test('restore prompt shows count and restores after recipe check', async () => {
@@ -52,8 +52,10 @@ test('restore prompt shows count and restores after recipe check', async () => {
   expect(await screen.findByText('Önceki oturumdan kaydedilmemiş 2 kesim var: geri yükle?')).toBeInTheDocument();
   expect(api.draft).toHaveBeenCalledWith(SHA);
   expect(draftStatusStore.getState().hasDraft).toBe(true);
+  expect(draftStatusStore.getState().pendingSha).toBe(SHA); // autosave holds back until the person chooses
   await userEvent.click(screen.getByRole('button', { name: 'Geri yükle' }));
   await waitFor(() => expect(basketStore.getState().items).toHaveLength(2));
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
   expect(api.recipeCheck).toHaveBeenCalledTimes(1);
   expect(compareStore.getState().lastPrompt).toBe('merhaba');
   expect(screen.queryByText(/geri yükle\?/)).toBeNull();
@@ -79,36 +81,56 @@ test('a failed recipe check lists the errors and restores nothing', async () => 
   expect(screen.getByRole('button', { name: 'Geri yükle' })).toBeInTheDocument(); // can be retried or discarded
 });
 
-test('Sil deletes the draft and Sonra just closes the prompt', async () => {
+test('Sil deletes the draft and releases autosave; there is no way to dismiss the prompt without choosing', async () => {
   const api = mockApi({});
-  const { unmount } = render(<RestorePrompt />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Sonra' }));
-  expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull();
-  expect(api.deleteDraft).not.toHaveBeenCalled();
-  unmount();
   render(<RestorePrompt />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Sil' }));
+  await screen.findByRole('region', { name: 'Önceki oturum' });
+  expect(screen.queryByRole('button', { name: 'Sonra' })).toBeNull();
+  expect(draftStatusStore.getState().pendingSha).toBe(SHA);
+  await userEvent.click(screen.getByRole('button', { name: 'Sil' }));
   expect(api.deleteDraft).toHaveBeenCalledWith(SHA);
   await waitFor(() => expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull());
   expect(draftStatusStore.getState().hasDraft).toBe(false);
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
 });
 
-test('restore is not offered when the basket is not empty', async () => {
-  basketStore.getState().add([head(3, 3)]);
+test('the prompt stays when the basket is not empty, and restore merges the old cuts with the new ones', async () => {
+  basketStore.getState().add([head(3, 3), head(0, 2)]); // (0,2) is also in the draft: no duplicate
   const api = mockApi({});
   render(<RestorePrompt />);
-  await waitFor(() => expect(api.draft).toHaveBeenCalled());
-  await act(async () => undefined);
+  expect(await screen.findByText('Önceki oturumdan kaydedilmemiş 2 kesim var: geri yükle?')).toBeInTheDocument();
+  act(() => void basketStore.getState().add([head(5, 5)])); // a cut made while the prompt is open does not hide it
+  expect(screen.getByRole('region', { name: 'Önceki oturum' })).toBeInTheDocument();
+  expect(draftStatusStore.getState().pendingSha).toBe(SHA);
+  await userEvent.click(screen.getByRole('button', { name: 'Geri yükle' }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull());
+  expect(api.recipeCheck).toHaveBeenCalledTimes(1);
+  const keys = basketStore.getState().items.map((i) => (i.op as { layer: number; head: number }).layer + ':' + (i.op as { head: number }).head);
+  expect(keys.sort()).toEqual(['0:1', '0:2', '3:3', '5:5']);
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
+});
+
+test('an unreadable draft that holds unsaved cuts is protected and can only be deleted', async () => {
+  const unreadable = { ...draftBody(), basket: [{ id: 5 }] } as DraftBody;
+  const api = mockApi({ draft: vi.fn(async () => unreadable) });
+  render(<RestorePrompt />);
+  expect(await screen.findByText(/okuyamadı/)).toBeInTheDocument();
+  expect(draftStatusStore.getState().pendingSha).toBe(SHA);
+  expect(screen.queryByRole('button', { name: 'Geri yükle' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Sil' }));
+  expect(api.deleteDraft).toHaveBeenCalledWith(SHA);
+  await waitFor(() => expect(draftStatusStore.getState().pendingSha).toBeNull());
   expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull();
 });
 
 test('restore is not offered for an empty, undecodable or missing draft', async () => {
-  for (const body of [draftBody([]), { ...draftBody(), basket: [{ id: 5 }] } as DraftBody, { ...draftBody(), schema_version: 2 } as unknown as DraftBody]) {
+  for (const body of [draftBody([]), draftBody([head(0, 1)], { unsaved_count: 0 })]) {
     const api = mockApi({ draft: vi.fn(async () => body) });
     const { unmount } = render(<RestorePrompt />);
     await waitFor(() => expect(api.draft).toHaveBeenCalled());
     await act(async () => undefined);
     expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull();
+    expect(draftStatusStore.getState().pendingSha).toBeNull();
     unmount();
   }
   const api = mockApi({ draft: vi.fn(async () => Promise.reject(new ApiError(404, 'not_found'))) });
@@ -154,4 +176,20 @@ test('UnsavedWork lists rows as text, notes that prompts are stored, and deletes
   await waitFor(() => expect(api.deleteDraft).toHaveBeenCalledWith(SHA));
   expect(api.deleteDraft).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(screen.queryByText(/Kaydedilmemiş çalışmalar/)).toBeNull());
+});
+
+test('deleting every draft from the Home list also closes the prompt and releases autosave', async () => {
+  const api = mockApi({ drafts: vi.fn(async () => [{ sha256: SHA, model_name: 'abc123', updated_at: 'x', unsaved_count: 2 }]) });
+  render(
+    <>
+      <RestorePrompt />
+      <UnsavedWork />
+    </>,
+  );
+  await screen.findByRole('region', { name: 'Önceki oturum' });
+  await userEvent.click(await screen.findByRole('button', { name: 'Taslakları sil' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'Tüm taslaklar silinsin mi?' })).getByRole('button', { name: 'Sil' }));
+  await waitFor(() => expect(api.deleteDraft).toHaveBeenCalledWith(SHA));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Önceki oturum' })).toBeNull());
+  expect(draftStatusStore.getState().pendingSha).toBeNull();
 });
