@@ -41,7 +41,7 @@ const dirty = () =>
 
 test('exact leave copy', () => {
   setLang('tr');
-  expect(t('leave.title')).toBe('Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz');
+  expect(t('leave.title')).toBe('Ayrılıyorsunuz, kesimlerinizi henüz kaydetmediniz');
   expect(t('leave.save')).toBe('Kaydet');
   expect(t('leave.leave')).toBe('Kaydetmeden çık');
   expect(t('leave.cancel')).toBe('Vazgeç');
@@ -63,7 +63,7 @@ test('leave guard shows the three exact buttons when dirty and Vazgeç keeps sta
   render(<Harness proceed={proceed} />);
   dirty();
   await userEvent.click(screen.getByRole('button', { name: 'çık' }));
-  const dialog = screen.getByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz' });
+  const dialog = screen.getByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi henüz kaydetmediniz' });
   const names = Array.from(dialog.querySelectorAll('button')).map((b) => b.textContent);
   expect(names).toEqual(['Kaydet', 'Kaydetmeden çık', 'Vazgeç']);
   await userEvent.click(screen.getByRole('button', { name: 'Vazgeç' }));

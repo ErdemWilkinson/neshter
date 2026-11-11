@@ -17,6 +17,7 @@ import { SuiteRunner } from '@/features/compare/SuiteRunner';
 import { SuiteTable } from '@/features/compare/SuiteTable';
 import { SummaryBanner } from '@/features/compare/SummaryBanner';
 import { SaveFlowDialogs } from '@/features/saveflow/SaveFlowDialogs';
+import { itemLabel } from '@/features/basket/labels';
 import { useT } from '@/i18n';
 
 /** Spec §2 step 4: the original and the cut model side by side, then the test set with honest uncertainty. */
@@ -47,6 +48,7 @@ export function Compare() {
       ),
     [items, concepts],
   );
+  const cuts = useMemo(() => items.filter((i) => isSendable(i.op) && i.pendingDiscard !== true), [items]);
   const empty = ops.length === 0;
   const stale = lastSuite !== null && lastSuite.fp !== opsFingerprint(ops);
   const summary = lastSuite?.result.summary ?? null;
@@ -58,6 +60,18 @@ export function Compare() {
       <h1>{t('app.step.compare')}</h1>
       <RefreshedBanner />
       {empty && <p>{t('compare.none')}</p>}
+      {!empty && (
+        <div className="compare-cuts">
+          <span id="compare-cuts-label">{t('compare.cuts')}:</span>
+          <ul className="chip-list" aria-labelledby="compare-cuts-label">
+            {cuts.map((item) => (
+              <li key={item.id} className="chip num">
+                {itemLabel(item)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <PairView ops={ops as JsonOp[]} conceptId={conceptId} disabled={empty || locked} />
       <SuiteRunner ops={ops} target={suiteTarget} disabled={empty || locked} />
       {stale && (

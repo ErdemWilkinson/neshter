@@ -117,7 +117,7 @@ test('pair view renders model output as text', async () => {
   await ask(user);
   expect(await screen.findByText(evil)).toBeInTheDocument();
   expect(document.querySelector('img')).toBeNull();
-  expect(screen.getByText(/sıcaklık 0 · seed 42 · batch/)).toBeInTheDocument();
+  expect(screen.getByText(/sıcaklık 0 · seed 42 \(aynı soruya hep aynı cevap\) · iki cevap birlikte üretildi/)).toBeInTheDocument();
 });
 
 test('compare shows busy banner on 409', async () => {
@@ -252,4 +252,17 @@ test('a failed suite shows an error card and keeps the old result', async () => 
   await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
   expect(screen.getByText('Test seti tamamlanamadı')).toBeInTheDocument();
   expect(compareStore.getState().lastSuite).toBeNull();
+});
+
+test('pair view says when an answer stops at the token limit and shows which cuts are compared', async () => {
+  const user = userEvent.setup();
+  mount({
+    'POST /api/compare': () => jsonResponse(200, pair({ original: 'Bir cümle biter.', modified: 'Alternatively, you can use' })),
+  });
+  await ask(user);
+  expect(await screen.findAllByText('kısaltıldı (en fazla 200 token)')).toHaveLength(1);
+  expect(screen.getByText(/Cevaplar en fazla 200 token ile sınırlıdır/)).toBeInTheDocument();
+  expect(screen.queryByText(/batch/)).toBeNull();
+  expect(screen.getByText('Karşılaştırılan kesimler:')).toBeInTheDocument();
+  expect(screen.getByRole('list', { name: /Karşılaştırılan kesimler/ })).toBeInTheDocument();
 });

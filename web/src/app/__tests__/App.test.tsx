@@ -176,7 +176,7 @@ test('unsaved cuts without a server draft do not claim a draft on the down scree
 test('Kapat shuts the server down and shows the closed screen', async () => {
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(1);
 });
@@ -185,7 +185,7 @@ test('the closed screen does not promise new cuts in the draft while an earlier 
   const { server } = mount();
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   act(() => draftStatusStore.setState({ hasDraft: true, pendingSha: SHA }));
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
   expect(screen.queryByText(/Kaydedilmemiş kesimleriniz taslakta/)).toBeNull();
   expect(screen.getByText(/bu oturumdaki yeni kesimler taslağa yazılmadı/)).toBeInTheDocument();
@@ -198,8 +198,8 @@ test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', as
   act(() => {
     basketStore.getState().add([aCut()]);
   });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
-  expect(await screen.findByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi daha kaydetmediniz' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
+  expect(await screen.findByRole('dialog', { name: 'Ayrılıyorsunuz, kesimlerinizi henüz kaydetmediniz' })).toBeInTheDocument();
   expect(server.count('POST /api/shutdown')).toBe(0);
   await userEvent.click(screen.getByRole('button', { name: 'Kaydetmeden çık' }));
   expect(await screen.findByRole('heading', { name: 'Neşter kapandı; bu sekmeyi kapatabilirsiniz' })).toBeInTheDocument();
@@ -211,7 +211,7 @@ test('a failed shutdown shows an error card and leaves the app and its state unt
     fakeServer({ 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
   );
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(await screen.findByText('Neşter kapatılamadı')).toBeInTheDocument();
   expect(screen.getByText('Beklenmeyen bir hata oldu.')).toBeInTheDocument();
   expect(screen.getByText('kapanmadı <b>x</b>').closest('details')).not.toBeNull();

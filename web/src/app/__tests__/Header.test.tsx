@@ -86,11 +86,11 @@ test('the model chip is name · dtype · device, rendered as text', () => {
   expect(document.querySelector('img')).toBeNull();
 });
 
-test('Kapat calls onClose', async () => {
+test("Neşter'i kapat calls onClose", async () => {
   useServer();
   const onClose = vi.fn();
   render(<Header onClose={onClose} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Kapat' }));
+  await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
@@ -99,7 +99,7 @@ test('the language select switches the whole header to English', async () => {
   render(<Header onClose={() => undefined} />);
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Dil' }), 'en');
   expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
-  expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Quit Neşter' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'Reduce motion' })).toBeInTheDocument();
 });
 
@@ -110,7 +110,7 @@ test('Stepper is hidden on home and lists the four steps elsewhere', () => {
   const nav = screen.getByRole('navigation', { name: 'Adımlar' });
   const steps = within(nav).getAllByRole('listitem');
   expect(steps).toHaveLength(4);
-  expect(steps.map((li) => li.textContent)).toEqual(['Model', 'Davranışı bulAğ haritası', 'Karşılaştır', 'Kaydet']);
+  expect(steps.map((li) => li.textContent)).toEqual(['Model', 'Davranışı bulveyaAğ haritası', 'Karşılaştır', 'Kaydet']);
   expect(within(nav).getByRole('link', { name: 'Kaydet' })).toHaveAttribute('aria-current', 'step');
   expect(within(nav).getByRole('link', { name: 'Model' })).toHaveAttribute('href', '#/models');
 });
