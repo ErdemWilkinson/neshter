@@ -1268,8 +1268,17 @@ select {
     font-size: 0.75rem;
   }
 
+  /* Name and quit button share the first row; language and motion follow; the chips come last. */
   .header-controls {
-    gap: 8px;
+    display: contents;
+  }
+
+  .header-controls .control {
+    order: 2;
+  }
+
+  .header-controls .btn {
+    order: 1;
     margin-left: auto;
   }
 
