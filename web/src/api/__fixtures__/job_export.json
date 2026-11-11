@@ -1,0 +1,19 @@
+{
+  "id": "8a4e26ccc7444a0e981c4ba9f33d6d0c",
+  "state": "done",
+  "progress": 1.0,
+  "message": "SHA-256 hazır",
+  "result": {
+    "path": "C:\\Users\\x\\model",
+    "source_sha256": "87c805a1b11d25aeec8ee7a1ac4cc5194940b5b2cb769e21bfdec28c9b56b13c",
+    "source_untouched": true,
+    "safety_ablated": false,
+    "name": "kesik"
+  },
+  "error": null,
+  "kind": "export",
+  "error_code": null,
+  "created_at": "2026-11-11T08:22:46.680546+00:00",
+  "started_at": "2026-11-11T08:22:46.680621+00:00",
+  "finished_at": "2026-11-11T08:22:46.829794+00:00"
+}

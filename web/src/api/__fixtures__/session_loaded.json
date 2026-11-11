@@ -1,0 +1,25 @@
+{
+  "loaded": true,
+  "name": "abc123",
+  "arch": {
+    "family": "qwen2",
+    "n_layers": 2,
+    "n_heads": 4,
+    "n_kv_heads": 2,
+    "head_dim": 16,
+    "d_model": 64,
+    "d_mlp": 128,
+    "n_params": 139840
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "license": null,
+  "memory_bytes": 559360,
+  "device_note": null,
+  "source_path": "C:\\Users\\x\\model",
+  "source_sha256": "87c805a1b11d25aeec8ee7a1ac4cc5194940b5b2cb769e21bfdec28c9b56b13c",
+  "default_method": "activation_diff",
+  "safety_dirs": 0,
+  "safety_heads": 0,
+  "measure_count": 0
+}

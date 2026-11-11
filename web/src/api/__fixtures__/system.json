@@ -1,0 +1,17 @@
+{
+  "gpu_name": null,
+  "vram_bytes": 0,
+  "ram_bytes": 34082516992,
+  "default_out_dir": "C:\\Users\\x\\model",
+  "llama_cpp": {
+    "found": false,
+    "path": null,
+    "converter": false
+  },
+  "ollama": true,
+  "torch_version": "2.15.0+cpu",
+  "torch_cuda": null,
+  "cuda_available": false,
+  "native_bf16": false,
+  "cpu_threads": 2
+}
