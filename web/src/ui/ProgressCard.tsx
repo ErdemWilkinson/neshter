@@ -4,7 +4,7 @@ import type { JobState } from '@/api/schemas';
 import { t, useT } from '@/i18n';
 import { Button } from './Button';
 
-function duration(totalSeconds: number): string {
+export function duration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds));
   if (seconds < 60) return t('jobs.duration.sec', { s: seconds });
   return t('jobs.duration.min', { m: Math.floor(seconds / 60), s: seconds % 60 });
