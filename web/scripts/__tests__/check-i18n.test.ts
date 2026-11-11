@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkI18n } from '../check-i18n.mjs';
@@ -75,4 +76,23 @@ test('the real catalogs are consistent', () => {
       srcDir: join(WEB_DIR, 'src'),
     }),
   ).toEqual([]);
+});
+
+describe('check-i18n command line', () => {
+  const run = (script: string) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
+
+  test('runs and reports ok when started by its plain path', () => {
+    const result = run(join(WEB_DIR, 'scripts', 'check-i18n.mjs'));
+    expect(result.stdout).toContain('check-i18n: ok');
+    expect(result.status).toBe(0);
+  });
+
+  test('does not silently do nothing when started through a link (the entry guard compares real paths)', () => {
+    mkdirSync(TMP_ROOT, { recursive: true });
+    const link = join(mkdtempSync(join(TMP_ROOT, 'link-')), 'scripts-link');
+    symlinkSync(join(WEB_DIR, 'scripts'), link, 'junction');
+    const result = run(join(link, 'check-i18n.mjs'));
+    expect(result.stdout).toContain('check-i18n: ok');
+    expect(result.status).toBe(0);
+  });
 });
