@@ -15,6 +15,8 @@ import { uiStore, type Intent } from '@/core/stores/ui';
 import { head } from '@/core/__tests__/fixtures/items';
 import { SAMPLE_NAME } from '@/features/models/LoadScreen';
 import { pendingImportStore } from '@/features/recipe/pendingImport';
+import { IDLE, type SaveFlowState } from '@/core/saveflow';
+import { saveFlowStore } from '@/features/saveflow/saveFlowStore';
 import { setLang } from '@/i18n';
 import { getSessionStorage } from '@/app/sessionStorage';
 import { Home } from '../Home';
@@ -79,6 +81,7 @@ afterEach(() => {
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
   jobsStore.setState({ active: null });
   pendingImportStore.getState().set(null);
+  saveFlowStore.setState({ state: IDLE, error: null });
   measureStore.getState().reset();
   exploreStore.getState().reset();
   uiStore.setState({ route: 'home', intent: null });
@@ -275,6 +278,28 @@ test('loading a different model drops the old basket, the same model keeps it', 
   await userEvent.click(await screen.findByRole('button', { name: 'Kaydetmeden çık' }));
   await waitFor(() => expect(uiStore.getState().route).toBe('explore'));
   expect(basketStore.getState().items).toHaveLength(1);
+});
+
+test('loading a different model resets the save flow (no stale Kaydedildi card), the same model keeps it', async () => {
+  makeApi();
+  const done: SaveFlowState = {
+    kind: 'done',
+    result: { name: 'a', path: '/tmp/x', format: 'safetensors', source_sha256: 'b'.repeat(64) } as never,
+  };
+  saveFlowStore.setState({ state: done });
+  sessionStore.getState().setModel({ ...loaded, source_sha256: 'b'.repeat(64) });
+  const { unmount } = render(<Models />);
+  await userEvent.click(await rowOpen());
+  await waitFor(() => expect(sessionStore.getState().model?.source_sha256).toBe(loaded.source_sha256));
+  expect(saveFlowStore.getState().state).toEqual(IDLE);
+  unmount();
+
+  saveFlowStore.setState({ state: done });
+  uiStore.setState({ route: 'models' });
+  render(<Models />);
+  await userEvent.click(await rowOpen());
+  await waitFor(() => expect(uiStore.getState().route).toBe('explore'));
+  expect(saveFlowStore.getState().state).toBe(done);
 });
 
 test('a failed load shows the error by code and a way back', async () => {

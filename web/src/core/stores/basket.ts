@@ -18,7 +18,11 @@ export interface BasketState {
   moveToShelf(ids: readonly string[]): void;
   /** Moves a shelf item back; `true` when it now sits in the basket (added, or already there). */
   restoreFromShelf(id: string): boolean;
-  markSaved(): void;
+  /**
+   * Records the `opKey`s of the savable ops that were saved. `keys` are the ops the export actually sent; without
+   * them every savable item in the basket counts as saved.
+   */
+  markSaved(keys?: readonly string[]): void;
   replaceAll(state: { items: readonly BasketItem[]; shelf: readonly BasketItem[]; savedOps: readonly string[] }): void;
 }
 
@@ -85,8 +89,12 @@ export const createBasketStore = () =>
           add([item]);
           return true;
         },
-        markSaved: () =>
-          set((s) => ({ savedOps: s.items.filter((item) => isSavable(item.op)).map((item) => opKey(item.op)) })),
+        markSaved: (keys) =>
+          set((s) => {
+            const sent = keys === undefined ? null : new Set(keys);
+            const saved = s.items.filter((item) => isSavable(item.op)).map((item) => opKey(item.op));
+            return { savedOps: sent === null ? saved : saved.filter((key) => sent.has(key)) };
+          }),
         replaceAll: ({ items, shelf, savedOps }) =>
           set({
             items: items.slice(-MAX_ITEMS),

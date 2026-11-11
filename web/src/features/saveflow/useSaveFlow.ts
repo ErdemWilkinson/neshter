@@ -38,8 +38,7 @@ const toFailure = (error: unknown): SaveFlowFailure =>
 export function useSaveFlow(): SaveFlow {
   const state = useStore(saveFlowStore, (s) => s.state);
   const error = useStore(saveFlowStore, (s) => s.error);
-  const job = useJob<unknown>();
-  const { start, cancel: cancelJob } = job;
+  const { start } = useJob<unknown>();
 
   const recompare = useCallback(
     async (ids: string[]) => {
@@ -103,8 +102,11 @@ export function useSaveFlow(): SaveFlow {
     const flow = saveFlowStore.getState();
     const before = flow.state;
     flow.dispatch({ type: 'CANCEL' });
-    if (before.kind === 'recomparing' && before.jobId !== null) void cancelJob().catch(() => undefined);
-  }, [cancelJob]);
+    // By the id in the flow state, not through this instance's `useJob`: the re-run was started by another
+    // `useSaveFlow()` instance (the dialogs), so this one holds no job. A job that is still starting is cancelled
+    // by `recompare` once it has an id.
+    if (before.kind === 'recomparing' && before.jobId !== null) void getApi().cancelJob(before.jobId).catch(() => undefined);
+  }, []);
 
   const dismiss = useCallback(() => {
     saveFlowStore.getState().dispatch({ type: 'DISMISS' });

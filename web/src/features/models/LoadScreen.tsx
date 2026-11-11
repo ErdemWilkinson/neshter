@@ -13,6 +13,7 @@ import { sessionStore } from '@/core/stores/session';
 import { intentRoute, uiStore } from '@/core/stores/ui';
 import { exploreStore } from '@/features/map/exploreStore';
 import { RecipeApply } from '@/features/recipe/RecipeApply';
+import { saveFlowStore } from '@/features/saveflow/saveFlowStore';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ErrorCard } from '@/ui/ErrorCard';
@@ -38,6 +39,9 @@ function resetForNewModel(): void {
   selectionStore.getState().clear();
   measureStore.getState().reset(); // measurements and the explore view belong to one model
   exploreStore.getState().reset();
+  // The save flow's result card and refreshed notice describe the old model.
+  saveFlowStore.getState().dispatch({ type: 'CANCEL' });
+  saveFlowStore.getState().dispatch({ type: 'DISMISS' });
 }
 
 /**
