@@ -733,6 +733,25 @@ select {
   color: var(--badge-explore);
 }
 
+.control-summary {
+  padding-left: 10px;
+  border-left: 4px solid var(--border-control);
+  font-weight: 600;
+}
+
+.control-summary-yes {
+  border-left-color: var(--accent-increase);
+}
+
+.control-summary-no {
+  border-left-color: var(--badge-explore);
+}
+
+.control-detail p {
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
 .cut {
   display: flex;
   flex-direction: column;
