@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 import tomllib
@@ -40,3 +42,55 @@ def test_built_ui_path_not_gitignored():
 def test_wheel_artifacts_include_dist():
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "neshter/web/dist/**" in cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]
+
+
+WEB = ROOT / "web"
+_HASH_ROOT_FILES = ("index.html", "vite.config.ts", "tsconfig.json", "package-lock.json")
+_HASH_ROOT_DIRS = ("src", "public")
+
+
+def source_hash(web_dir: Path) -> str:
+    """`web/scripts/source-hash.mjs` in Python: same file set, same EOL normalisation, same digest layout."""
+    files: list[str] = []
+    for name in _HASH_ROOT_DIRS:
+        base = web_dir / name
+        if base.is_dir():
+            files.extend(p.relative_to(web_dir).as_posix() for p in base.rglob("*") if p.is_file())
+    files.extend(name for name in _HASH_ROOT_FILES if (web_dir / name).is_file())
+    files.sort(key=lambda rel: rel.encode("utf-16-be"))  # JS compares UTF-16 code units
+    digest = hashlib.sha256()
+    for rel in files:
+        if "/__tests__/" in f"/{rel}" or "/__fixtures__/" in rel or ".test." in rel:
+            continue
+        content = (web_dir / rel).read_bytes().replace(b"\r\n", b"\n")
+        digest.update(f"{rel}\0{hashlib.sha256(content).hexdigest()}\n".encode())
+    return digest.hexdigest()
+
+
+def _dist_tracked() -> bool:
+    if shutil.which("git") is None:
+        return False
+    out = subprocess.run(
+        ["git", "ls-files", "neshter/web/dist/index.html"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    return bool(out.strip())
+
+
+def test_python_source_hash_matches_golden_vector():
+    fixture = WEB / "scripts" / "__tests__" / "__fixtures__" / "hash"
+    expected = (fixture / "expected.txt").read_text(encoding="utf-8").strip()
+    assert source_hash(fixture) == expected  # the Vitest suite asserts the same vector
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git yok")
+@pytest.mark.skipif(not (WEB / "package.json").exists(), reason="web/ kaynakları yok (paketlenmiş kurulum)")
+def test_built_ui_is_committed():
+    assert _dist_tracked(), "neshter/web/dist/index.html git'te değil: `npm --prefix web run build` sonrası dist'i ekleyin"
+
+
+@pytest.mark.skipif(not (WEB / "package.json").exists(), reason="web/ kaynakları yok (paketlenmiş kurulum)")
+def test_committed_dist_matches_web_sources():
+    if not _dist_tracked():
+        pytest.skip("dist git'te değil")
+    info = json.loads((ROOT / "neshter" / "web" / "dist" / "build-info.json").read_text(encoding="utf-8"))
+    assert info["source_hash"] == source_hash(WEB), "dist bayat: web/ kaynakları değişti, `npm --prefix web run build` çalıştırın"

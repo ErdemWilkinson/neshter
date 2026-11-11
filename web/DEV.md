@@ -114,3 +114,35 @@ needs typescript `<6.1.0`; eslint-plugin-react-hooks 7.1.1 accepts eslint 9; jsx
 Task 1 install result: after `npm --prefix D:\neshter\web ci`, `(Get-Item web\node_modules).LinkType` = `Junction`
 and `D:\neshter\web\node_modules\react\package.json` present. Running `npm ci` directly in `web/` broke the
 junction (see above), which is why the D: mirror procedure exists.
+
+## End-to-end tests (Playwright)
+
+`npm --prefix web run e2e` (with `<WEBENV>`: `PLAYWRIGHT_BROWSERS_PATH=D:\neshter\pw-browsers`) runs Chromium only, one worker,
+against a **real** Neşter server with the tiny random model from `tests/tiny_models.py`. Build first
+(`npm --prefix web run build`): the server serves `neshter/web/dist`.
+
+- One-time browser install: `npm --prefix web exec -- playwright install chromium` (not `npx --prefix`); ~200 MB on D: only.
+- `e2e/serve_e2e.py --port P --workdir W [--token T]` (run with `D:/neshter/venv/Scripts/python`) builds the model once at
+  `W/hub/models--neshter--tiny-e2e/snapshots/e2e` (kept across restarts, so the SHA stays stable), sets
+  `NESHTER_HOME=W/home` and serves it. `W` must be under `D:\neshter\e2e-work` (specs wipe their own folder with
+  `freshWorkdir(name)`; nothing is written to C:). `e2e/server.ts` starts it on a free port and kills the process tree
+  (`taskkill /T`; the venv `python.exe` may be a launcher). `NESHTER_PYTHON` overrides the interpreter. The token is passed
+  as `--token=<t>` because a base64url token can start with `-`.
+- Specs: `happy-path` (Home → Explore → measure → cut → Compare → Save), `restore` (server restart on another port, then on
+  the same port with a new token; allow ~25 s for the 10 s heartbeat), `leave` (second tab, leave dialog, `beforeunload`,
+  `Kapat`), `offline-csp` (only 127.0.0.1 requests, no `securitypolicyviolation`, empty `localStorage`, bundled fonts),
+  `a11y` (axe on every screen, Liste parity, reduced motion, focus ring). The browser locale is `tr-TR` (the UI language
+  follows `navigator.language`).
+- `offline-csp` is the only proof that zod's jitless mode works under the real CSP (jsdom does not enforce CSP): run it
+  before every `dist` commit. The Vite dev proxy injects the token (`NESHTER_DEV_TOKEN`) for **dev only**; the built app
+  always reads `#token=` itself.
+- `outputDir` is `node_modules/.pw-results` (on D: through the junction). `@axe-core/playwright` brings its own
+  `playwright-core` copy, so `a11y.spec.ts` casts the `Page` for `AxeBuilder`.
+
+## Bundle size and shipping
+
+Measured at Task 15: entry chunk `index-*.js` 446.65 kB raw, **134.97 kB gzip** (limit 250 000 bytes gzipped, `check-dist: ok`);
+CSS 3.62 kB gzip; fonts are separate `woff2` files (latin and latin-ext subsets). `neshter/web/dist` is committed now;
+`dist/build-info.json` holds the source hash and `tests/test_web_dist.py` fails when `web/` changed without a rebuild:
+after touching anything under `web/src`, `index.html`, `vite.config.ts`, `tsconfig.json` or `package-lock.json`, run
+`npm --prefix web run build` and commit `neshter/web/dist` with the change.
