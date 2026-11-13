@@ -41,6 +41,13 @@ export interface HuntRequest {
   concept?: { id: string; name_tr: string; name_en: string; positive: string[]; negative: string[]; [key: string]: unknown };
   method?: Exclude<Method, 'auto'> | null;
   seed?: number;
+  /** >1 with `direction`: sweep the model for leaked directions after removing the found ones. */
+  sweeps?: number;
+}
+export interface GraphRequest {
+  prompt: string;
+  target_token_id?: number | null;
+  budget?: { heads_per_layer?: number; neurons_per_layer?: number; max_nodes?: number; max_edges?: number };
 }
 export interface SuiteRequest {
   recipe_ops: JsonOp[];
@@ -78,6 +85,10 @@ export interface Api {
   sample(): Promise<{ job_id: string }>;
   activity(body: ActivityRequest): Promise<schemas.ActivityResponse>;
   mlp(body: MlpRequest): Promise<z.infer<typeof schemas.mlp>>;
+  lens(body: { prompt: string; position?: number }): Promise<schemas.LensResponse>;
+  attention(body: { prompt: string; layer: number }): Promise<schemas.AttentionResponse>;
+  graph(body: GraphRequest): Promise<{ job_id: string }>;
+  graphCut(graphId: string, edgeIds: string[]): Promise<schemas.GraphCut>;
   compare(body: CompareRequest): Promise<schemas.CompareResponse>;
   recipeCheck(body: { recipe: unknown }): Promise<schemas.RecipeCheck>;
   effect(body: EffectRequest): Promise<{ job_id: string }>;
@@ -182,6 +193,11 @@ export function createApi(opts: ApiOptions): Api {
     sample: () => post('/api/models/sample', schemas.jobStart),
     activity: (body) => post('/api/activity', schemas.activity, body),
     mlp: (body) => post('/api/mlp', schemas.mlp, body),
+    lens: (body) => post('/api/lens', schemas.lens, body),
+    attention: (body) => post('/api/attention', schemas.attention, body),
+    graph: (body) => post('/api/graph', schemas.jobStart, body),
+    graphCut: (graphId, edgeIds) =>
+      post(`/api/graph/${encodeURIComponent(graphId)}/cut`, schemas.graphCut, { edge_ids: edgeIds }),
     compare: (body) => post('/api/compare', schemas.compare, body),
     recipeCheck: (body) => post('/api/recipe/check', schemas.recipeCheck, body),
     effect: (body) => post('/api/effect', schemas.jobStart, body),

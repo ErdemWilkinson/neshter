@@ -3,6 +3,7 @@ import type { HuntResult } from '@/api/schemas';
 import { navigate } from '@/app/router';
 import { headId } from '@/core/ids';
 import { selectionStore } from '@/core/stores/selection';
+import { formatFixed } from '@/features/map/format';
 import { formatStat } from '@/features/measure/format';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -57,7 +58,7 @@ export function FoundHeads({ heads }: { heads: readonly FoundHead[] }) {
             <tr key={`${found.layer}:${found.head}`}>
               <td className="num">{found.layer}</td>
               <td className="num">{found.head}</td>
-              <td className="num">{found.score.toFixed(2)}</td>
+              <td className="num">{formatFixed(found.score, 2)}</td>
               <td className="num">
                 <Measured measured={found.measured} />
               </td>

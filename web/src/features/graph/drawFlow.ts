@@ -1,0 +1,465 @@
+import type { GraphEdge } from '@/api/schemas';
+import { makeColorScale, parseHex, rgbCss, type Rgb } from '@/features/map/colorScale';
+import { clamp01, easeOut, project, type Camera, type Viewport } from './camera';
+import { CURVE_STEPS, headX, layerZ, COL, ROW, type Grid, type PlacedNode, type Vec3 } from './layout';
+
+export type Pick = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | { kind: 'cell'; id: string };
+export interface Hover {
+  pick: Pick;
+  x: number;
+  y: number;
+}
+
+export interface FlowPalette {
+  bg: string;
+  line: string;
+  text1: string;
+  text2: string;
+  inc: string;
+  dec: string;
+  cut: string;
+  basket: string;
+  focus: string;
+  heatLow: Rgb;
+  heatHigh: Rgb;
+  mono: string;
+}
+
+/** The app's look tokens; fallbacks are the dark values in tokens.css (jsdom has no stylesheet). */
+export function readFlowPalette(): FlowPalette {
+  const style = typeof document === 'undefined' ? null : getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => style?.getPropertyValue(name).trim() || fallback;
+  return {
+    bg: v('--surface-0', '#0b0e13'),
+    line: v('--border', '#222a38'),
+    text1: v('--text-1', '#e6eaf2'),
+    text2: v('--text-2', '#a7b0c0'),
+    inc: v('--accent-increase', '#2ee6c5'),
+    dec: v('--accent-decrease', '#9fc3ff'),
+    cut: v('--badge-explore', '#ffd27a'),
+    basket: v('--accent-basket', '#ff7a45'),
+    focus: v('--focus-ring', '#9fc3ff'),
+    heatLow: parseHex(v('--surface-1', '#121722')) ?? [18, 23, 34],
+    heatHigh: parseHex(v('--accent-increase', '#2ee6c5')) ?? [46, 230, 197],
+    mono: v('--font-mono', 'ui-monospace, monospace'),
+  };
+}
+
+export interface SceneEdge extends GraphEdge {
+  pts: Vec3[];
+  /** 0..1 depth of the source along the computation, so rivers grow from the words toward the answer. */
+  from: number;
+}
+
+export interface SceneData {
+  grid: Grid;
+  nodes: readonly PlacedNode[];
+  /** Visible edges, weakest first so strong rivers are drawn on top. */
+  edges: readonly SceneEdge[];
+  trunk: readonly number[];
+  /** Normalised heatmap values [layer][head], 0..1; null before a heatmap exists. */
+  heat: readonly (readonly number[])[] | null;
+  maxWeight: number;
+}
+
+export interface FrameState {
+  t: number;
+  /** 0 = heatmap seen from above … 1 = connection graph. */
+  mix: number;
+  cam: Camera;
+  vp: Viewport;
+  /** Eased drawn |weight| per edge. */
+  widths: ReadonlyMap<string, number>;
+  cut: ReadonlySet<string>;
+  cutAt: ReadonlyMap<string, number>;
+  basket: ReadonlySet<string>;
+  basketAt: ReadonlyMap<string, number>;
+  chosen: ReadonlySet<string>;
+  focus: ReadonlySet<string>;
+  highlight: ReadonlySet<string>;
+  labels: ReadonlySet<string>;
+  reduced: boolean;
+  palette: FlowPalette;
+  name(id: string): string;
+}
+
+export interface Hits {
+  cells: { id: string; corners: [number, number][] }[];
+  nodes: { id: string; x: number; y: number; r: number }[];
+  edges: { id: string; pts: [number, number][] }[];
+}
+
+const CUT_SECONDS = 0.9;
+const REMOVE_SECONDS = 0.7;
+
+function polyline(ctx: CanvasRenderingContext2D, ps: readonly (readonly number[])[]) {
+  ctx.beginPath();
+  ps.forEach((p, i) => (i === 0 ? ctx.moveTo(p[0] ?? 0, p[1] ?? 0) : ctx.lineTo(p[0] ?? 0, p[1] ?? 0)));
+}
+
+function cross(ctx: CanvasRenderingContext2D, x: number, y: number, d: number, color: string, width: number) {
+  if (d <= 0) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(x - d, y - d);
+  ctx.lineTo(x + d, y + d);
+  ctx.moveTo(x - d, y + d);
+  ctx.lineTo(x + d, y - d);
+  ctx.stroke();
+}
+
+/** Mixes a `#rrggbb` toward white; other colour strings pass through. */
+function lighten(color: string, amount: number): string {
+  const rgb = parseHex(color);
+  if (rgb === null) return color;
+  return rgbCss(rgb.map((c) => Math.round(c + (255 - c) * amount)) as Rgb);
+}
+
+/** Draws one frame and returns what can be hit at the positions just drawn. */
+export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: FrameState): Hits {
+  const { grid, nodes } = scene;
+  const { palette: pal, mix, t } = f;
+  const P = (p: Vec3) => project(f.cam, f.vp, p);
+  const heatA = 1 - easeOut(mix * 1.5);
+  const flowA = easeOut((mix - 0.35) / 0.65);
+  const nodeA = easeOut((mix - 0.3) / 0.5);
+  const ringA = easeOut((mix - 0.2) / 0.5);
+  const hits: Hits = { cells: [], nodes: [], edges: [] };
+  const color = makeColorScale(pal.heatLow, pal.heatHigh);
+  const graphHeads = new Set(nodes.filter((n) => n.kind === 'head').map((n) => n.id));
+  const px = P([0, 0, 0])[2] * Math.min(1.4, Math.max(0.55, (P([COL, 0, 0])[0] - P([0, 0, 0])[0]) / 60));
+
+  ctx.fillStyle = pal.bg;
+  ctx.fillRect(0, 0, f.vp.w, f.vp.h);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // rows: floor lines in the graph view (brighter where the main stream is closer to the answer), labels in both
+  const rowPx = Math.abs(P([0, 0, layerZ(0, grid.nLayers)])[1] - P([0, 0, layerZ(1, grid.nLayers)])[1]);
+  const rowStep = rowPx >= 12 || grid.nLayers <= 1 ? 1 : 5;
+  const half = (grid.nHeads * COL) / 2 + 20;
+  for (let l = 0; l < grid.nLayers; l++) {
+    const z = layerZ(l, grid.nLayers);
+    const a = P([-half, 0, z]);
+    const b = P([half, 0, z]);
+    if (flowA > 0) {
+      const w = scene.trunk[Math.min(l + 1, scene.trunk.length - 1)] ?? 0;
+      ctx.globalAlpha = flowA * (0.35 + 0.65 * w);
+      ctx.strokeStyle = w > 0.05 ? pal.inc : pal.line;
+      ctx.lineWidth = w > 0.05 ? 0.6 + w : 1;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+    if (l % rowStep === 0) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = pal.text2;
+      ctx.textAlign = 'right';
+      ctx.font = `11px ${pal.mono}`;
+      ctx.fillText(`K${l}`, a[0] - 6, a[1] + 4);
+    }
+  }
+  ctx.globalAlpha = 1;
+  if (heatA > 0) {
+    const colStep = grid.nHeads > 24 ? 4 : 1;
+    ctx.globalAlpha = heatA;
+    ctx.fillStyle = pal.text2;
+    ctx.textAlign = 'center';
+    for (let h = 0; h < grid.nHeads; h += colStep) {
+      const p = P([headX(h, grid.nHeads), 0, layerZ(0, grid.nLayers) + ROW * 0.72]);
+      ctx.fillText(`H${h}`, p[0], p[1]);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // heatmap cells: heads that are in the graph shrink into their ring, the others sink into the floor
+  for (let l = 0; l < grid.nLayers; l++) {
+    for (let h = 0; h < grid.nHeads; h++) {
+      const id = `h:${l}:${h}`;
+      const inGraph = graphHeads.has(id);
+      const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.4 * easeOut(mix);
+      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : heatA;
+      if (alpha <= 0) continue;
+      const x = headX(h, grid.nHeads);
+      const z = layerZ(l, grid.nLayers);
+      const cw = COL * 0.88 * shrink;
+      const cd = ROW * 0.84 * shrink;
+      const corners = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([i, j]): [number, number] => {
+        const p = P([x + (i * cw) / 2, 0, z + (j * cd) / 2]);
+        return [p[0], p[1]];
+      });
+      const inBasket = f.basket.has(id);
+      ctx.globalAlpha = alpha * (inBasket ? 0.45 : 1);
+      polyline(ctx, corners);
+      ctx.closePath();
+      ctx.fillStyle = rgbCss(color(scene.heat?.[l]?.[h] ?? 0));
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+      if (f.chosen.has(id) || f.focus.has(id)) {
+        ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.focus;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      if (inBasket) {
+        const c = P([x, 0, z]);
+        const k = f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35);
+        cross(ctx, c[0], c[1], Math.min(cw, cd) * 0.22 * fitPx(f) * k, pal.basket, 2);
+      }
+      ctx.globalAlpha = 1;
+      if (mix < 0.5) hits.cells.push({ id, corners });
+    }
+  }
+
+  // rivers
+  if (flowA > 0) {
+    for (const e of scene.edges) {
+      const grow = clamp01((mix - 0.35 - 0.3 * e.from) / 0.35);
+      if (grow <= 0) continue;
+      const ps = e.pts.map(P);
+      const k = ((ps[0]?.[2] ?? 1) + (ps[CURVE_STEPS]?.[2] ?? 1)) / 2;
+      const col = e.weight >= 0 ? pal.inc : pal.dec;
+      const live = (f.widths.get(e.id) ?? Math.abs(e.weight)) / scene.maxWeight;
+      const w = (1.1 + 7 * live) * k * px;
+      if (mix >= 0.95) hits.edges.push({ id: e.id, pts: ps.map((p) => [p[0], p[1]]) });
+      if (f.cut.has(e.id)) {
+        drawCut(ctx, ps, w, col, f, e.id, flowA);
+        continue;
+      }
+      const shown = ps.slice(0, Math.max(1, Math.round(grow * CURVE_STEPS)) + 1);
+      if (f.highlight.has(e.id)) {
+        ctx.globalAlpha = flowA;
+        ctx.strokeStyle = pal.text1;
+        ctx.lineWidth = w + 3;
+        polyline(ctx, shown);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = flowA * (0.35 + 0.65 * Math.min(1, live * 2.2));
+      ctx.strokeStyle = col;
+      ctx.lineWidth = w;
+      polyline(ctx, shown);
+      ctx.stroke();
+      // light travelling along the river; count and speed follow what still flows
+      if (!f.reduced && grow >= 1 && live > 0.04) {
+        ctx.globalAlpha = flowA;
+        ctx.fillStyle = lighten(col, 0.7);
+        const n = Math.round(1 + live * 5);
+        const seed = e.id.length * 0.37 + (e.id.charCodeAt(e.id.length - 1) % 10) * 0.11;
+        for (let j = 0; j < n; j++) {
+          const u = (t * (0.18 + live * 0.12) + j / n + seed) % 1;
+          const fi = u * CURVE_STEPS;
+          const i0 = Math.floor(fi);
+          const a = ps[i0];
+          const b = ps[Math.min(CURVE_STEPS, i0 + 1)];
+          if (a === undefined || b === undefined) continue;
+          const q = fi - i0;
+          ctx.beginPath();
+          ctx.arc(a[0] + (b[0] - a[0]) * q, a[1] + (b[1] - a[1]) * q, Math.max(1.2, w * 0.32), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // nodes and their labels
+  const labels: [PlacedNode, [number, number, number], number][] = [];
+  for (const n of nodes) {
+    const p = P(n.pos);
+    const k = p[2] * px;
+    if (n.kind === 'head') {
+      if (ringA <= 0) continue;
+      const r = 6.5 * k;
+      if (mix >= 0.95) hits.nodes.push({ id: n.id, x: p[0], y: p[1], r: Math.max(9, r + 3) });
+      ctx.globalAlpha = ringA;
+      if (f.basket.has(n.id)) drawRemoved(ctx, p, r, f, n.id);
+      else {
+        const lit = f.focus.has(n.id);
+        ctx.fillStyle = pal.bg;
+        ctx.strokeStyle = lit ? pal.text1 : f.chosen.has(n.id) ? pal.focus : pal.inc;
+        ctx.lineWidth = lit ? 2.6 : 2.2;
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], lit ? r + 1 : r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = rgbCss(color(scene.heat?.[n.layer]?.[n.index] ?? 0.5));
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], r * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (f.labels.has(n.id) || f.focus.has(n.id) || f.basket.has(n.id)) labels.push([n, p, ringA]);
+      continue;
+    }
+    if (nodeA <= 0) continue;
+    if (mix >= 0.95 && n.kind !== 'token') hits.nodes.push({ id: n.id, x: p[0], y: p[1], r: Math.max(9, 8 * k) });
+    ctx.globalAlpha = nodeA;
+    if (n.kind === 'neuron') {
+      const d = 4.5 * k;
+      ctx.fillStyle = pal.bg;
+      ctx.strokeStyle = f.focus.has(n.id) ? pal.text1 : pal.text2;
+      ctx.lineWidth = 2;
+      ctx.fillRect(p[0] - d, p[1] - d, 2 * d, 2 * d);
+      ctx.strokeRect(p[0] - d, p[1] - d, 2 * d, 2 * d);
+      if (f.focus.has(n.id)) labels.push([n, p, nodeA]);
+    } else if (n.kind === 'output') {
+      ctx.fillStyle = pal.bg;
+      ctx.strokeStyle = pal.text1;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 10 * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = pal.inc;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 4.5 * k, 0, Math.PI * 2);
+      ctx.fill();
+      labels.push([n, p, nodeA]);
+    } else {
+      ctx.fillStyle = pal.text1;
+      ctx.fillRect(p[0] - 3 * k, p[1] - 3 * k, 6 * k, 6 * k);
+      labels.push([n, p, nodeA]);
+    }
+    ctx.globalAlpha = 1;
+  }
+  for (const [n, p, a] of labels) {
+    const lit = f.focus.has(n.id);
+    ctx.globalAlpha = a;
+    ctx.font = `${lit || n.kind === 'output' ? 600 : 500} ${n.kind === 'output' ? 13 : 11}px ${pal.mono}`;
+    if (n.kind === 'token' || n.kind === 'output') {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = pal.text1;
+      ctx.fillText(f.name(n.id), p[0], n.kind === 'output' ? p[1] + 26 * p[2] * px : p[1] - 10);
+    } else {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = lit ? pal.text1 : f.basket.has(n.id) ? pal.basket : pal.text2;
+      ctx.fillText(f.name(n.id), p[0] + 10 * p[2] * px, p[1] + 4);
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+  return hits;
+}
+
+/** Cell size in px at the floor's centre, as a 0.5..1.5 factor (so marks keep a sane size on any model). */
+function fitPx(f: FrameState): number {
+  const a = project(f.cam, f.vp, [0, 0, 0]);
+  const b = project(f.cam, f.vp, [COL, 0, 0]);
+  return Math.min(1.5, Math.max(0.5, (b[0] - a[0]) / COL));
+}
+
+/** A cut: the river snaps at its middle, a short ring marks the spot, both halves pull back to their ends, and a
+ * dashed trace with a ✕ stays. */
+function drawCut(
+  ctx: CanvasRenderingContext2D,
+  ps: readonly [number, number, number][],
+  w: number,
+  col: string,
+  f: FrameState,
+  id: string,
+  alpha: number,
+) {
+  const since = f.t - (f.cutAt.get(id) ?? -9);
+  const k = f.reduced ? 1 : easeOut(since / CUT_SECONDS);
+  const mid = CURVE_STEPS / 2;
+  const m = ps[mid];
+  ctx.globalAlpha = alpha * 0.7;
+  ctx.setLineDash([4, 6]);
+  ctx.strokeStyle = f.palette.cut;
+  ctx.lineWidth = 1.4;
+  polyline(ctx, ps);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (k < 1) {
+    const up = Math.round(mid - mid * k);
+    const down = Math.round(mid + mid * k);
+    ctx.globalAlpha = alpha * (1 - 0.8 * k);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = w * (1 - 0.5 * k);
+    if (up > 1) {
+      polyline(ctx, ps.slice(0, up));
+      ctx.stroke();
+    }
+    if (down < CURVE_STEPS - 1) {
+      polyline(ctx, ps.slice(down));
+      ctx.stroke();
+    }
+    const ring = easeOut(since / 0.35);
+    if (ring < 1 && m !== undefined) {
+      ctx.globalAlpha = alpha * (1 - ring);
+      ctx.strokeStyle = f.palette.text1;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(m[0], m[1], 4 + 16 * ring, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = alpha;
+  if (m !== undefined) cross(ctx, m[0], m[1], 5.5 * Math.min(1, k * 3), f.palette.cut, 2.4);
+  ctx.globalAlpha = 1;
+}
+
+/** A head in the basket: its ring closes in on itself, then a dashed outline and a ✕ stay where it was. */
+function drawRemoved(ctx: CanvasRenderingContext2D, p: readonly number[], r: number, f: FrameState, id: string) {
+  const [x = 0, y = 0] = p;
+  const k = f.reduced ? 1 : easeOut((f.t - (f.basketAt.get(id) ?? -9)) / REMOVE_SECONDS);
+  const base = ctx.globalAlpha;
+  if (k < 1) {
+    ctx.strokeStyle = f.palette.inc;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(0.1, r * (1 - k)), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = base * (1 - k);
+    ctx.strokeStyle = f.palette.text1;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(x, y, r + 18 * k, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = base;
+  }
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = f.palette.basket;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(x, y, r + 0.5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  cross(ctx, x, y, r * 0.6 * k, f.palette.basket, 2.2);
+}
+
+function inPolygon(x: number, y: number, c: readonly [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = c.length - 1; i < c.length; j = i++) {
+    const a = c[i];
+    const b = c[j];
+    if (a === undefined || b === undefined) continue;
+    if (a[1] > y !== b[1] > y && x < ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+}
+
+/** What is under (x, y): a heatmap cell while the heatmap shows, else a node, else the nearest river within 8 px. */
+export function hitTest(hits: Hits, x: number, y: number): Pick | null {
+  const cell = hits.cells.find((c) => inPolygon(x, y, c.corners));
+  if (cell !== undefined) return { kind: 'cell', id: cell.id };
+  for (const n of hits.nodes) if (Math.hypot(x - n.x, y - n.y) <= n.r) return { kind: 'node', id: n.id };
+  let best: Pick | null = null;
+  let bestD = 8;
+  for (const e of hits.edges) {
+    for (let i = 0; i < e.pts.length - 1; i++) {
+      const a = e.pts[i];
+      const b = e.pts[i + 1];
+      if (a === undefined || b === undefined) continue;
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const u = clamp01(((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1));
+      const d = Math.hypot(x - a[0] - u * dx, y - a[1] - u * dy);
+      if (d < bestD) {
+        bestD = d;
+        best = { kind: 'edge', id: e.id };
+      }
+    }
+  }
+  return best;
+}

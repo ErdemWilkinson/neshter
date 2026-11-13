@@ -100,6 +100,34 @@ export const activity = z.looseObject({
   power_raw: z.array(z.array(z.array(z.number()))), // [layer][head][token]
   power: z.array(z.array(z.number())).optional(), // [layer][head], only when token_index was sent
 });
+const lensToken = z.looseObject({ token_id: z.number(), text: z.string(), p: z.number() });
+/** `POST /api/lens`: what the model would answer after every layer (logit lens). Row 0 is the embedding (`layer: -1`). */
+export const lens = z.looseObject({
+  tokens: z.array(z.string()),
+  position: z.number(),
+  final: z.looseObject({ token_id: z.number(), text: z.string() }),
+  layers: z.array(
+    z.looseObject({ layer: z.number(), top: z.array(lensToken), p_final: z.number(), rank_final: z.number() }),
+  ),
+});
+/** `POST /api/attention`: `[head][query][key]`, each row sums to 1. */
+export const attention = z.looseObject({
+  tokens: z.array(z.string()),
+  layer: z.number(),
+  patterns: z.array(z.array(z.array(z.number()))),
+});
+export const graphCut = z.looseObject({
+  edge_ids: z.array(z.string()),
+  metric_before: z.number(),
+  metric_after: z.number(),
+  delta_metric: z.number(),
+  delta_estimated: z.number(),
+  p_before: z.number(),
+  p_after: z.number(),
+  kl: z.number(),
+  top_before: z.array(lensToken),
+  top_after: z.array(lensToken),
+});
 export const mlp = z.array(z.looseObject({ layer: z.number(), neuron: z.number(), value: z.number() }));
 export const compare = z.looseObject({
   original: z.string(),
@@ -208,6 +236,42 @@ export const huntResult = z.looseObject({
   val_accuracy: z.number(),
   val_ci: ci,
   val_n: z.number(),
+  /** Model-level sweep (INLP idea): extra directions found after the earlier ones were removed; base64 float32. */
+  extra_directions: z.array(z.string()).optional(),
+  sweep: z
+    .array(z.looseObject({ removed: z.number(), layer: z.number().nullable(), residual_accuracy: z.number(), n: z.number() }))
+    .optional(),
+});
+
+export const graphNode = z.looseObject({
+  id: z.string(),
+  kind: z.enum(['token', 'head', 'neuron', 'output']),
+  layer: z.number(),
+  index: z.number(),
+  score: z.number(),
+});
+export const graphEdge = z.looseObject({
+  id: z.string(),
+  src: z.string(),
+  dst: z.string(),
+  channel: z.enum(['q', 'v', 'resid', 'logit']),
+  weight: z.number(),
+  badge: z.string(),
+});
+/** Plan 3 §7 `POST /api/graph` result (single answer). Every weight is an estimate. */
+export const graphResult = z.looseObject({
+  graph_id: z.string(),
+  estimated: z.literal(true),
+  warnings: z.array(z.string()),
+  metric: z.looseObject({ kind: z.string(), token_id: z.number(), text: z.string(), value: z.number() }),
+  candidates: z.array(z.looseObject({ token_id: z.number(), text: z.string() })),
+  tokens: z.array(z.looseObject({ pos: z.number(), token_id: z.number(), text: z.string() })),
+  n_layers: z.number(),
+  n_heads: z.number(),
+  nodes: z.array(graphNode),
+  edges: z.array(graphEdge),
+  rivers: z.looseObject({ trunk: z.array(z.number()), norms: z.array(z.number()) }),
+  pruning: z.looseObject({ kept_nodes: z.number(), kept_edges: z.number(), candidate_edges: z.number() }),
 });
 
 export const suiteResult = z.looseObject({
@@ -308,6 +372,12 @@ export type ExportEstimate = z.infer<typeof estimate>;
 export type LoadResult = z.infer<typeof loadResult>;
 export type EffectResult = z.infer<typeof effectResult>;
 export type HuntResult = z.infer<typeof huntResult>;
+export type LensResponse = z.infer<typeof lens>;
+export type AttentionResponse = z.infer<typeof attention>;
+export type GraphResult = z.infer<typeof graphResult>;
+export type GraphNode = z.infer<typeof graphNode>;
+export type GraphEdge = z.infer<typeof graphEdge>;
+export type GraphCut = z.infer<typeof graphCut>;
 export type SuiteResult = z.infer<typeof suiteResult>;
 export type ExportResult = z.infer<typeof exportResult>;
 export type DraftSummary = z.infer<typeof draftSummary>;

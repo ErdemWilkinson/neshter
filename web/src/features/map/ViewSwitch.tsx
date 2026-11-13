@@ -3,11 +3,11 @@ import { uiStore, type View } from '@/core/stores/ui';
 import { useT, type MessageKey } from '@/i18n';
 import { Segmented } from '@/ui/Segmented';
 
-/** Registered views. `3d` is Plan 3's slot: it exists here but is not rendered until it is enabled. */
+/** Registered views. `3d` is Plan 3 M2: the estimated connection graph of one answer. */
 export const VIEWS: readonly { id: View; enabled: boolean }[] = [
   { id: '2d', enabled: true },
   { id: 'list', enabled: true },
-  { id: '3d', enabled: false },
+  { id: '3d', enabled: true },
 ];
 
 const LABELS: Record<View, MessageKey> = {

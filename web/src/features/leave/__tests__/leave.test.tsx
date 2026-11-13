@@ -126,3 +126,14 @@ test('the leave body promises the draft only while autosave is not held back by 
   await userEvent.click(screen.getByRole('button', { name: 'çık' }));
   expect(screen.getByText(/New cuts are not written to the draft/)).toBeInTheDocument();
 });
+
+test('beforeUnload: false never arms the tab-close confirmation', () => {
+  const add = vi.spyOn(window, 'addEventListener');
+  function Quiet() {
+    useLeaveGuard({ beforeUnload: false });
+    return null;
+  }
+  render(<Quiet />);
+  dirty();
+  expect(add.mock.calls.filter(([type]) => type === 'beforeunload')).toHaveLength(0);
+});
