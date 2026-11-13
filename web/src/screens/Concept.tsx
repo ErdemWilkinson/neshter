@@ -15,6 +15,7 @@ import { FoundDirection } from '@/features/concept/FoundDirection';
 import { FoundHeads } from '@/features/concept/FoundHeads';
 import { LayerChart, ValidationLine } from '@/features/concept/LayerChart';
 import { MethodPicker, type HuntMethod } from '@/features/concept/MethodPicker';
+import { SweepField } from '@/features/concept/SweepField';
 import { CUSTOM, PresetChips } from '@/features/concept/PresetChips';
 import { RefusalCard } from '@/features/concept/RefusalCard';
 import { slugify } from '@/features/concept/slug';
@@ -58,6 +59,7 @@ export function Concept() {
   const [customPositive, setCustomPositive] = useState('');
   const [customNegative, setCustomNegative] = useState('');
   const [method, setMethod] = useState<HuntMethod>(model?.default_method ?? 'attribution');
+  const [sweeps, setSweeps] = useState(1);
   const [cardSeen, setCardSeen] = useState<boolean | null>(null);
   const [found, setFound] = useState<Found | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -95,12 +97,14 @@ export function Concept() {
   /** The request body and the concept the basket will record for what this search finds. */
   const buildRequest = (): { body: HuntRequest; conceptId: string } => {
     if (preset !== null) {
-      return { body: { concept_id: preset.id, method }, conceptId: preset.safety_ablation ? 'refusal' : preset.id };
+      const extra = method === 'direction' && sweeps > 1 ? { sweeps } : {};
+      return { body: { concept_id: preset.id, method, ...extra }, conceptId: preset.safety_ablation ? 'refusal' : preset.id };
     }
     const id = customId(name, concepts ?? []);
     const label = name.trim() === '' ? id : name.trim();
     const concept = { id, name_tr: label, name_en: label, positive: parseLines(positive), negative: parseLines(negative) };
-    return { body: { concept, method }, conceptId: id };
+    const extra = method === 'direction' && sweeps > 1 ? { sweeps } : {};
+    return { body: { concept, method, ...extra }, conceptId: id };
   };
 
   const search = async () => {
@@ -148,6 +152,7 @@ export function Concept() {
             onNegative={setCustomNegative}
           />
           <MethodPicker value={method} onChange={setMethod} />
+          {method === 'direction' && <SweepField value={sweeps} onChange={setSweeps} />}
           <Button variant="primary" disabled={!canSearch} onClick={() => void search()}>
             {t('concept.search')}
           </Button>

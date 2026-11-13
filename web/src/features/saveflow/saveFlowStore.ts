@@ -6,6 +6,8 @@ import { basketStore } from '@/core/stores/basket';
 export interface SaveFlowFailure {
   code: ErrorCode;
   detail: unknown;
+  /** `export`: the save itself failed while its screen was gone; otherwise the re-run failed. */
+  stage?: 'export';
 }
 
 export interface SaveFlowStoreState {

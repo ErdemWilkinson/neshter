@@ -22,6 +22,9 @@ import { MlpList } from '@/features/map/MlpList';
 import { ScaleToggle } from '@/features/map/ScaleToggle';
 import { TokenStrip } from '@/features/map/TokenStrip';
 import { ViewSwitch, effectiveView } from '@/features/map/ViewSwitch';
+import { GraphPanel } from '@/features/graph/GraphPanel';
+import { AttentionPanel } from '@/features/insight/AttentionPanel';
+import { LensPanel } from '@/features/insight/LensPanel';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ErrorCard } from '@/ui/ErrorCard';
@@ -160,7 +163,9 @@ export function Explore() {
             disabled={locked}
             onSelect={(i) => exploreStore.getState().setTokenIndex(i)}
           />
-          {unit === 'mlp' ? (
+          {view === '3d' ? (
+            <GraphPanel prompt={result.prompt} heat={values} basket={basket} />
+          ) : unit === 'mlp' ? (
             chosen >= 0 && <MlpList prompt={result.prompt} tokenIndex={chosen} />
           ) : values === null || dims.n_layers === 0 ? (
             <ErrorCard code="internal" />
@@ -182,6 +187,18 @@ export function Explore() {
                 <Heatmap dims={dims} values={values} basket={basket} describedBy={legendId} />
               )}
             </>
+          )}
+          {chosen >= 0 && (
+            <div className="insight-row">
+              <LensPanel prompt={result.prompt} position={chosen} disabled={locked} />
+              <AttentionPanel
+                prompt={result.prompt}
+                position={chosen}
+                nLayers={dims.n_layers}
+                nHeads={dims.n_heads}
+                disabled={locked}
+              />
+            </div>
           )}
         </>
       )}

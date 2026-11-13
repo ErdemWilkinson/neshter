@@ -242,6 +242,36 @@ test('a plain preset direction carries its own concept id', async () => {
   expect(basketStore.getState().items[0]).toMatchObject({ concept: 'code' });
 });
 
+test('the repeated sweep is sent with the direction method and every found direction goes to the basket', async () => {
+  const user = userEvent.setup();
+  const server = mount({
+    'GET /api/jobs/h1': () =>
+      jsonResponse(
+        200,
+        doneJob(
+          huntResult({
+            extra_directions: [vectorB64([0, 0, 1, 0])],
+            sweep: [
+              { removed: 1, layer: 1, residual_accuracy: 0.81, n: 16 },
+              { removed: 2, layer: 1, residual_accuracy: 0.5, n: 16 },
+            ],
+          }),
+        ),
+      ),
+  });
+  await chip('Kod yazma');
+  expect(screen.queryByLabelText('Tekrarlı süpürme (en çok kaç yön)')).toBeNull();
+  await user.click(screen.getByRole('radio', { name: 'Davranış yönü' }));
+  const field = screen.getByLabelText('Tekrarlı süpürme (en çok kaç yön)');
+  await user.selectOptions(field, '3');
+  await user.click(search());
+  await user.click(await screen.findByRole('button', { name: '2 yönün hepsini sepete ekle (geçici)' }));
+  expect(bodyOf(server.calls.find((c) => c.key === 'POST /api/hunt')?.init)).toMatchObject({ method: 'direction', sweeps: 3 });
+  expect(screen.getByText('Süpürme 2 yön buldu.')).toBeInTheDocument();
+  expect(screen.getByText(/doğrusal olarak geri kurulamıyor/)).toBeInTheDocument();
+  expect(basketStore.getState().items).toHaveLength(2);
+});
+
 test('a failed hunt shows its error code message, not the server text', async () => {
   const user = userEvent.setup();
   mount({

@@ -37,8 +37,8 @@ export function App() {
   const stale = useStore(sessionStore, (s) => s.stale);
   const hasDraft = useStore(draftStatusStore, (s) => s.hasDraft);
   const draftHeld = useDraftHeld();
-  const leave = useLeaveGuard();
   const [closed, setClosed] = useState(false);
+  const leave = useLeaveGuard({ beforeUnload: !closed });
   const [closeFailure, setCloseFailure] = useState<{ code: ErrorCode; detail: unknown } | null>(null);
 
   // A failed shutdown changes nothing else: the server is still up, so the app stays as it was and says so.

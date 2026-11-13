@@ -7,7 +7,7 @@ export function SaveFlowNotice({ error }: { error: SaveFlowFailure }) {
   const t = useT();
   return (
     <div>
-      <p>{t('saveflow.failed')}</p>
+      <p>{t(error.stage === 'export' ? 'save.failed' : 'saveflow.failed')}</p>
       <ErrorCard code={error.code} detail={error.detail} />
     </div>
   );

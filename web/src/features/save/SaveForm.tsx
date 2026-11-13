@@ -143,7 +143,10 @@ export function SaveForm() {
     const sentKeys = ops.map(opKey); // what this export sends; a cut added meanwhile is not saved by it
     const fail = (cause: Failure | null) => {
       flowStore.dispatch({ type: 'EXPORT_FAILED' });
-      if (cause !== null && alive.current) setFailure(cause);
+      if (cause === null) return;
+      // Leaving Save mid-export unmounts this form; the flow store keeps the reason so it is shown on return.
+      if (alive.current) setFailure(cause);
+      else flowStore.setError({ ...cause, stage: 'export' });
     };
     try {
       const final = await start(async () => {

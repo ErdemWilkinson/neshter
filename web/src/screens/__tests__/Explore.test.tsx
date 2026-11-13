@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Api } from '@/api/client';
 import { setApi } from '@/api/currentApi';
@@ -188,21 +188,57 @@ test('a ragged payload becomes an error card, not a crash', async () => {
   expect(await screen.findByRole('alert')).toBeInTheDocument();
 });
 
-test('3d view is registered but not rendered', async () => {
+test('3d view is enabled and shows the connection graph panel', async () => {
   expect(VIEWS).toEqual([
     { id: '2d', enabled: true },
     { id: 'list', enabled: true },
-    { id: '3d', enabled: false },
+    { id: '3d', enabled: true },
   ]);
   makeApi();
-  uiStore.setState({ view: '3d' }); // e.g. a stale value: falls back to the heatmap
+  uiStore.setState({ view: '2d' });
   render(<Explore />);
-  await run();
-  const view = screen.getByRole('group', { name: 'Görünüm' });
-  expect(view.querySelectorAll('input[type="radio"]')).toHaveLength(2);
-  expect(screen.queryByText('3B')).toBeNull();
-  expect(screen.getByRole('radio', { name: '2B ısı haritası' })).toBeChecked();
-  expect(screen.getByRole('group', { name: 'Head çıktı gücü ısı haritası' })).toBeInTheDocument();
+  const user = await run();
+  await user.click(screen.getByRole('radio', { name: '3B' }));
+  expect(screen.getByRole('button', { name: 'Bağ grafiğini çiz' })).toBeInTheDocument();
+  expect(screen.queryByRole('group', { name: 'Head çıktı gücü ısı haritası' })).toBeNull();
+});
+
+test('the layer-by-layer prediction opens on demand for the chosen token', async () => {
+  const api = makeApi();
+  const lens = vi.fn(async () => ({
+    tokens: TOKENS,
+    position: 1,
+    final: { token_id: 5, text: ' dünya' },
+    layers: [
+      { layer: -1, top: [{ token_id: 3, text: ' x', p: 0.1 }], p_final: 0.01, rank_final: 40 },
+      { layer: 0, top: [{ token_id: 5, text: ' dünya', p: 0.3 }], p_final: 0.3, rank_final: 0 },
+      { layer: 1, top: [{ token_id: 5, text: ' dünya', p: 0.6 }], p_final: 0.6, rank_final: 0 },
+    ],
+  }));
+  setApi({ ...api, lens } as unknown as Api);
+  uiStore.setState({ view: '2d' });
+  render(<Explore />);
+  const user = await run();
+  expect(lens).not.toHaveBeenCalled();
+  const panel = screen.getByRole('region', { name: 'Katman katman tahmin' });
+  await user.click(within(panel).getByRole('button', { name: 'Göster' }));
+  expect(lens).toHaveBeenCalledWith({ prompt: 'merhaba dün', position: 1 });
+  expect(await within(panel).findByText(/İlk kez K0 sonrası en olası tahmin oluyor/)).toBeInTheDocument();
+});
+
+test('the attention pattern starts from the focused head and shows where the token looks', async () => {
+  const api = makeApi();
+  const attention = vi.fn(async () => ({ tokens: TOKENS, layer: 1, patterns: [[[1, 0], [0.5, 0.5]], [[1, 0], [0.8, 0.2]]] }));
+  setApi({ ...api, attention } as unknown as Api);
+  uiStore.setState({ view: '2d' });
+  render(<Explore />);
+  const user = await run();
+  act(() => selectionStore.getState().setFocus('h:1:1' as never));
+  const panel = screen.getByRole('region', { name: 'Dikkat deseni' });
+  await user.click(within(panel).getByRole('button', { name: 'Göster' }));
+  expect(attention).toHaveBeenCalledWith({ prompt: 'merhaba dün', layer: 1 });
+  expect(await within(panel).findByText(/K1·H1, " dün" token'ında en çok şunlara bakıyor/)).toBeInTheDocument();
+  expect(within(panel).getByText('%80')).toBeInTheDocument();
 });
 
 test('the view switch toggles between the heatmap and the Liste table', async () => {

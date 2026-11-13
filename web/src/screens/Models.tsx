@@ -16,7 +16,7 @@ export function Models() {
   const t = useT();
   const [listing, setListing] = useState<Listing>({ status: 'loading' });
   const [plan, setPlan] = useState<LoadPlan | null>(null);
-  const guard = useLeaveGuard();
+  const guard = useLeaveGuard({ beforeUnload: false }); // App arms the tab-close confirmation
 
   useEffect(() => {
     let cancelled = false;

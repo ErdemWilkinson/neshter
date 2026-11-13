@@ -16,21 +16,24 @@ interface Pending {
  * `request(kind, proceed)` runs `proceed` at once when nothing is unsaved; otherwise it asks first. `Kaydet` goes to
  * the Save screen without proceeding, `Kaydetmeden çık` proceeds (autosave keeps the server draft, so the work can
  * still be restored), `Vazgeç` changes nothing. While dirty, closing or reloading the tab triggers the browser's
- * own `beforeunload` confirmation.
+ * own `beforeunload` confirmation (unless `beforeUnload: false`).
  */
-export function useLeaveGuard(): { request(kind: LeaveKind, proceed: () => void): void; dialog: ReactNode } {
+export function useLeaveGuard(
+  { beforeUnload = true }: { beforeUnload?: boolean } = {},
+): { request(kind: LeaveKind, proceed: () => void): void; dialog: ReactNode } {
   const dirty = useStore(basketStore, (s) => isDirty(s.items, s.savedOps));
   const [pending, setPending] = useState<Pending | null>(null);
 
+  // Only one mount arms the tab-close confirmation (App); it is off once the server is shut down.
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty || !beforeUnload) return;
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [dirty]);
+  }, [dirty, beforeUnload]);
 
   const request = useCallback((kind: LeaveKind, proceed: () => void) => {
     const { items, savedOps } = basketStore.getState();

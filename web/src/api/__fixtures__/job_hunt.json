@@ -34,6 +34,8 @@
       64
     ],
     "direction_layer": 1,
+    "extra_directions": [],
+    "sweep": [],
     "ref_layer": 1,
     "val_accuracy": 0.5625,
     "val_ci": [

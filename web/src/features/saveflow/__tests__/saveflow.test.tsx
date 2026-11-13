@@ -274,3 +274,9 @@ test('the discard dialog names cuts with their row labels, not raw op types', ()
   expect(text).toContain('K2 · head 3, Yön · 4 boyut');
   expect(text).not.toContain('direction');
 });
+
+test('an export failure kept by the flow store reads as a failed save, not a failed re-run', () => {
+  setLang('tr');
+  render(<SaveFlowNotice error={{ code: 'internal', detail: null, stage: 'export' }} />);
+  expect(screen.getByText('Model kaydedilemedi.')).toBeInTheDocument();
+});
