@@ -39,6 +39,7 @@ from neshter.compare import generate_pair, load_suite, run_suite, summarize
 from neshter.concepts.detectors import DETECTORS
 from neshter.concepts.hunt import MEASURE_TOP_K, default_method, hunt
 from neshter.concepts.model import PRESET_ORDER, Concept, load_preset
+from neshter.graph import GraphStore, answer_graph, attention_patterns, cut_report, logit_lens
 from neshter.export import (
     LlamaCppMissing,
     estimate_export_bytes,
@@ -120,6 +121,33 @@ class ActivityReq(_Req):
     scale: Literal["layer", "global"] = "layer"
 
 
+class LensReq(_Req):
+    prompt: str = Field(min_length=1, max_length=MAX_ACTIVITY_CHARS)
+    position: int = -1
+
+
+class AttentionReq(_Req):
+    prompt: str = Field(min_length=1, max_length=MAX_ACTIVITY_CHARS)
+    layer: int = Field(ge=0)
+
+
+class GraphBudget(_Req):
+    heads_per_layer: int = Field(6, ge=1, le=32)
+    neurons_per_layer: int = Field(12, ge=0, le=64)
+    max_nodes: int = Field(300, ge=10, le=600)
+    max_edges: int = Field(500, ge=20, le=2000)
+
+
+class GraphReq(_Req):
+    prompt: str = Field(min_length=1, max_length=MAX_ACTIVITY_CHARS)
+    target_token_id: int | None = Field(None, ge=0)
+    budget: GraphBudget = Field(default_factory=GraphBudget)
+
+
+class GraphCutReq(_Req):
+    edge_ids: list[str] = Field(min_length=1, max_length=64)
+
+
 class MlpReq(_Req):
     prompt: str = Field(min_length=1)
     token_index: int
@@ -143,6 +171,7 @@ class HuntReq(_Req):
     concept: Concept | None = None
     method: Literal["attribution", "activation_diff", "direction"] | None = None  # None: default_method(lm)
     seed: int = 0
+    sweeps: int = Field(1, ge=1, le=8)  # >1: "direction" yönteminde model düzeyinde tekrarlı süpürme
 
     @model_validator(mode="after")
     def _one_concept(self) -> HuntReq:
@@ -556,6 +585,8 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def require_model() -> LoadedModel:
         return session.require()
 
+    graphs = app.state.graphs = GraphStore()
+
     def start(fn, kind: str) -> dict:
         return {"job_id": jobs.submit(fn, kind=kind)}
 
@@ -785,6 +816,65 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 out["power"] = (normalize_per_layer(at) if body.scale == "layer" else normalize_global(at)).tolist()
             return out
 
+    @app.post("/api/lens")
+    def lens(body: LensReq):
+        with _model_busy_guard(), _bad_input():
+            return logit_lens(require_model(), body.prompt, body.position)
+
+    @app.post("/api/attention")
+    def attention(body: AttentionReq):
+        with _model_busy_guard(), _bad_input():
+            return attention_patterns(require_model(), body.prompt, body.layer)
+
+    @app.post("/api/graph")
+    def graph(body: GraphReq):
+        lm0 = require_model()
+        from neshter.graph import GraphUnsupported, _check_family
+
+        try:
+            _check_family(lm0)
+        except GraphUnsupported as e:
+            raise HTTPException(422, str(e)) from e
+
+        def fn(report, cancel):
+            with session.lock:
+                lm = require_model()
+                if cancel.is_set():
+                    return None
+                b = body.budget
+                g = answer_graph(
+                    lm,
+                    body.prompt,
+                    body.target_token_id,
+                    heads_per_layer=b.heads_per_layer,
+                    neurons_per_layer=b.neurons_per_layer,
+                    max_nodes=b.max_nodes,
+                    max_edges=b.max_edges,
+                    progress=report,
+                    cancel=cancel,
+                )
+                g.json["model_sha256"] = lm.source_sha256
+                graphs.put(g)
+                return g.json
+
+        return start(fn, "graph")
+
+    @app.post("/api/graph/{graph_id}/cut")
+    def graph_cut(graph_id: str, body: GraphCutReq):
+        try:
+            g = graphs.get(graph_id)
+        except KeyError as e:
+            raise HTTPException(404, "Grafik eskidi; yeniden çizin.") from e
+        with _model_busy_guard(), _bad_input():
+            lm = require_model()
+            if g.json.get("model_sha256") != lm.source_sha256:
+                raise HTTPException(404, "Grafik başka bir model için çizildi; yeniden çizin.")
+            try:
+                r = cut_report(lm, g, body.edge_ids)
+            except KeyError as e:
+                raise HTTPException(422, str(e).strip("'")) from e
+        return r
+
     @app.post("/api/mlp")
     def mlp(body: MlpReq):
         with _model_busy_guard(), _bad_input():
@@ -865,13 +955,17 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     return None
                 method = body.method or default_method(lm)
                 report(0.0, "Kavram aranıyor")
-                r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel)
+                extra = {"sweeps": body.sweeps} if body.sweeps > 1 else {}
+                r = hunt(lm, concept, method, seed=body.seed, progress=report, cancel=cancel, **extra)
                 # Etiketler yalnızca av tamamen bittiyse ve iş iptal edilmediyse oturuma girer (geç iptal
                 # edilen av iz bırakmaz). Bu yön/head'ler kaydedilirse etiket istemciye bağlı kalmaz.
                 if _is_safety_concept(concept) and not cancel.is_set():
                     if r.direction is not None:
                         d = r.direction.detach().to("cpu", torch.float32)
                         session.safety_dirs.append(d / d.norm())
+                    for extra in r.extra_directions:  # süpürmenin ek yönleri de güvenlik etiketini tetikler
+                        e = extra.detach().to("cpu", torch.float32)
+                        session.safety_dirs.append(e / e.norm())
                     session.safety_heads.update((layer, head) for layer, head, _ in r.heads[:MEASURE_TOP_K])
             measured = {(m.layer, m.head): m for m in r.measured}
 
@@ -891,6 +985,8 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 "direction": None if r.direction is None else _b64_f32(r.direction),
                 "direction_shape": None if r.direction is None else list(r.direction.shape),
                 "direction_layer": r.direction_layer,
+                "extra_directions": [_b64_f32(d) for d in r.extra_directions],
+                "sweep": r.sweep,
                 "ref_layer": r.ref_layer,
                 "val_accuracy": r.val_accuracy,
                 "val_ci": list(r.val_ci),

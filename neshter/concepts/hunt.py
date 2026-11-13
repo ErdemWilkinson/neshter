@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import torch
@@ -24,7 +24,7 @@ import torch
 from neshter.activity import head_grams, last_token_head_power
 from neshter.arch import decoder_layers, embed, o_proj
 from neshter.concepts.model import Concept, split
-from neshter.interventions import HeadAblation, apply
+from neshter.interventions import DirectionAblation, HeadAblation, apply
 from neshter.loader import LoadedModel
 from neshter.metrics import _kl_from, _log_probs_batch, load_neutral, wilson
 from neshter.progress import ProgressFn, check_cancel, sub_progress
@@ -59,6 +59,63 @@ class HuntResult:
     val_accuracy: float
     val_ci: tuple[float, float]
     measured: list[HeadMeasure]
+    # Tekrarlı süpürme (INLP benzeri): ilk yönden sonra bulunan ek yönler (ortonormal) ve her adımdaki val doğruluğu.
+    extra_directions: list[torch.Tensor] = field(default_factory=list)
+    sweep: list[dict] = field(default_factory=list)
+
+
+SWEEP_STOP_ACC = 0.6  # kalan sinyalin val doğruluğu bunun altına inince süpürme durur (şansa yakın)
+
+
+def sweep_directions(
+    lm: LoadedModel,
+    train: Concept,
+    val: Concept,
+    r1: torch.Tensor,
+    max_k: int,
+    stop_acc: float = SWEEP_STOP_ACC,
+    progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> tuple[list[torch.Tensor], list[dict]]:
+    """Model düzeyinde tekrarlı süpürme (INLP fikri, modelin kendi telafisine karşı).
+
+    Bulunan yönler modelden gerçekten silinir (kaydedilecek olanla aynı `DirectionAblation`), değişmiş model
+    yeniden çalıştırılır ve aday katmanların her birinde kavram yönü yeniden bulunur. Kavram herhangi bir
+    katmanda hâlâ ayrılıyorsa (val doğruluğu >= stop_acc), o katmanın yönü (öncekilere dik) listeye eklenir.
+
+    Neden aynı katmanda tekrar bakmak yetmez: iki sınıflı bir kavramda ortalama farkı yönü silinince sınıf
+    ortalamaları eşitlenir ve o katmanda hiçbir doğrusal sınıflandırıcı ayıramaz (LEACE). Sızıntı, sonraki
+    katmanların kavramı başka bir yönde yeniden kurmasından gelir; bu ancak değiştirilmiş modelde görülür.
+
+    Dönen yönler ortonormal, ilki r1. `steps[i]`: o ana dek bulunan i+1 yön silinmişken en çok ayrışan katman ve
+    val doğruluğu (kalan sızıntı)."""
+    found = [r1.detach().to(torch.float32) / r1.norm()]
+    steps: list[dict] = []
+    window = list(candidate_layers(lm.arch.n_layers))
+    while True:
+        check_cancel(cancel)
+        with apply(lm, [DirectionAblation(d) for d in found]):
+            tp, tn, vp, vn = (last_token_resid(lm, x) for x in (train.positive, train.negative, val.positive, val.negative))
+        dirs = _directions_from(tp, tn)
+        accs = {}
+        for layer in window:
+            if dirs[layer].norm() == 0:
+                continue
+            correct, n = val_accuracy(dirs[layer], tp[layer], tn[layer], vp[layer], vn[layer])
+            accs[layer] = (correct / n if n else 0.0, n)
+        best = max(accs, key=lambda k: accs[k][0]) if accs else None
+        acc, n = accs[best] if best is not None else (0.0, 0)
+        steps.append({"removed": len(found), "layer": best, "residual_accuracy": acc, "n": n})
+        if progress is not None:
+            progress(min(1.0, len(found) / max_k), f"Süpürme: {len(found)} yön silindi")
+        if best is None or acc < stop_acc or len(found) >= max_k:
+            break
+        q = torch.stack(found, dim=1)
+        r = dirs[best] - q @ (q.T @ dirs[best])
+        if r.norm() < 1e-6:
+            break
+        found.append(r / r.norm())
+    return found, steps
 
 
 def candidate_layers(n_layers: int) -> range:
@@ -483,6 +540,7 @@ def hunt(
     seed: int = 0,
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
+    sweeps: int = 1,
 ) -> HuntResult:
     """split → katman skorları → ref_layer = pencere içi argmax → head sıralaması (train kümesinde)
     → en iyi MEASURE_TOP_K head'in gerçek sıfırlama ölçümü (her yöntem için).
@@ -557,7 +615,14 @@ def hunt(
     if progress is not None:
         progress(1.0, "Ölçüm tamamlandı")
     is_dir = method == "direction"
+    extra: list[torch.Tensor] = []
+    sweep: list[dict] = []
+    if is_dir and sweeps > 1:
+        found, sweep = sweep_directions(lm, train, val, r_ref, max_k=sweeps, cancel=cancel)
+        extra = [d.clone() for d in found[1:]]
     return HuntResult(
+        extra_directions=extra,
+        sweep=sweep,
         layer_scores=scores,
         heads=heads,
         direction=dirs[ref_layer].clone() if is_dir else None,
