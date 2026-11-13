@@ -30,6 +30,14 @@ neshter = "neshter.cli:main"
 
 [dependency-groups]
 dev = ["pytest", "httpx"]
+# torch derlemesi (yalnızca bu kaynaktan uv ile çalıştırırken): varsayılan CPU. neshter.bat bir NVIDIA kartı
+# görürse `--no-group cpu --group gpu` ile CUDA derlemesini seçer. İkisi aynı ortamda olamaz.
+cpu = ["torch>=2.15,<3"]
+gpu = ["torch>=2.15,<3"]
+
+[tool.uv]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "gpu" }]]
 
 [build-system]
 requires = ["hatchling"]
@@ -41,14 +49,21 @@ packages = ["neshter"]
 artifacts = ["neshter/web/dist/**"]
 
 # Yalnızca bu kaynaktan uv sync / uv run / uvx --from <klon> için geçerlidir (paket üst verisine girmez).
-# GPU kullanıcıları torch'u kendi CUDA dizininden kurar (ör. --index); Task 13'te .bat yolunda
-# GPU makinesine CPU torch gelmediği doğrulanacak, gelirse bu sabitleme isteğe bağlı bir extra'ya taşınır.
+# torch 2.15'in Windows CUDA derlemesi yalnızca cu132 dizininde (NVIDIA sürücüsü 580+ ister).
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = [
+    { index = "pytorch-cpu", group = "cpu" },
+    { index = "pytorch-cu132", group = "gpu" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.pytest.ini_options]

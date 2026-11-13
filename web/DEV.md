@@ -21,7 +21,7 @@ characters, absolute paths replaced by `C:\\Users\\x\\model`). `tests/test_web_c
 tiny model behind `TestClient`; after a server response changes, regenerate and review the diff:
 
 ```bash
-NESHTER_UPDATE_FIXTURES=1 CUDA_VISIBLE_DEVICES= D:/neshter/venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_web_contract.py
+NESHTER_UPDATE_FIXTURES=1 CUDA_VISIBLE_DEVICES=-1 D:/neshter/venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_web_contract.py
 ```
 
 Then update `src/api/schemas.ts` (`FIXTURE_SCHEMAS` must name every fixture). UI tests that need specific values keep

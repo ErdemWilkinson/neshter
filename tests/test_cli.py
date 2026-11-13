@@ -363,18 +363,24 @@ def test_launcher_uses_lockfile_and_asks_before_installing_uv():
     assert not [b for b in raw if b < 32 and b not in (10, 13)]  # kaçış dizisi yüzünden sızan denetim baytı yok
     lines = bat.split("\r\n")
     assert r'set "PATH=%USERPROFILE%\.local\bin;%PATH%"' in lines
-    assert 'uv run --project "%~dp0." --frozen neshter %*' in bat and "uvx" not in bat
+    run = 'uv run --project "%~dp0." --frozen %TORCH_GROUPS% neshter %*'
+    assert run in bat and "uvx" not in bat
+    # NVIDIA kartı varsa CUDA derlemesi; NESHTER_TORCH=cpu ile kapatılır; kart yoksa varsayılan (cpu) grup
+    assert 'set "TORCH_GROUPS=--no-group cpu --group gpu"' in lines
+    assert lines.index('if /I "%NESHTER_TORCH%"=="cpu" goto launch') < lines.index("nvidia-smi -L >nul 2>nul")
     # choice: beklenmeyen hata kodu (0, Ctrl+C) asla kuruma gitmez; yalnızca 1 (Y) kurar
     i = lines.index('choice /M "uv simdi kurulsun mu"')
     assert lines[i + 1 : i + 4] == ["if errorlevel 2 goto declined", "if errorlevel 1 goto install", "goto declined"]
     assert lines.index(":install") > i and "irm https://astral.sh/uv/" in lines[lines.index(":install") + 1]
     # uv run başarısızsa çift tıklayan hatayı görsün: pause, sonra çıkış
-    j = lines.index('uv run --project "%~dp0." --frozen neshter %*')
+    j = lines.index(run)
     assert lines[j + 1 : j + 4] == ['set "rc=%errorlevel%"', 'if not "%rc%"=="0" pause', "exit /b %rc%"]
     assert "choice /M" in bat and re.search(r"https://astral\.sh/uv/\d+\.\d+\.\d+/install\.ps1", bat)
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     assert all("<" in d for d in deps) and "jinja2>=3.1.6,<4" in deps
     assert "transformers>=5.22,<6" in deps and "torch>=2.15,<3" in deps
+    uv = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["uv"]
+    assert uv["default-groups"] == ["dev", "cpu"] and uv["conflicts"] == [[{"group": "cpu"}, {"group": "gpu"}]]
 
 
 def test_lockfile_matches_pyproject():

@@ -1,3 +1,10 @@
+import os
+
+# Testler yalnızca işlemcide çalışacak biçimde yazıldı (cihaz seçimi, dtype politikası, varsayılan av yöntemi).
+# GPU'lu makinede de aynı sonucu versin: torch içe aktarılmadan kart gizlenir. Windows boş değeri "tanımsız"
+# sayar, bu yüzden -1. Bilerek GPU'yla çalıştırmak için CUDA_VISIBLE_DEVICES açıkça verilebilir.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+
 import pytest
 import torch
 from tiny_models import VOCAB_SIZE, build_tiny_qwen2, build_tiny_tokenizer

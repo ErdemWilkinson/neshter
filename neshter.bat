@@ -15,7 +15,16 @@ set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 where uv >nul 2>nul
 if errorlevel 1 goto fail
 :run
-uv run --project "%~dp0." --frozen neshter %*
+rem NVIDIA karti varsa torch'un CUDA derlemesi kullanilir; NESHTER_TORCH=cpu bunu kapatir.
+set "TORCH_GROUPS="
+if /I "%NESHTER_TORCH%"=="cpu" goto launch
+where nvidia-smi >nul 2>nul
+if errorlevel 1 goto launch
+nvidia-smi -L >nul 2>nul
+if errorlevel 1 goto launch
+set "TORCH_GROUPS=--no-group cpu --group gpu"
+:launch
+uv run --project "%~dp0." --frozen %TORCH_GROUPS% neshter %*
 set "rc=%errorlevel%"
 if not "%rc%"=="0" pause
 exit /b %rc%

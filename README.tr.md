@@ -45,6 +45,10 @@ dosyasıyla çalıştırır; [uv](https://docs.astral.sh/uv/) yoksa kurmadan ön
 resmi kurulum betiğini (sabit sürüm) kullanır. Neşter yerel bir sunucu başlatır ve tarayıcını açar.
 Seçenekler: `--no-browser`, `--port N`.
 
+NVIDIA ekran kartında: `neshter.bat` kartı görürse torch'un CUDA derlemesini kullanır (sürücü 580+;
+kapatmak için `NESHTER_TORCH=cpu`). Elle: `uv run --frozen --no-group cpu --group gpu neshter`.
+Varsayılan `uv run` işlemci derlemesini kurar.
+
 `uvx --from git+<repo-url> neshter` da çalışır, ama kilitsizdir: bağımlılıklar izin verilen
 aralıktaki en yeni sürüme çözülür, riski sana aittir. Çıplak `uvx neshter` çalıştırma: paket
 yayımlanana kadar PyPI'daki o ad bize ait değil.
@@ -114,7 +118,9 @@ kendi yapmadığın bir tarifi uygularken `--label-safety` kullan.
 ## Durum
 
 v0.1 arka ucu hazır: model yükleme, tarama, head etkinlik haritaları, davranış bulma, karşılaştırma,
-tarifler, dışa aktarma, yerel API ve komut satırı. Web arayüzü yakında (Plan 2).
+tarifler, dışa aktarma, yerel API ve komut satırı. 2D web arayüzü (Plan 2) tamam: model seçici, ısı
+haritası, ölçme, kesme, karşılaştırma, davranış avı, kaydetme, taslaklar ve geri yükleme. Arayüz şimdilik
+yalnızca koyu temalı; sıradaki iş 3D grafik görünümü (Plan 3).
 
 ## Lisans
 
