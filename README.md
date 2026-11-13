@@ -45,6 +45,10 @@ lockfile, and if [uv](https://docs.astral.sh/uv/) is missing it asks (Y/N) befor
 Astral's official installer script (pinned version). Neşter starts a local server and opens your
 browser. Options: `--no-browser`, `--port N`.
 
+On an NVIDIA card: when `neshter.bat` sees one it uses torch's CUDA build (driver 580+; turn it off with
+`NESHTER_TORCH=cpu`). By hand: `uv run --frozen --no-group cpu --group gpu neshter`. A plain `uv run`
+installs the CPU build.
+
 `uvx --from git+<repo-url> neshter` also works, but it is unlocked: dependencies resolve to whatever is
 newest within the allowed ranges, at your own risk. Do not run a bare `uvx neshter`: until the
 package is published, that name on PyPI is not ours.
@@ -109,7 +113,8 @@ whenever you apply a recipe you did not make.
 ## Status
 
 v0.1 backend: model loading, scanning, head activity maps, concept hunting, comparison, recipes,
-export, local API and CLI. The web UI is coming (Plan 2).
+export, local API and CLI. The 2D web UI (Plan 2) is done: model picker, heatmap, measuring, cutting,
+compare, concept hunt, save, drafts and restore. The UI is dark only for now; the 3D graph view (Plan 3) is next.
 
 ## License
 
