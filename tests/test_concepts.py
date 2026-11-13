@@ -597,3 +597,32 @@ def test_hunt_activation_diff_runs_fewer_forward_passes(lm):
     # artık akım geçişleri + ölçüm (head başına val_pos geçişleri); eskiden train pos/neg bir kez daha geçerdi
     measure_max = hunt_mod.MEASURE_TOP_K * batches(len(val.positive))
     assert len(calls) <= resid + measure_max
+
+
+
+def test_sweep_directions_on_model_are_orthonormal_and_bounded(lm):
+    from neshter.concepts.hunt import directions, split, sweep_directions
+
+    c = load_preset("code")
+    train, val = split(c)
+    r1 = directions(lm, train)[1]
+    dirs, steps = sweep_directions(lm, train, val, r1, max_k=3, stop_acc=0.0)  # 0: hiç durma, sınıra kadar
+    assert 1 <= len(dirs) <= 3
+    assert len(steps) == len(dirs)
+    q = torch.stack(dirs)
+    assert torch.allclose(q @ q.T, torch.eye(len(dirs)), atol=1e-4)
+    assert all(0.0 <= s["residual_accuracy"] <= 1.0 for s in steps)
+
+
+def test_sweep_stops_at_threshold(lm):
+    from neshter.concepts.hunt import directions, split, sweep_directions
+
+    train, val = split(load_preset("code"))
+    dirs, steps = sweep_directions(lm, train, val, directions(lm, train)[1], max_k=5, stop_acc=1.01)
+    assert len(dirs) == 1 and len(steps) == 1
+
+
+def test_hunt_direction_with_sweeps_returns_extra(lm):
+    r = hunt(lm, load_preset("code"), "direction", sweeps=3)
+    assert len(r.sweep) >= 1
+    assert len(r.extra_directions) == len(r.sweep) - 1 or len(r.extra_directions) == len(r.sweep)
