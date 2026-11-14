@@ -626,3 +626,12 @@ def test_hunt_direction_with_sweeps_returns_extra(lm):
     r = hunt(lm, load_preset("code"), "direction", sweeps=3)
     assert len(r.sweep) >= 1
     assert len(r.extra_directions) == len(r.sweep) - 1 or len(r.extra_directions) == len(r.sweep)
+
+
+def test_hunt_with_sweeps_reaches_full_progress_only_after_the_sweep(lm):
+    seen: list[tuple[float, str]] = []
+    hunt(lm, load_preset("code"), "direction", sweeps=3, progress=lambda p, m="": seen.append((p, m)))
+    values = [p for p, _ in seen]
+    assert values == sorted(values) and values[-1] == 1.0
+    first_full = next(i for i, (p, _) in enumerate(seen) if p >= 1.0)
+    assert any(m.startswith("Süpürme") for _, m in seen[:first_full + 1])

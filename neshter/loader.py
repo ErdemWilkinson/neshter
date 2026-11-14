@@ -286,6 +286,15 @@ def _pick_device(model, device: str) -> tuple[str, str | None]:
     return "cuda", None
 
 
+def folder_display_name(path: Path) -> str:
+    """Klasörün gösterilecek adı. HF önbelleğinde (models--Org--Ad/snapshots/<commit>) commit karması yerine "Ad"."""
+    if path.parent.name == "snapshots" and path.parent.parent.name.startswith("models--"):
+        repo = path.parent.parent.name.split("--")
+        if len(repo) >= 3 and repo[-1]:
+            return repo[-1]
+    return path.name
+
+
 def load_model(
     path: Path,
     device: str = "auto",
@@ -350,7 +359,7 @@ def load_model(
 
     if is_dir:
         model, tokenizer = _load_dir(path, dtype)
-        default_name = path.name
+        default_name = folder_display_name(path)
         license_, license_text = folder_license(path)
     elif is_gguf_file:
         model, tokenizer = _load_gguf(path, dtype)

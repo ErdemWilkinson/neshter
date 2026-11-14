@@ -599,6 +599,8 @@ def hunt(
     )
     r_ref = dirs[ref_layer]
     val_correct, val_n = val_accuracy(r_ref, pos[ref_layer], neg[ref_layer], val_pos[ref_layer], val_neg[ref_layer])
+    is_dir = method == "direction"
+    sweeping = is_dir and sweeps > 1
     measured = measure_top_heads(
         lm,
         heads,
@@ -609,17 +611,19 @@ def hunt(
         float((val_neg[ref_layer] @ r_ref).mean()),
         k=MEASURE_TOP_K,
         n_neutral=MEASURE_NEUTRAL,
-        progress=sub_progress(progress, 0.8, 1.0),
+        progress=sub_progress(progress, 0.8, 0.9 if sweeping else 1.0),
         cancel=cancel,
     )
-    if progress is not None:
-        progress(1.0, "Ölçüm tamamlandı")
-    is_dir = method == "direction"
     extra: list[torch.Tensor] = []
     sweep: list[dict] = []
-    if is_dir and sweeps > 1:
-        found, sweep = sweep_directions(lm, train, val, r_ref, max_k=sweeps, cancel=cancel)
+    if sweeping:
+        # Her süpürme adımı modeli yeniden çalıştırır: çubuk %100'e ancak süpürme bitince varır.
+        found, sweep = sweep_directions(
+            lm, train, val, r_ref, max_k=sweeps, progress=sub_progress(progress, 0.9, 1.0), cancel=cancel
+        )
         extra = [d.clone() for d in found[1:]]
+    if progress is not None:
+        progress(1.0, "Ölçüm tamamlandı")
     return HuntResult(
         extra_directions=extra,
         sweep=sweep,
