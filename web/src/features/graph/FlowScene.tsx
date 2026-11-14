@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef } from 'react';
 import type { GraphEdge } from '@/api/schemas';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
-import { approach, PITCH_MAX, PITCH_MIN, VIEWS, ZOOM_MAX, ZOOM_MIN, type Camera } from './camera';
+import { approach, easeOut, PITCH_MAX, PITCH_MIN, VIEWS, ZOOM_MAX, ZOOM_MIN, type Camera } from './camera';
 import { drawFlow, hitTest, readFlowPalette, type Hits, type Hover, type Pick, type SceneData, type SceneEdge } from './drawFlow';
-import { edgeCurve, extent, type Grid, type PlacedNode } from './layout';
+import { COL, edgeCurve, extent, type Grid, type PlacedNode } from './layout';
 
 export type SceneMode = 'heat' | 'flow';
 
@@ -39,12 +39,19 @@ interface Anim {
   basketAt: Map<string, number>;
   hits: Hits;
   hover: Pick | null;
+  /** Where the tooltip was last reported, so a still pointer does not re-render the panel. */
+  hoverAt: { x: number; y: number } | null;
   drag: { x: number; y: number; moved: boolean } | null;
+  /** Draw until this time even when nothing moves (props changed, a cut snapped, a head closed). */
+  awakeUntil: number;
   /** False until the first cut/basket sync: what is already there when the scene opens does not animate. */
   primed: boolean;
 }
 
 const now = () => performance.now() / 1000;
+/** How long a cut or basket animation runs (s); the scene keeps drawing that long after a change. */
+const SETTLE = 1.6;
+const settled = (a: number, b: number) => Math.abs(a - b) < 1e-4;
 const samePick = (a: Pick | null, b: Pick | null) => a?.kind === b?.kind && a?.id === b?.id;
 
 /** The ids lit by a pick: both ends of an edge, or the node / cell itself. */
@@ -85,11 +92,21 @@ export default function FlowScene(props: FlowSceneProps) {
     sceneEdges.reverse(); // weakest first, so strong rivers lie on top
     return { grid, nodes, edges: sceneEdges, trunk, heat, maxWeight };
   }, [grid, nodes, edges, trunk, heat, maxWeight]);
+  // What the graph view must fit: the floor, widened to the token row and the answer when they reach further.
+  const worlds = useMemo(() => {
+    const floor = extent(grid);
+    let half = floor.w / 2;
+    for (const n of nodes) half = Math.max(half, Math.abs(n.pos[0]) + COL * 0.6);
+    return { heat: floor, flow: { w: 2 * half, d: floor.d } };
+  }, [grid, nodes]);
+  const latestWorlds = useRef(worlds);
 
   const latestScene = useRef(scene);
   useEffect(() => {
     latest.current = props;
     latestScene.current = scene;
+    latestWorlds.current = worlds;
+    if (anim.current !== null) anim.current.awakeUntil = now() + SETTLE;
   });
 
   // Camera target follows the mode; animation clocks start when a cut or a basket head appears.
@@ -103,9 +120,12 @@ export default function FlowScene(props: FlowSceneProps) {
       basketAt: new Map(),
       hits: { cells: [], nodes: [], edges: [] },
       hover: null,
+      hoverAt: null,
       drag: null,
+      awakeUntil: 0,
       primed: false,
     });
+    a.awakeUntil = now() + SETTLE;
     a.target = { ...(mode === 'flow' ? VIEWS.tilt : VIEWS.heat) };
   }, [mode]);
   useEffect(() => {
@@ -117,6 +137,7 @@ export default function FlowScene(props: FlowSceneProps) {
     for (const id of [...a.cutAt.keys()]) if (!cut.has(id)) a.cutAt.delete(id);
     for (const id of basket) if (!a.basketAt.has(id)) a.basketAt.set(id, stamp);
     for (const id of [...a.basketAt.keys()]) if (!basket.has(id)) a.basketAt.delete(id);
+    a.awakeUntil = now() + SETTLE;
   }, [cut, basket, reducedMotion]);
 
   // The frame loop. jsdom has no canvas context: then nothing is drawn and nothing can be hit.
@@ -127,7 +148,9 @@ export default function FlowScene(props: FlowSceneProps) {
     const palette = readFlowPalette();
     let frame = 0;
     const size = { w: 0, h: 0, dpr: 1 };
+    let onScreen = true;
     const measure = () => {
+      if (anim.current !== null) anim.current.awakeUntil = now() + SETTLE;
       size.w = canvas.clientWidth;
       size.h = canvas.clientHeight;
       size.dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -137,11 +160,28 @@ export default function FlowScene(props: FlowSceneProps) {
     measure();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     observer?.observe(canvas);
+    const seen =
+      typeof IntersectionObserver === 'undefined'
+        ? null
+        : new IntersectionObserver(([entry]) => {
+            onScreen = entry?.isIntersecting ?? true;
+            if (onScreen && anim.current !== null) anim.current.awakeUntil = now() + SETTLE;
+          });
+    seen?.observe(canvas);
 
     const tick = () => {
       const a = anim.current;
       const p = latest.current;
-      if (a !== null && size.w > 0) {
+      // Off screen, or a still picture (heatmap, or reduced motion) that has settled: skip the frame.
+      const still =
+        a !== null &&
+        (p.mode === 'heat' || p.reducedMotion) &&
+        now() > a.awakeUntil &&
+        settled(a.cam.yaw, a.target.yaw) &&
+        settled(a.cam.pitch, a.target.pitch) &&
+        settled(a.cam.zoom, a.target.zoom) &&
+        settled(a.mix, p.mode === 'flow' ? 1 : 0);
+      if (a !== null && size.w > 0 && onScreen && !still) {
         const rate = p.reducedMotion ? 1 : 0.085;
         a.cam = { yaw: approach(a.cam.yaw, a.target.yaw, rate), pitch: approach(a.cam.pitch, a.target.pitch, rate), zoom: approach(a.cam.zoom, a.target.zoom, rate) };
         a.mix = approach(a.mix, p.mode === 'flow' ? 1 : 0, p.reducedMotion ? 1 : 0.05);
@@ -158,7 +198,15 @@ export default function FlowScene(props: FlowSceneProps) {
           t: now(),
           mix: a.mix,
           cam: a.cam,
-          vp: { w: size.w, h: size.h, world: extent(p.grid) },
+          vp: {
+            w: size.w,
+            h: size.h,
+            world: (() => {
+              const { heat: a0, flow: b0 } = latestWorlds.current;
+              const m = easeOut(a.mix);
+              return { w: a0.w + (b0.w - a0.w) * m, d: a0.d + (b0.d - a0.d) * m };
+            })(),
+          },
           widths: a.widths,
           cut: p.cut,
           cutAt: a.cutAt,
@@ -179,7 +227,7 @@ export default function FlowScene(props: FlowSceneProps) {
 
     const onWheel = (event: WheelEvent) => {
       const a = anim.current;
-      if (a === null || latest.current.mode !== 'flow') return;
+      if (a === null || latest.current.mode !== 'flow' || event.deltaY === 0) return;
       event.preventDefault();
       a.target = { ...a.target, zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, a.target.zoom * (event.deltaY < 0 ? 1.1 : 0.91))) };
     };
@@ -187,6 +235,7 @@ export default function FlowScene(props: FlowSceneProps) {
     return () => {
       cancelAnimationFrame(frame);
       observer?.disconnect();
+      seen?.disconnect();
       canvas.removeEventListener('wheel', onWheel);
     };
   }, []);
@@ -211,17 +260,22 @@ export default function FlowScene(props: FlowSceneProps) {
         aria-hidden="true"
         onPointerDown={(event) => {
           const a = anim.current;
-          if (a !== null) a.drag = { x: event.clientX, y: event.clientY, moved: false };
+          if (a === null) return;
+          a.drag = { x: event.clientX, y: event.clientY, moved: false };
+          // Keep the drag when the pointer runs over the buttons or off the canvas.
+          event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
           const a = anim.current;
           if (a === null) return;
-          if (a.drag !== null && latest.current.mode === 'flow') {
+          if (a.drag !== null) {
             const dx = event.clientX - a.drag.x;
             const dy = event.clientY - a.drag.y;
             if (a.drag.moved || Math.hypot(dx, dy) > 5) {
               a.drag = { x: event.clientX, y: event.clientY, moved: true };
-              a.target = { ...a.target, yaw: a.target.yaw + dx * 0.006, pitch: Math.min(PITCH_MAX, Math.max(PITCH_MIN, a.target.pitch + dy * 0.005)) };
+              // The heatmap is seen flat from above: a drag there only stops being a click.
+              if (latest.current.mode === 'flow')
+                a.target = { ...a.target, yaw: a.target.yaw + dx * 0.006, pitch: Math.min(PITCH_MAX, Math.max(PITCH_MIN, a.target.pitch + dy * 0.005)) };
               if (a.hover !== null) {
                 a.hover = null;
                 latest.current.onHover(null);
@@ -232,24 +286,33 @@ export default function FlowScene(props: FlowSceneProps) {
           const busy = a.mix > 0.02 && a.mix < 0.98;
           const { x, y } = local(event);
           const pick = busy ? null : hitTest(a.hits, x, y);
-          if (!samePick(pick, a.hover) || pick !== null) latest.current.onHover(pick === null ? null : { pick, x, y });
+          const far = a.hoverAt === null || Math.hypot(x - a.hoverAt.x, y - a.hoverAt.y) > 3;
+          if (!samePick(pick, a.hover) || (pick !== null && far)) {
+            latest.current.onHover(pick === null ? null : { pick, x, y });
+            a.hoverAt = pick === null ? null : { x, y };
+            a.awakeUntil = now() + SETTLE;
+          }
           a.hover = pick;
         }}
         onPointerUp={(event) => {
           const a = anim.current;
           if (a === null) return;
-          const wasDrag = a.drag?.moved === true;
+          const drag = a.drag;
           a.drag = null;
-          if (wasDrag) return;
+          // Only a press that started here and did not move is a click; nothing is hit while the scene turns.
+          if (drag === null || drag.moved || (a.mix > 0.02 && a.mix < 0.98)) return;
           const { x, y } = local(event);
           latest.current.onSelect(hitTest(a.hits, x, y));
+        }}
+        onPointerCancel={() => {
+          if (anim.current !== null) anim.current.drag = null;
         }}
         onPointerLeave={() => {
           const a = anim.current;
           if (a === null) return;
-          a.drag = null;
           if (a.hover !== null) {
             a.hover = null;
+            a.hoverAt = null;
             latest.current.onHover(null);
           }
         }}

@@ -467,8 +467,23 @@
   "graph.pickList.edges": "Bağlar",
   "graph.head.select": "Seçime ekle",
   "graph.head.unselect": "Seçimden çıkar",
-  "graph.head.selectHint": "Bir head'i silmek için seçime ekle, aşağıdaki seçim panelinde ölç ve sepete koy. Sepetteki head'ler burada turuncu ✕ ile görünür.",
+  "graph.head.selectHint": "Bir head'i silmek için seçime ekle, seçim panelinde ölç ve sepete koy. Sepetteki head'ler burada turuncu ✕ ile görünür.",
   "graph.head.inBasket": "Bu head sepette: kaydedince sıfırlanacak.",
 
-  "concept.sweep.off": "1 (kapalı)"
+  "concept.sweep.off": "1 (kapalı)",
+  "header.basket": "Sepet: {n} kesim",
+  "header.basket.one": "Sepet: {n} kesim",
+  "map.view.hot": "Sıcak noktalar",
+  "map.hot.label": "\"{token}\" token'ında en güçlü {n} head",
+  "map.hot.pick": "Seç",
+  "map.hot.picked": "Seçildi",
+  "map.hot.hint": "Güç tüm haritaya göre ölçeklenir. Seçtiğin head'ler seçim panelinde ölçülür; oradan sepete eklenir.",
+  "explore.side": "Seçim ve sepet",
+  "concept.card.example": "örn. “{text}”",
+  "concept.card.custom": "Kendi örnek cümlelerini yazarsın.",
+  "concept.card.safety": "güvenlik ablasyonu",
+  "toast.added": "Sepete {n} kesim eklendi",
+  "toast.added.one": "Sepete {n} kesim eklendi",
+  "toast.total": "· sepette toplam {n}",
+  "toast.total.one": "· sepette toplam {n}"
 }

@@ -11,7 +11,7 @@ export function duration(totalSeconds: number): string {
   return t('jobs.duration.min', { m: Math.floor(seconds / 60), s: seconds % 60 });
 }
 
-/** Progress bar, the server's message, elapsed time, and an ETA only once the job is 5 % in (never invented). */
+/** Progress bar, the server's message, elapsed time, and an ETA only once the job is 5 % in and a second or more is left (never invented). */
 export function ProgressCard({ job, onCancel }: { job: JobState; onCancel: () => void }) {
   useT();
   const [now, setNow] = useState(() => Date.now());
@@ -32,7 +32,7 @@ export function ProgressCard({ job, onCancel }: { job: JobState; onCancel: () =>
       <span className="num">{t('jobs.percent', { pct: Math.round(progress * 100) })}</span>
       <p className="progress-message">{job.message}</p>
       {elapsedMs !== null && <p className="num">{t('jobs.elapsed', { t: duration(elapsedMs / 1000) })}</p>}
-      {eta !== null && <p className="num">{t('jobs.eta', { t: duration(eta) })}</p>}
+      {eta !== null && eta >= 1 && <p className="num">{t('jobs.eta', { t: duration(eta) })}</p>}
       <Button onClick={onCancel}>{t('ui.cancel')}</Button>
     </div>
   );

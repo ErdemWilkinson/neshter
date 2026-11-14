@@ -25,7 +25,7 @@ test('second tab, leave dialog, beforeunload and a clean close', async ({ page, 
   await selectWithKeyboard(page, [[0, 1]]);
   await measure(page);
   await cut(page);
-  await expect(page.locator('.chip-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
+  await expect(page.locator('.basket-button.has-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
 
   await page.getByRole('button', { name: "Neşter'i kapat" }).click();
   const dialog = page.getByRole('dialog');
@@ -33,7 +33,7 @@ test('second tab, leave dialog, beforeunload and a clean close', async ({ page, 
   await expect(dialog.getByRole('button', { name: 'Kaydetmeden çık' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Vazgeç' }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator('.chip-unsaved')).toBeVisible(); // still in the app
+  await expect(page.locator('.basket-button.has-unsaved')).toBeVisible(); // still in the app
 
   // beforeunload: dismissed, so the reload never resolves.
   const types: string[] = [];
@@ -43,7 +43,7 @@ test('second tab, leave dialog, beforeunload and a clean close', async ({ page, 
   });
   await Promise.race([page.reload(), new Promise((resolve) => setTimeout(resolve, 3000))]).catch(() => undefined);
   expect(types).toContain('beforeunload');
-  await expect(page.locator('.chip-unsaved')).toBeVisible();
+  await expect(page.locator('.basket-button.has-unsaved')).toBeVisible();
 
   await page.getByRole('button', { name: "Neşter'i kapat" }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Kaydetmeden çık' }).click();

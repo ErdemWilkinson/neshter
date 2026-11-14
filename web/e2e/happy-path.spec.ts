@@ -37,7 +37,7 @@ test('Home → Explore → measure → cut → Compare → Save', async ({ page 
 
   await measure(page);
   await cut(page);
-  await expect(page.locator('.chip-unsaved')).toHaveText('Kaydedilmemiş 2 kesim');
+  await expect(page.locator('.basket-button.has-unsaved')).toHaveText('Kaydedilmemiş 2 kesim');
 
   await page.getByRole('button', { name: 'Karşılaştır' }).click();
   await page.getByLabel('Kendin dene').fill('merhaba dünya');
@@ -62,7 +62,7 @@ test('Home → Explore → measure → cut → Compare → Save', async ({ page 
   await expect(card.getByRole('heading', { name: 'Kaydedildi' })).toBeVisible({ timeout: 170_000 });
   await expect(card.locator('.result-sha')).toHaveText(/^[0-9a-f]{64}$/);
   await expect(card).toContainText('Orijinal dosyaya dokunulmadı');
-  await expect(page.locator('.chip-unsaved')).toHaveCount(0);
+  await expect(page.locator('.basket-button.has-unsaved')).toHaveCount(0);
 
   const out = join(workdir, 'home', 'tiny-e2e-neshter');
   expect(existsSync(out)).toBe(true);

@@ -46,11 +46,66 @@
 }
 
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 10px 16px;
   padding: 8px 12px;
+  /* a solid band above and beside the floating bar, so scrolled text does not show through the gutter */
+  box-shadow: 0 -12px 0 12px var(--surface-0), 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+/* Anything scrolled into view lands below the sticky header, not under it. */
+html {
+  scroll-padding-top: calc(var(--header-h, 76px) + 12px);
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-chip {
+  display: inline-block;
+  max-width: 22rem;
+  padding: 3px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-2);
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.live-dot {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: 1px;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--accent-increase);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--accent-increase);
+}
+
+.basket-button {
+  color: var(--text-1);
+  border-color: var(--border-control);
+}
+
+.basket-button.has-unsaved {
+  color: var(--accent-basket);
+  background: color-mix(in srgb, var(--accent-basket) 12%, transparent);
+  border-color: var(--accent-basket);
 }
 
 .app-name {
@@ -62,8 +117,7 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
-  flex: 1;
-  gap: 8px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -107,16 +161,12 @@
   line-height: 1;
 }
 
-.chip-unsaved {
-  color: var(--accent-basket);
-  border-color: var(--accent-basket);
-}
-
 .header-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  margin-left: auto;
 }
 
 .control {
@@ -177,30 +227,51 @@ select {
   cursor: not-allowed;
 }
 
+/* The steps live in the header as numbered tabs; the middle step has two doors (find a behaviour | map). */
+.stepper {
+  flex: 0 1 auto;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
 .stepper ol {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 20px;
+  gap: 4px;
   margin: 0;
-  padding: 0;
+  padding: 4px;
   list-style: none;
   counter-reset: step;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
 }
 
 .stepper li {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 6px;
   counter-increment: step;
   color: var(--text-2);
+  border-radius: var(--radius);
 }
 
 .stepper li::before {
   content: counter(step);
+  display: inline-grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
   font-family: var(--font-mono);
+  font-size: 0.75rem;
+  border: 1px solid var(--border-control);
+  border-radius: 50%;
 }
 
 .stepper-or {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-style: italic;
   color: var(--text-2);
 }
@@ -208,14 +279,22 @@ select {
 .stepper a {
   color: inherit;
   text-decoration: none;
+  white-space: nowrap;
 }
 
 .stepper a:hover {
-  text-decoration: underline;
+  color: var(--text-1);
 }
 
 .stepper .is-current {
   color: var(--text-1);
+  background: var(--surface-1);
+}
+
+.stepper .is-current::before {
+  color: var(--surface-0);
+  background: var(--accent-increase);
+  border-color: var(--accent-increase);
 }
 
 .stepper a[aria-current='step'] {
@@ -1254,14 +1333,36 @@ select {
   }
 
   .app-header {
+    /* on a phone a sticky header would take a quarter of the screen: it scrolls away with the page */
+    position: static;
     gap: 6px 10px;
     padding: 6px 10px;
   }
 
+  html {
+    scroll-padding-top: 12px;
+  }
+
   .app-header .chips {
     flex-basis: 100%;
-    order: 3;
+    order: 4;
     gap: 6px;
+  }
+
+  .app-header .stepper {
+    flex-basis: 100%;
+    order: 3;
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .stepper ol {
+    flex-wrap: nowrap;
+  }
+
+  .model-chip {
+    display: none;
   }
 
   .app-header .chip {
@@ -1462,6 +1563,10 @@ select {
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--surface-0);
+}
+
+/* Only the tilted graph turns under a drag; the flat heatmap lets a finger scroll the page. */
+.graph-stage:has(.flow-canvas.is-flow) {
   touch-action: none;
 }
 
@@ -1673,4 +1778,236 @@ select {
 .table-scroll {
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* --- Workspace: desk layout, hot spots, concept cards, basket toast --- */
+
+/* Explore: the map on the left, selection and basket always at hand on the right. */
+.explore-desk {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  gap: 16px;
+  align-items: start;
+}
+
+.explore-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.explore-side {
+  position: sticky;
+  top: calc(var(--header-h, 76px) + 12px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - var(--header-h, 76px) - 28px);
+  overflow-y: auto;
+}
+
+/* The 3D scene needs the width; selection and basket move below it. Before a first run there is no map either. */
+.explore-desk.is-wide,
+.explore-desk:not(:has(.explore-main > *)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.explore-desk.is-wide .explore-side {
+  position: static;
+  max-height: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+}
+
+@media (max-width: 1100px) {
+  .explore-desk {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .explore-side {
+    position: static;
+    max-height: none;
+  }
+}
+
+.hotspots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hotspot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hotspot {
+  display: grid;
+  grid-template-columns: 1.6rem 5.5rem minmax(4rem, 1fr) 3rem auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--motion);
+}
+
+.hotspot:hover {
+  border-color: var(--border-control);
+}
+
+.hotspot.is-picked {
+  border-color: var(--focus-ring);
+  background: color-mix(in srgb, var(--focus-ring) 8%, var(--surface-1));
+}
+
+.hotspot-rank {
+  color: var(--text-2);
+  text-align: right;
+}
+
+.hotspot-id {
+  font-weight: 600;
+}
+
+.hotspot-bar {
+  height: 8px;
+  overflow: hidden;
+  background: var(--surface-0);
+  border-radius: 4px;
+}
+
+.hotspot-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-increase) 45%, transparent), var(--accent-increase));
+  border-radius: 4px;
+}
+
+.hotspot-power {
+  text-align: right;
+  color: var(--text-2);
+}
+
+.hotspot .btn[aria-pressed='true'] {
+  color: var(--surface-0);
+  background: var(--focus-ring);
+  border-color: var(--focus-ring);
+}
+
+.badge-basket {
+  color: var(--accent-basket);
+  border-color: var(--accent-basket);
+}
+
+@media (max-width: 600px) {
+  .hotspot {
+    grid-template-columns: 1.2rem 4.5rem minmax(3rem, 1fr) auto;
+    gap: 8px;
+  }
+
+  .hotspot-power {
+    display: none;
+  }
+}
+
+/* Concept presets: cards with an example sentence instead of bare radio labels. */
+.preset-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.preset-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  cursor: pointer;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--motion), transform var(--motion);
+}
+
+.preset-card:hover {
+  border-color: var(--border-control);
+  transform: translateY(-1px);
+}
+
+.preset-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.preset-card:has(input:checked) {
+  border-color: var(--accent-increase);
+  box-shadow: inset 0 0 0 1px var(--accent-increase);
+}
+
+.preset-card:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.preset-name {
+  font-family: var(--font-heading);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.preset-example {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.85rem;
+  color: var(--text-2);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.badge-safety {
+  align-self: flex-start;
+  color: var(--accent-basket);
+  border-color: var(--accent-basket);
+}
+
+/* A short note when the basket grows (decoration; the panels say it in words). */
+.basket-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  max-width: min(24rem, calc(100vw - 32px));
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  color: var(--text-1);
+  background: var(--surface-1);
+  border: 1px solid var(--accent-basket);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  pointer-events: none;
+  animation: toast-in 220ms ease-out;
+}
+
+.basket-toast span {
+  color: var(--text-2);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }

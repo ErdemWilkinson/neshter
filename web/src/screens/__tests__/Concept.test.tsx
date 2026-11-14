@@ -79,7 +79,7 @@ afterEach(() => {
 test('presets keep API order with code selected', async () => {
   mount();
   await chip('Kod yazma');
-  const names = screen.getAllByRole('radio').map((radio) => radio.closest('label')?.textContent);
+  const names = screen.getAllByRole('radio').map((radio) => radio.getAttribute('aria-label'));
   expect(names.slice(0, 3)).toEqual(['Kod yazma', 'Reddetme', '+ Kendi kavramın']);
   expect(screen.getByRole('radio', { name: 'Kod yazma' })).toBeChecked();
   expect(screen.getByRole('heading', { level: 1, name: 'Davranışı bul' })).toBeInTheDocument();
@@ -321,4 +321,13 @@ test('the running hunt shows a progress card with İptal that cancels the job', 
   expect(search()).toBeDisabled(); // the job holds the model
   await user.click(screen.getByRole('button', { name: 'İptal' }));
   expect(api.cancelJob).toHaveBeenCalledWith('h1');
+});
+
+test('preset cards show an example sentence and mark the safety concept', async () => {
+  mount();
+  await chip('Kod yazma');
+  const refusal = screen.getByRole('radio', { name: 'Reddetme' }).closest('label');
+  expect(refusal).toHaveTextContent('güvenlik ablasyonu');
+  expect(refusal?.textContent).toMatch(/örn\. “.+”/);
+  expect(screen.getByRole('radio', { name: 'Kod yazma' }).closest('label')).not.toHaveTextContent('güvenlik');
 });

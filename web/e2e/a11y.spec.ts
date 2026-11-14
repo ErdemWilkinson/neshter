@@ -67,7 +67,7 @@ test('Liste parity: select, measure and cut without the canvas', async ({ page }
   await measure(page);
   await cut(page);
   await expect(page.locator('.basket-list li')).toHaveCount(1);
-  await expect(page.locator('.chip-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
+  await expect(page.locator('.basket-button.has-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
 });
 
 test('reduced motion and a visible focus ring on the heatmap', async ({ page }) => {

@@ -467,8 +467,23 @@
   "graph.pickList.edges": "Connections",
   "graph.head.select": "Add to selection",
   "graph.head.unselect": "Remove from selection",
-  "graph.head.selectHint": "To remove a head, add it to the selection, measure it in the selection panel below and put it in the basket. Heads in the basket show here with an orange ✕.",
+  "graph.head.selectHint": "To remove a head, add it to the selection, measure it in the selection panel and put it in the basket. Heads in the basket show here with an orange ✕.",
   "graph.head.inBasket": "This head is in the basket: it will be zeroed when you save.",
 
-  "concept.sweep.off": "1 (off)"
+  "concept.sweep.off": "1 (off)",
+  "header.basket": "Basket: {n} cuts",
+  "header.basket.one": "Basket: {n} cut",
+  "map.view.hot": "Hot spots",
+  "map.hot.label": "The {n} strongest heads at \"{token}\"",
+  "map.hot.pick": "Pick",
+  "map.hot.picked": "Picked",
+  "map.hot.hint": "Strength is scaled over the whole map. Heads you pick are measured in the selection panel and go to the basket from there.",
+  "explore.side": "Selection and basket",
+  "concept.card.example": "e.g. “{text}”",
+  "concept.card.custom": "You write your own example sentences.",
+  "concept.card.safety": "safety ablation",
+  "toast.added": "{n} cuts added to the basket",
+  "toast.added.one": "{n} cut added to the basket",
+  "toast.total": "· {n} in the basket",
+  "toast.total.one": "· {n} in the basket"
 }

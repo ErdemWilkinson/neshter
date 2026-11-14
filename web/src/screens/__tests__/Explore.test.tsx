@@ -190,6 +190,7 @@ test('a ragged payload becomes an error card, not a crash', async () => {
 
 test('3d view is enabled and shows the connection graph panel', async () => {
   expect(VIEWS).toEqual([
+    { id: 'hot', enabled: true },
     { id: '2d', enabled: true },
     { id: 'list', enabled: true },
     { id: '3d', enabled: true },
@@ -283,4 +284,23 @@ test('the prompt is kept in this tab (sessionStorage) so a reload brings it back
   exploreStore.getState().reset(); // a reload: the stores start empty, the tab's storage does not
   render(<Explore />);
   expect(screen.getByLabelText('Metin')).toHaveValue('merhaba');
+});
+
+test('hot spots rank heads over the whole map and pick one with a click', async () => {
+  makeApi();
+  uiStore.setState({ view: 'hot' });
+  render(<Explore />);
+  const user = await run();
+  // last token: layer 0 reads [0, 1], layer 1 reads [5, 6]; ranked on one scale, layer 1 wins both top places
+  const list = screen.getByRole('list', { name: '" dün" token\'ında en güçlü 4 head' });
+  const ids = within(list)
+    .getAllByRole('listitem')
+    .map((li) => li.querySelector('.hotspot-id')?.textContent);
+  expect(ids).toEqual(['K1·H1', 'K1·H0', 'K0·H1', 'K0·H0']);
+  expect(screen.queryByRole('radio', { name: 'Katman içi' })).toBeNull(); // scale only matters for the map
+  await user.click(screen.getByRole('button', { name: 'K1 · H1 seç' }));
+  expect(selectionStore.getState().selected.has('h:1:1' as never)).toBe(true);
+  expect(screen.getByRole('button', { name: 'K1 · H1 seç' })).toHaveAttribute('aria-pressed', 'true');
+  // selection and basket sit beside the map
+  expect(within(screen.getByRole('complementary', { name: 'Seçim ve sepet' })).getByRole('heading', { name: 'Seçim' })).toBeInTheDocument();
 });

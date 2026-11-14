@@ -40,7 +40,7 @@ export function placeNodes(graph: Pick<GraphResult, 'nodes' | 'n_layers' | 'n_he
   }
   for (const list of neuronsByLayer.values()) list.sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
   const width = Math.max(1, H - 1) * COL;
-  const tokenSpan = Math.max(width, 1.3 * COL * (T - 1));
+  const tokenSpan = Math.max(width, Math.min(1.3 * COL * (T - 1), 2 * width));
   return graph.nodes.map((n): PlacedNode => {
     switch (n.kind) {
       case 'token': {

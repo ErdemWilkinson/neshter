@@ -8,7 +8,7 @@ import type { NodeId } from '@/core/ids';
 import { jobsStore } from '@/core/stores/jobs';
 import { selectionStore } from '@/core/stores/selection';
 import { setLang } from '@/i18n';
-import { GraphPanel } from '../GraphPanel';
+import { forgetKeptGraph, GraphPanel } from '../GraphPanel';
 import { project, VIEWS } from '../camera';
 import { hitTest } from '../drawFlow';
 import { extent, incomingShare, liveWeights, placeNodes, trunkWidths, visibleEdges } from '../layout';
@@ -97,6 +97,7 @@ function mount(overrides: Record<string, Handler> = {}, heat: number[][] | null 
 beforeEach(() => setLang('tr'));
 afterEach(() => {
   cleanup();
+  forgetKeptGraph();
   jobsStore.setState({ active: null });
   selectionStore.getState().clear();
 });
@@ -132,12 +133,22 @@ describe('layout', () => {
     const hits = {
       cells: [{ id: 'h:0:0', corners: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][] }],
       nodes: [{ id: 'h:1:0', x: 50, y: 50, r: 9 }],
-      edges: [{ id: 'e1', pts: [[100, 0], [100, 100]] as [number, number][] }],
+      edges: [{ id: 'e1', pts: [[100, 0], [100, 100]] as [number, number][], w: 2 }],
     };
     expect(hitTest(hits, 5, 5)).toEqual({ kind: 'cell', id: 'h:0:0' });
     expect(hitTest(hits, 52, 48)).toEqual({ kind: 'node', id: 'h:1:0' });
     expect(hitTest(hits, 106, 40)).toEqual({ kind: 'edge', id: 'e1' });
     expect(hitTest(hits, 200, 200)).toBeNull();
+    // a click inside a thick river picks it, even when a thin one passes closer to the pointer
+    const crossing = {
+      cells: [],
+      nodes: [],
+      edges: [
+        { id: 'thick', pts: [[300, 0], [300, 100]] as [number, number][], w: 20 },
+        { id: 'thin', pts: [[306, 0], [306, 100]] as [number, number][], w: 1 },
+      ],
+    };
+    expect(hitTest(crossing, 305, 50)).toEqual({ kind: 'edge', id: 'thick' });
   });
 
   test('trunk widths are scaled to the largest positive projection; negative ones are 0', () => {
@@ -233,4 +244,45 @@ test('a failed graph job shows an error card', async () => {
   });
   await user.click(screen.getByRole('button', { name: 'Bağ grafiğini çiz' }));
   expect(await screen.findByRole('alert')).toBeInTheDocument();
+});
+
+test('a new run (a new prompt) drops the old graph and its cuts', async () => {
+  const user = userEvent.setup();
+  const server = fakeServer({
+    'POST /api/graph': () => jsonResponse(200, { job_id: 'g1' }),
+    'GET /api/jobs/g1': () => jsonResponse(200, doneJob),
+    'POST /api/graph/g1/cut': () => jsonResponse(200, cutReport),
+  });
+  setApi(createApi({ token: 't', fetchFn: server.fetchFn as unknown as typeof fetch, onStale: () => undefined }));
+  const { rerender } = render(<GraphPanel prompt="liste sırala" heat={HEAT} basket={new Set<NodeId>()} />);
+  await user.click(screen.getByRole('button', { name: 'Bağ grafiğini çiz' }));
+  await user.click(await screen.findByRole('button', { name: 'sahne e0' }));
+  await user.click(screen.getByRole('button', { name: 'Bağı kes (geçici)' }));
+  await screen.findByText(/%41 → %20/);
+  rerender(<GraphPanel prompt="başka bir cümle" heat={HEAT} basket={new Set<NodeId>()} />);
+  expect(screen.queryByRole('button', { name: 'sahne e0' })).toBeNull();
+  expect(screen.queryByText(/%41 → %20/)).toBeNull();
+  expect(document.querySelector('[data-mode="heat"]')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Bağ grafiğini çiz' })).toBeEnabled();
+});
+
+test('the mode buttons are reachable: the stage is a group, not a picture', async () => {
+  mount({}, HEAT);
+  const stage = screen.getByRole('group', { name: /3B bağ grafiği/ });
+  expect(stage).not.toHaveAttribute('role', 'img');
+  expect(screen.getByRole('button', { name: 'Isı haritası' })).toBeInTheDocument();
+});
+
+test('leaving the 3D view and coming back keeps the drawn graph and its cuts', async () => {
+  const user = userEvent.setup();
+  const server = mount();
+  await user.click(screen.getByRole('button', { name: 'Bağ grafiğini çiz' }));
+  await user.click(await screen.findByRole('button', { name: 'sahne e0' }));
+  await user.click(screen.getByRole('button', { name: 'Bağı kes (geçici)' }));
+  await screen.findByText(/%41 → %20/);
+  cleanup(); // the 2D map (or another screen) replaces the panel
+  render(<GraphPanel prompt="liste sırala" heat={null} basket={new Set<NodeId>()} />);
+  expect(screen.getByRole('button', { name: 'sahne e0 kesik' })).toBeInTheDocument();
+  expect(screen.getByText(/%41 → %20/)).toBeInTheDocument();
+  expect(server.calls.filter((c) => c.key === 'POST /api/graph')).toHaveLength(1);
 });

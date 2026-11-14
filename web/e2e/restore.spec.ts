@@ -17,7 +17,7 @@ test('cuts survive a server restart on another port, and a restart on the same p
     await measure(page);
     const saved = page.waitForResponse((r) => r.url().includes('/api/draft/') && r.request().method() === 'PUT');
     await cut(page);
-    await expect(page.locator('.chip-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
+    await expect(page.locator('.basket-button.has-unsaved')).toHaveText('Kaydedilmemiş 1 kesim');
     expect((await saved).ok()).toBe(true);
 
     // The server goes away: the old tab says so (10 s heartbeat; allow for a shared CPU).
