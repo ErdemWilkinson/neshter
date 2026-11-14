@@ -86,7 +86,8 @@ export interface FrameState {
 export interface Hits {
   cells: { id: string; corners: [number, number][] }[];
   nodes: { id: string; x: number; y: number; r: number }[];
-  edges: { id: string; pts: [number, number][] }[];
+  /** `w`: the drawn width in px, so a click on a thick river is not taken by a thin one beneath it. */
+  edges: { id: string; pts: [number, number][]; w: number }[];
 }
 
 const CUT_SECONDS = 0.9;
@@ -180,7 +181,8 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       const id = `h:${l}:${h}`;
       const inGraph = graphHeads.has(id);
       const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.4 * easeOut(mix);
-      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : heatA;
+      // the heads off the graph stay on the floor, faint, so the heatmap still reads under the rivers
+      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : Math.max(heatA, 0.22);
       if (alpha <= 0) continue;
       const x = headX(h, grid.nHeads);
       const z = layerZ(l, grid.nLayers);
@@ -222,7 +224,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       const col = e.weight >= 0 ? pal.inc : pal.dec;
       const live = (f.widths.get(e.id) ?? Math.abs(e.weight)) / scene.maxWeight;
       const w = (1.1 + 7 * live) * k * px;
-      if (mix >= 0.95) hits.edges.push({ id: e.id, pts: ps.map((p) => [p[0], p[1]]) });
+      if (mix >= 0.95) hits.edges.push({ id: e.id, pts: ps.map((p) => [p[0], p[1]]), w });
       if (f.cut.has(e.id)) {
         drawCut(ctx, ps, w, col, f, e.id, flowA);
         continue;
@@ -322,19 +324,26 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     }
     ctx.globalAlpha = 1;
   }
+  // Labels that would overlap one already placed are dropped; the lit ones and the answer are placed first.
+  const placed: [number, number, number, number][] = [];
+  const rank = (n: PlacedNode) => (f.focus.has(n.id) ? 0 : n.kind === 'output' ? 1 : n.kind === 'token' ? 3 : 2);
+  labels.sort((x, y) => rank(x[0]) - rank(y[0]));
   for (const [n, p, a] of labels) {
     const lit = f.focus.has(n.id);
-    ctx.globalAlpha = a;
+    const text = f.name(n.id);
     ctx.font = `${lit || n.kind === 'output' ? 600 : 500} ${n.kind === 'output' ? 13 : 11}px ${pal.mono}`;
-    if (n.kind === 'token' || n.kind === 'output') {
-      ctx.textAlign = 'center';
-      ctx.fillStyle = pal.text1;
-      ctx.fillText(f.name(n.id), p[0], n.kind === 'output' ? p[1] + 26 * p[2] * px : p[1] - 10);
-    } else {
-      ctx.textAlign = 'left';
-      ctx.fillStyle = lit ? pal.text1 : f.basket.has(n.id) ? pal.basket : pal.text2;
-      ctx.fillText(f.name(n.id), p[0] + 10 * p[2] * px, p[1] + 4);
-    }
+    const centred = n.kind === 'token' || n.kind === 'output';
+    const x = centred ? p[0] : p[0] + 10 * p[2] * px;
+    const y = centred ? (n.kind === 'output' ? p[1] + 26 * p[2] * px : p[1] - 10) : p[1] + 4;
+    const tw = ctx.measureText(text).width;
+    const box: [number, number, number, number] = [centred ? x - tw / 2 - 2 : x - 2, y - 11, tw + 4, 14];
+    const clash = placed.some((b) => box[0] < b[0] + b[2] && b[0] < box[0] + box[2] && box[1] < b[1] + b[3] && b[1] < box[1] + box[3]);
+    if (clash && !lit && n.kind !== 'output') continue;
+    placed.push(box);
+    ctx.globalAlpha = a;
+    ctx.textAlign = centred ? 'center' : 'left';
+    ctx.fillStyle = centred || lit ? pal.text1 : f.basket.has(n.id) ? pal.basket : pal.text2;
+    ctx.fillText(text, x, y);
   }
   ctx.globalAlpha = 1;
   ctx.textAlign = 'left';
@@ -445,8 +454,9 @@ export function hitTest(hits: Hits, x: number, y: number): Pick | null {
   if (cell !== undefined) return { kind: 'cell', id: cell.id };
   for (const n of hits.nodes) if (Math.hypot(x - n.x, y - n.y) <= n.r) return { kind: 'node', id: n.id };
   let best: Pick | null = null;
-  let bestD = 8;
+  let bestD = 0;
   for (const e of hits.edges) {
+    const reach = Math.max(8, e.w / 2 + 3);
     for (let i = 0; i < e.pts.length - 1; i++) {
       const a = e.pts[i];
       const b = e.pts[i + 1];
@@ -454,9 +464,11 @@ export function hitTest(hits: Hits, x: number, y: number): Pick | null {
       const dx = b[0] - a[0];
       const dy = b[1] - a[1];
       const u = clamp01(((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1));
+      // inside a river counts by how deep inside: a thick one wins over a thin one crossing it
       const d = Math.hypot(x - a[0] - u * dx, y - a[1] - u * dy);
-      if (d < bestD) {
-        bestD = d;
+      const depth = reach - d;
+      if (depth > bestD) {
+        bestD = depth;
         best = { kind: 'edge', id: e.id };
       }
     }

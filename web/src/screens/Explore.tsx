@@ -18,13 +18,14 @@ import { SelectionPanel } from '@/features/measure/SelectionPanel';
 import { exploreStore, type Unit } from '@/features/map/exploreStore';
 import { Heatmap } from '@/features/map/Heatmap';
 import { HeatmapTable } from '@/features/map/HeatmapTable';
+import { Hotspots } from '@/features/map/Hotspots';
 import { MlpList } from '@/features/map/MlpList';
 import { ScaleToggle } from '@/features/map/ScaleToggle';
 import { TokenStrip } from '@/features/map/TokenStrip';
 import { ViewSwitch, effectiveView } from '@/features/map/ViewSwitch';
 import { GraphPanel } from '@/features/graph/GraphPanel';
 import { AttentionPanel } from '@/features/insight/AttentionPanel';
-import { LensPanel } from '@/features/insight/LensPanel';
+import { LensPanel, shownToken } from '@/features/insight/LensPanel';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ErrorCard } from '@/ui/ErrorCard';
@@ -83,6 +84,15 @@ export function Explore() {
       return null; // a ragged payload: shown as "unreadable" below, never a crash
     }
   }, [result, chosen, scale]);
+  // Hot spots rank heads across the whole map, so they always use the global scale.
+  const hotValues = useMemo(() => {
+    if (result === null || chosen < 0) return null;
+    try {
+      return normalizeGlobal(sliceToken(result.powerRaw, chosen));
+    } catch {
+      return null;
+    }
+  }, [result, chosen]);
   const dims = useMemo(
     () => ({ n_layers: values?.length ?? 0, n_heads: values?.[0]?.length ?? 0 }),
     [values],
@@ -142,11 +152,13 @@ export function Explore() {
 
       {result === null && !running && failure === null && <p className="explore-empty">{t('map.empty')}</p>}
 
+      <div className={`explore-desk${view === '3d' ? ' is-wide' : ''}`}>
+      <div className="explore-main">
       {result !== null && (
         <>
           <div className="explore-controls">
             <ViewSwitch />
-            <ScaleToggle />
+            {(view === '2d' || view === 'list') && <ScaleToggle />}
             <div className="control">
               <span aria-hidden="true">{t('map.unit')}</span>
               <Segmented
@@ -164,11 +176,15 @@ export function Explore() {
             onSelect={(i) => exploreStore.getState().setTokenIndex(i)}
           />
           {view === '3d' ? (
-            <GraphPanel prompt={result.prompt} heat={values} basket={basket} />
+            <GraphPanel prompt={result.prompt} heat={hotValues} basket={basket} />
           ) : unit === 'mlp' ? (
             chosen >= 0 && <MlpList prompt={result.prompt} tokenIndex={chosen} />
           ) : values === null || dims.n_layers === 0 ? (
             <ErrorCard code="internal" />
+          ) : view === 'hot' ? (
+            hotValues !== null && (
+              <Hotspots values={hotValues} basket={basket} token={shownToken(tokens[chosen] ?? '')} />
+            )
           ) : (
             <>
               <p id={legendId} className="map-legend">
@@ -202,9 +218,12 @@ export function Explore() {
           )}
         </>
       )}
-
-      <SelectionPanel values={values} />
-      <BasketPanel />
+      </div>
+      <aside className="explore-side" aria-label={t('explore.side')}>
+        <SelectionPanel values={values} />
+        <BasketPanel />
+      </aside>
+      </div>
       <ShelfView />
     </section>
   );

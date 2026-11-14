@@ -38,6 +38,25 @@ const CHANNEL: Record<GraphEdge['channel'], MessageKey> = {
 const FlowScene = lazy(() => import('./FlowScene'));
 
 const DEFAULT_LIMIT = 40;
+
+/**
+ * The drawn graph outlives the panel: switching to the 2D map or another screen and back keeps the graph, its
+ * cuts and the last report, as long as the prompt and the loaded model are the same.
+ */
+interface Kept {
+  model: unknown;
+  prompt: string;
+  graph: GraphResult;
+  mode: SceneMode;
+  cut: string[];
+  report: GraphCut | null;
+  limit: number;
+}
+let kept: Kept | null = null;
+/** For tests and a fresh session. */
+export const forgetKeptGraph = () => {
+  kept = null;
+};
 const LABELLED_HEADS = 8;
 
 function useNodeName() {
@@ -76,18 +95,44 @@ export function GraphPanel({
   const chosen = useStore(selectionStore, (s) => s.selected);
   const reducedPref = useStore(uiStore, (s) => s.reducedMotion);
   const reducedMotion = isMotionReduced(reducedPref, systemMatchMedia());
-  const [graph, setGraph] = useState<GraphResult | null>(null);
-  const [mode, setMode] = useState<SceneMode>('heat');
+  const model = useStore(sessionStore, (s) => s.model);
+  const [back] = useState(() => (kept !== null && kept.prompt === prompt && kept.model === model ? kept : null));
+  const [graph, setGraph] = useState<GraphResult | null>(back?.graph ?? null);
+  const [mode, setMode] = useState<SceneMode>(back?.mode ?? 'heat');
   const [failure, setFailure] = useState<Failure | null>(null);
-  const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [limit, setLimit] = useState(back?.limit ?? DEFAULT_LIMIT);
   const [selected, setSelected] = useState<Pick | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
-  const [cut, setCut] = useState<string[]>([]);
-  const [report, setReport] = useState<GraphCut | null>(null);
+  const [cut, setCut] = useState<string[]>(back?.cut ?? []);
+  const [report, setReport] = useState<GraphCut | null>(back?.report ?? null);
   const [cutFailure, setCutFailure] = useState<Failure | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const alive = useRef(true);
   useEffect(() => () => void (alive.current = false), []);
+  // Only the latest cut measurement may land; an older answer that arrives late is dropped.
+  const measureId = useRef(0);
+  useEffect(() => {
+    if (graph !== null) kept = { model, prompt, graph, mode, cut, report, limit };
+  }, [model, prompt, graph, mode, cut, report, limit]);
+  const latestPrompt = useRef(prompt);
+  useEffect(() => {
+    latestPrompt.current = prompt;
+    measureId.current += 1; // a cut measured for the old graph must not land on the new one
+  }, [prompt]);
+
+  // A new run (a new prompt) makes the drawn graph and its cuts stale: back to the heatmap.
+  const [shownPrompt, setShownPrompt] = useState(prompt);
+  if (shownPrompt !== prompt) {
+    setShownPrompt(prompt);
+    setGraph(null);
+    setMode('heat');
+    setCut([]);
+    setReport(null);
+    setSelected(null);
+    setFailure(null);
+    setCutFailure(null);
+    setMeasuring(false);
+  }
 
   const draw = async () => {
     setFailure(null);
@@ -96,9 +141,11 @@ export function GraphPanel({
     setCut([]);
     setReport(null);
     setSelected(null);
+    setCutFailure(null);
+    measureId.current += 1;
     try {
       const final = await start(() => getApi().graph({ prompt }));
-      if (!alive.current) return;
+      if (!alive.current || prompt !== latestPrompt.current) return;
       if (final.state === 'cancelled') return reset();
       if (final.state !== 'done') return setFailure({ code: final.error_code ?? 'internal', detail: final.error });
       const parsed = graphResult.safeParse(final.result);
@@ -134,18 +181,23 @@ export function GraphPanel({
 
   const measure = async (ids: string[]) => {
     if (graph === null) return;
+    const id = ++measureId.current;
+    const current = () => alive.current && id === measureId.current;
     setCutFailure(null);
-    if (ids.length === 0) return setReport(null);
+    if (ids.length === 0) {
+      setMeasuring(false);
+      return setReport(null);
+    }
     setMeasuring(true);
     try {
       const r = await getApi().graphCut(graph.graph_id, ids);
-      if (alive.current) setReport(r);
+      if (current()) setReport(r);
     } catch (error) {
-      if (!alive.current) return;
+      if (!current()) return;
       if (error instanceof BusyError) sessionStore.getState().setBusy(true);
       else setCutFailure(asFailure(error));
     } finally {
-      if (alive.current) setMeasuring(false);
+      if (current()) setMeasuring(false);
     }
   };
 
@@ -189,6 +241,33 @@ export function GraphPanel({
     return e === undefined ? null : `${name(graph, e.src)} → ${name(graph, e.dst)} · e = ${formatFixed(e.weight, 3)}`;
   })();
   const pickValue = selected === null || selected.kind === 'cell' ? '' : `${selected.kind}:${selected.id}`;
+  // The keyboard path to every head, and to a picked edge even when the limit hides it. Built once per graph and
+  // limit, so the hover re-renders do not rebuild hundreds of options.
+  const pickOptions = useMemo(() => {
+    if (graph === null) return null;
+    const listed = selEdge !== null && !edges.some((e) => e.id === selEdge.id) ? [...edges, selEdge] : edges;
+    return (
+      <>
+        <optgroup label={t('graph.pickList.heads')}>
+          {heads.map((n) => (
+            <option key={n.id} value={`node:${n.id}`}>
+              {name(graph, n.id)}
+            </option>
+          ))}
+        </optgroup>
+        <optgroup label={t('graph.pickList.edges')}>
+          {listed.map((e) => (
+            <option key={e.id} value={`edge:${e.id}`}>
+              {`${name(graph, e.src)} → ${name(graph, e.dst)} (${formatFixed(e.weight, 2)})`}
+            </option>
+          ))}
+        </optgroup>
+      </>
+    );
+    // `t` and `name` follow the language, which re-renders through `t`
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, heads, edges, selEdge, t]);
+  const sliderMax = graph === null ? 5 : Math.max(5, Math.ceil(graph.edges.length / 5) * 5);
 
   return (
     <section className="graph-panel" aria-labelledby="graph-title">
@@ -218,9 +297,9 @@ export function GraphPanel({
               id={sliderId}
               type="range"
               min={5}
-              max={Math.max(5, graph.edges.length)}
+              max={sliderMax}
               step={5}
-              value={Math.min(limit, Math.max(5, graph.edges.length))}
+              value={Math.min(limit, sliderMax)}
               onChange={(e) => setLimit(Number(e.target.value))}
             />
           </div>
@@ -229,7 +308,7 @@ export function GraphPanel({
 
       {showStage && (
         <div className="graph-layout">
-          <div className="graph-stage" role="img" aria-label={t('graph.stageLabel', { edges: edges.length })}>
+          <div className="graph-stage" role="group" aria-label={t('graph.stageLabel', { edges: edges.length })}>
             <Suspense fallback={null}>
             <FlowScene
               grid={grid}
@@ -301,20 +380,7 @@ export function GraphPanel({
                     }}
                   >
                     <option value="">{t('graph.pickList.none')}</option>
-                    <optgroup label={t('graph.pickList.heads')}>
-                      {heads.slice(0, 40).map((n) => (
-                        <option key={n.id} value={`node:${n.id}`}>
-                          {name(graph, n.id)}
-                        </option>
-                      ))}
-                    </optgroup>
-                    <optgroup label={t('graph.pickList.edges')}>
-                      {edges.map((e) => (
-                        <option key={e.id} value={`edge:${e.id}`}>
-                          {`${name(graph, e.src)} → ${name(graph, e.dst)} (${formatFixed(e.weight, 2)})`}
-                        </option>
-                      ))}
-                    </optgroup>
+                    {pickOptions}
                   </select>
                   {selEdge !== null ? (
                     <>
@@ -397,7 +463,7 @@ export function GraphPanel({
                           <li key={id} className="basket-row">
                             <span className="basket-label num">{label}</span>
                             <span className="badge badge-explore">{t('basket.badge.explore')}</span>
-                            <Button variant="ghost" aria-label={t('graph.cuts.undo', { label })} onClick={() => restore(id)}>
+                            <Button variant="ghost" aria-label={t('graph.cuts.undo', { label })} disabled={locked} onClick={() => restore(id)}>
                               ×
                             </Button>
                           </li>

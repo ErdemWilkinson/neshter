@@ -11,6 +11,7 @@ import { Models } from '@/screens/Models';
 import { Save } from '@/screens/Save';
 import { useT } from '@/i18n';
 import { LiveRegion, announce } from '@/ui/LiveRegion';
+import { BasketToast } from './BasketToast';
 import { BusyBanner } from './BusyBanner';
 import { DeviceBanner } from './DeviceBanner';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -50,8 +51,7 @@ export function Shell({ onClose }: { onClose: () => void }) {
       <button type="button" className="skip-link" onClick={() => mainRef.current?.focus()}>
         {t('app.skip')}
       </button>
-      <Header onClose={onClose} />
-      <Stepper />
+      <Header onClose={onClose} nav={<Stepper />} />
       <DeviceBanner />
       <BusyBanner />
       <DraftNotice />
@@ -61,6 +61,7 @@ export function Shell({ onClose }: { onClose: () => void }) {
           <Screen />
         </ErrorBoundary>
       </main>
+      <BasketToast />
       <LiveRegion />
     </div>
   );

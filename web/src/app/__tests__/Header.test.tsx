@@ -11,6 +11,7 @@ import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
 import { setLang } from '@/i18n';
 import { ProgressCard } from '@/ui/ProgressCard';
+import { BasketToast } from '../BasketToast';
 import { Header } from '../Header';
 import { BusyBanner } from '../BusyBanner';
 import { DeviceBanner } from '../DeviceBanner';
@@ -167,4 +168,46 @@ test('BusyBanner stays hidden for our own job while a progress card shows it, an
   card.unmount();
   expect(screen.getByRole('status')).toBeInTheDocument();
   act(() => jobsStore.getState().clearActive());
+});
+
+test('the basket button counts the cuts and opens the comparison', async () => {
+  useServer();
+  render(<Header onClose={() => undefined} />);
+  expect(screen.queryByRole('button', { name: /Kaydedilmemiş|Sepet/ })).toBeNull();
+  act(() => void basketStore.getState().add([cut(1), cut(2)]));
+  await userEvent.click(screen.getByRole('button', { name: 'Kaydedilmemiş 2 kesim' }));
+  expect(uiStore.getState().route).toBe('compare');
+  act(() => basketStore.getState().markSaved());
+  expect(screen.getByRole('button', { name: 'Sepet: 2 kesim' })).toBeInTheDocument();
+});
+
+test('the steps sit inside the header', () => {
+  useServer();
+  uiStore.setState({ route: 'explore' });
+  render(<Header onClose={() => undefined} nav={<Stepper />} />);
+  const header = screen.getByRole('banner');
+  expect(within(header).getByRole('navigation', { name: 'Adımlar' })).toBeInTheDocument();
+  expect(within(header).getByRole('link', { name: 'Ağ haritası' })).toHaveAttribute('aria-current', 'step');
+});
+
+test('a growing basket shows a short note that goes away', () => {
+  vi.useFakeTimers();
+  render(<BasketToast />);
+  expect(screen.queryByText(/Sepete/)).toBeNull();
+  act(() => void basketStore.getState().add([cut(1)]));
+  expect(screen.getByText('Sepete 1 kesim eklendi')).toBeInTheDocument();
+  expect(screen.getByText('· sepette toplam 1')).toBeInTheDocument();
+  act(() => vi.advanceTimersByTime(3000));
+  expect(screen.queryByText(/Sepete/)).toBeNull();
+});
+
+test('a basket restored from a draft or the server does not toast', () => {
+  vi.useFakeTimers();
+  render(<BasketToast />);
+  act(() => basketStore.getState().replaceAll({ items: [cut(1), cut(2)], shelf: [], savedOps: [] }));
+  expect(screen.queryByText(/Sepete/)).toBeNull();
+  act(() => void basketStore.getState().add([cut(3)]));
+  expect(screen.getByText('Sepete 1 kesim eklendi')).toBeInTheDocument();
+  expect(screen.getByText('· sepette toplam 3')).toBeInTheDocument();
+  vi.useRealTimers();
 });

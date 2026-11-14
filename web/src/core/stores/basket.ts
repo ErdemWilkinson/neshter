@@ -9,6 +9,8 @@ export interface BasketState {
   /** `opKey`s captured by the last save. */
   savedOps: string[];
   lastRemoved: BasketItem | null;
+  /** The last `add` that landed: how many, and a running number (restores and undo do not count). */
+  lastAdded: { n: number; seq: number } | null;
   /** Adds items whose `opKey` is not in the basket yet, up to `MAX_ITEMS`; returns how many were added. */
   add(items: readonly BasketItem[]): number;
   remove(id: string): void;
@@ -47,7 +49,7 @@ export const createBasketStore = () =>
           items.push(item);
           added += 1;
         }
-        if (added > 0) set({ items });
+        if (added > 0) set((s) => ({ items, lastAdded: { n: added, seq: (s.lastAdded?.seq ?? 0) + 1 } }));
         return added;
       };
 
@@ -56,6 +58,7 @@ export const createBasketStore = () =>
         shelf: [],
         savedOps: [],
         lastRemoved: null,
+        lastAdded: null,
         add,
         remove: (id) =>
           set((s) => {

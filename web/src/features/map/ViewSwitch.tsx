@@ -5,12 +5,14 @@ import { Segmented } from '@/ui/Segmented';
 
 /** Registered views. `3d` is Plan 3 M2: the estimated connection graph of one answer. */
 export const VIEWS: readonly { id: View; enabled: boolean }[] = [
+  { id: 'hot', enabled: true },
   { id: '2d', enabled: true },
   { id: 'list', enabled: true },
   { id: '3d', enabled: true },
 ];
 
 const LABELS: Record<View, MessageKey> = {
+  hot: 'map.view.hot',
   '2d': 'map.view.2d',
   list: 'map.view.list',
   '3d': 'map.view.3d',
