@@ -91,6 +91,8 @@ def _check_family(lm: LoadedModel) -> None:
 
 
 def _check_len(n: int, limit: int) -> None:
+    if n == 0:
+        raise ValueError("İstem boş: en az bir token gerekli.")
     if n > limit:
         raise ValueError(f"İstem çok uzun: en fazla {limit} token (şu an {n}).")
 
@@ -718,6 +720,7 @@ def run_with_cuts(lm: LoadedModel, prompt: str, cuts: list[EdgeCut], y: int) -> 
 def cut_report(lm: LoadedModel, g: Graph, edge_ids: list[str]) -> dict:
     """Seçilen bağlar birlikte (yol kesimi) kesilince grafiğin cevabında ne değişti: gerçek ΔM, KL, ilk 5."""
     by_id = {e["id"]: e for e in g.edges}
+    edge_ids = list(dict.fromkeys(edge_ids))  # aynı bağ iki kez yazılırsa katkısı iki kez çıkarılmasın
     missing = [e for e in edge_ids if e not in by_id]
     if missing:
         raise KeyError(f"Bu grafikte olmayan bağ: {missing[0]}")
@@ -725,7 +728,7 @@ def cut_report(lm: LoadedModel, g: Graph, edge_ids: list[str]) -> dict:
     before = run_with_cuts(lm, g.prompt, [], g.y)
     after = run_with_cuts(lm, g.prompt, cuts, g.y)
     p, q = before["log_probs"], after["log_probs"]
-    kl = float((p.exp() * (p - q)).sum())
+    kl = max(0.0, float((p.exp() * (p - q)).sum()))  # bf16 yuvarlaması küçük negatifler üretebilir
     est = -sum(by_id[e]["weight"] for e in edge_ids)
     return {
         "edge_ids": edge_ids,

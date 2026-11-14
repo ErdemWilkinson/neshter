@@ -155,3 +155,24 @@ def test_graph_cancel_during_backward_stops_the_job(lm):
         answer_graph(lm, PROMPT, progress=report, cancel=cancel)
     # kancalar sökülmüş olmalı: aynı model hemen yeniden grafik çizebilir
     assert answer_graph(lm, PROMPT).json["nodes"]
+
+
+def test_cut_report_counts_a_repeated_edge_once(lm):
+    g = answer_graph(lm, PROMPT, max_edges=40)
+    eid = g.edges[0]["id"]
+    once, twice = cut_report(lm, g, [eid]), cut_report(lm, g, [eid, eid])
+    assert twice["edge_ids"] == [eid]
+    assert twice["delta_metric"] == pytest.approx(once["delta_metric"], abs=1e-6)
+    assert twice["delta_estimated"] == pytest.approx(once["delta_estimated"])
+    assert twice["kl"] >= 0.0
+
+
+def test_empty_prompt_is_a_clear_input_error(lm, monkeypatch):
+    import neshter.graph as G
+
+    # A tokenizer can give zero tokens (no chat template, empty text): a ValueError the server turns into 422.
+    monkeypatch.setattr(G, "_encode", lambda lm_, p: {"input_ids": torch.zeros(1, 0, dtype=torch.long)})
+    with pytest.raises(ValueError, match="boş"):
+        answer_graph(lm, "")
+    with pytest.raises(ValueError, match="boş"):
+        attention_patterns(lm, "", 0)

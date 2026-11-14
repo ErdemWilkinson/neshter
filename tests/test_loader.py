@@ -671,3 +671,12 @@ def test_fp16_source_stays_fp16_when_policy_picks_bf16(tmp_path, tiny_model_dir,
     touched = "model.layers.0.self_attn.o_proj.weight"
     untouched = [k for k in sd if k != touched]
     assert untouched and all(saved[k].dtype == torch.float16 and torch.equal(saved[k], sd[k]) for k in untouched)
+
+
+def test_hf_snapshot_folder_is_named_after_the_repo(tmp_path):
+    from neshter.loader import folder_display_name
+
+    snap = tmp_path / "models--Qwen--Qwen2.5-0.5B-Instruct" / "snapshots" / "7ae557604adf67be50417f59c2c2f167def9a775"
+    assert folder_display_name(snap) == "Qwen2.5-0.5B-Instruct"
+    assert folder_display_name(tmp_path / "my-model") == "my-model"
+    assert folder_display_name(tmp_path / "snapshots" / "abc") == "abc"
