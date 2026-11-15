@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Tezgâh</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Düzen: sabit üst şerit + tüm ekranı kaplayan sonsuz tezgâh; kartlar dünyada, aralarında kablolar. */
+  :root {
+    --zemin: #e4e7ea; --nokta: #c3c8ce; --kart: #fbfbfc; --murekkep: #1d2329; --soluk: #5f6872; --cizgi: #cfd4da;
+    --vurgu: #d0471b; --ikinci: #2f6f8f; --kablo: #8a949e;
+    --f: "Archivo", "Segoe UI", system-ui, sans-serif; --m: "JetBrains Mono", ui-monospace, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --zemin: #15191d; --nokta: #2a3036; --kart: #1e2328; --murekkep: #e8ebee; --soluk: #95a0aa; --cizgi: #333b43;
+    --vurgu: #ff7a45; --ikinci: #6fb3d6; --kablo: #5a6570; color-scheme: dark; } }
+  :root[data-theme="dark"] {
+    --zemin: #15191d; --nokta: #2a3036; --kart: #1e2328; --murekkep: #e8ebee; --soluk: #95a0aa; --cizgi: #333b43;
+    --vurgu: #ff7a45; --ikinci: #6fb3d6; --kablo: #5a6570; color-scheme: dark; }
+  :root { --n-zemin: var(--zemin); --n-yuzey: var(--kart); --n-murekkep: var(--murekkep); --n-soluk: var(--soluk); --n-cizgi: var(--cizgi); --n-vurgu: var(--vurgu); --n-ikinci: var(--ikinci); --n-f: var(--f); --n-m: var(--m); }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--zemin); color: var(--murekkep); font: 400 14px/1.45 var(--f); display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+  .serit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--cizgi); background: var(--kart); }
+  .serit a { color: var(--soluk); text-decoration: none; font-size: 13px; }
+  .serit a:hover, .serit a:focus-visible { color: var(--vurgu); }
+  .serit h1 { margin: 0; font: 800 20px/1 var(--f); font-stretch: 78%; letter-spacing: 0.01em; text-transform: uppercase; }
+  .serit p { margin: 0; color: var(--soluk); font-size: 13px; }
+  .tezgah { position: relative; overflow: hidden; touch-action: none; cursor: grab; background-color: var(--zemin);
+    background-image: radial-gradient(var(--nokta) 1.2px, transparent 1.3px); background-size: 22px 22px; }
+  .tezgah.surukle { cursor: grabbing; }
+  .dunya { position: absolute; left: 0; top: 0; width: 1760px; height: 1560px; transform-origin: 0 0; }
+  svg.kablolar { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  svg.kablolar path { fill: none; stroke: var(--kablo); stroke-width: 2; }
+  svg.kablolar path.canli { stroke: var(--vurgu); stroke-dasharray: 6 5; animation: ak 0.9s linear infinite; }
+  @keyframes ak { to { stroke-dashoffset: -11; } }
+  .kart { position: absolute; background: var(--kart); border: 1px solid var(--cizgi); border-radius: 6px; cursor: default; display: grid; grid-template-rows: auto 1fr; box-shadow: 0 1px 0 var(--cizgi); }
+  .kart > header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 8px 12px; border-bottom: 1px dashed var(--cizgi); }
+  .kart > header b { font-weight: 800; font-stretch: 78%; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; }
+  .kart > header span { font: 400 11px var(--m); color: var(--soluk); }
+  .ic { padding: 10px 12px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .liste li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 4px; cursor: pointer; }
+  .liste li:hover, .liste li:focus-visible { background: color-mix(in srgb, var(--murekkep) 6%, transparent); outline: none; }
+  .liste li.on { background: color-mix(in srgb, var(--vurgu) 16%, transparent); }
+  .liste li .k { font: 600 12px var(--m); }
+  .liste li .v { font: 400 12px var(--m); color: var(--soluk); font-variant-numeric: tabular-nums; }
+  input.istem { width: 100%; font: 400 14px var(--f); padding: 7px 9px; border: 1px solid var(--cizgi); border-radius: 4px; background: var(--zemin); color: var(--murekkep); }
+  input.istem:focus { outline: 2px solid var(--ikinci); outline-offset: 0; }
+  .hazir { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+  .hazir span { color: var(--ikinci); cursor: pointer; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .tokenler { display: flex; flex-wrap: wrap; gap: 3px; font: 400 12px var(--m); }
+  .tokenler i { font-style: normal; padding: 1px 4px; border: 1px solid var(--cizgi); border-radius: 3px; }
+  canvas.isi { width: 100%; height: 470px; display: block; cursor: crosshair; }
+  .ipucu { font: 400 12px var(--m); color: var(--soluk); min-height: 1.4em; }
+  .bos { color: var(--soluk); font-size: 13px; }
+  .buyuk { font: 800 40px/1 var(--f); font-stretch: 75%; font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 8px; }
+  .buyuk small { font-size: 18px; color: var(--soluk); font-weight: 600; }
+  .satirlar { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .satirlar dt { color: var(--soluk); }
+  .satirlar dd { margin: 0; font: 400 13px var(--m); text-align: right; font-variant-numeric: tabular-nums; }
+  .eylem { color: var(--vurgu); font-weight: 700; cursor: pointer; justify-self: start; text-decoration: underline; text-underline-offset: 3px; }
+  .eylem:focus-visible { outline: 2px solid var(--vurgu); outline-offset: 2px; }
+  .cubuk { display: grid; grid-template-columns: 5.5rem 1fr 3rem; align-items: center; gap: 8px; font-size: 12px; }
+  .cubuk .ad { font: 600 11px var(--m); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cubuk .yol { height: 12px; background: color-mix(in srgb, var(--murekkep) 8%, transparent); border-radius: 2px; position: relative; }
+  .cubuk .yol i { position: absolute; inset: 0 auto 0 0; background: var(--ikinci); border-radius: 2px; }
+  .cubuk .yol b { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--murekkep); }
+  .cubuk .d { font: 400 11px var(--m); text-align: right; font-variant-numeric: tabular-nums; }
+  .degisti { color: var(--vurgu); font-weight: 700; }
+  .yakin { position: absolute; right: max(12px, env(safe-area-inset-right, 0px)); bottom: max(12px, env(safe-area-inset-bottom, 0px)); font: 400 11px var(--m); color: var(--soluk); background: var(--kart); border: 1px solid var(--cizgi); padding: 4px 8px; border-radius: 4px; pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) { svg.kablolar path.canli { animation: none; } }
+</style>
+</head>
+<body>
+<div class="serit">
+  <a href="index.html">← Setler</a>
+  <h1>Tezgâh</h1>
+  <p>Boş yere bas ve sürükle, tekerlekle yakınlaş. Isı haritasında bir hücreye tıkla; ölçüm kendiliğinden yenilenir.</p>
+</div>
+<div class="tezgah" id="tezgah">
+  <div class="dunya" id="dunya">
+    <svg class="kablolar" id="kablolar" aria-hidden="true"></svg>
+    <section class="kart" id="k-model" style="left:40px;top:40px;width:260px">
+      <header><b>Model</b><span id="model-aygit"></span></header>
+      <div class="ic"><ul class="liste" id="modeller"></ul></div>
+    </section>
+    <section class="kart" id="k-istem" style="left:40px;top:250px;width:260px">
+      <header><b>İstem</b><span id="token-say"></span></header>
+      <div class="ic">
+        <input class="istem" id="istem" value="Türkiye'nin başkenti" aria-label="İstem" autocomplete="off">
+        <div class="hazir" id="hazir"></div>
+        <div class="tokenler" id="tokenler"></div>
+      </div>
+    </section>
+    <section class="kart" id="k-isi" style="left:340px;top:40px;width:380px">
+      <header><b>Isı haritası</b><span>katman ↓ · head →</span></header>
+      <div class="ic"><canvas class="isi" id="isi" aria-label="Katman ve head gücü ısı haritası"></canvas><div class="ipucu" id="isi-ipucu">Bir hücrenin üstüne gel.</div></div>
+    </section>
+    <section class="kart" id="k-sicak" style="left:760px;top:40px;width:250px">
+      <header><b>Sıcak noktalar</b><span>güç</span></header>
+      <div class="ic"><ul class="liste" id="sicak"></ul></div>
+    </section>
+    <section class="kart" id="k-secim" style="left:760px;top:470px;width:250px">
+      <header><b>Seçim</b><span id="secim-say"></span></header>
+      <div class="ic"><ul class="liste" id="secim"></ul></div>
+    </section>
+    <section class="kart" id="k-olcum" style="left:1050px;top:40px;width:300px">
+      <header><b>Ölçüm</b><span>kapatınca</span></header>
+      <div class="ic" id="olcum"></div>
+    </section>
+    <section class="kart" id="k-sepet" style="left:1050px;top:400px;width:300px">
+      <header><b>Sepet</b><span id="sepet-say"></span></header>
+      <div class="ic"><ul class="liste" id="sepet"></ul></div>
+    </section>
+    <section class="kart" id="k-sistem" style="left:40px;top:600px;width:1680px">
+      <header><b>Neşter sistemleri</b><span>sıcak noktalar · 2B · liste · 3B · lens · dikkat · kavram avı · karşılaştır · kaydet</span></header>
+      <div class="ic"><div id="sistem"></div></div>
+    </section>
+    <section class="kart" id="k-kars" style="left:1390px;top:40px;width:330px">
+      <header><b>Karşılaştır</b><span>hedef olasılığı</span></header>
+      <div class="ic" id="kars"></div>
+    </section>
+  </div>
+  <div class="yakin" id="yakin">%100</div>
+</div>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id);
+  const durum = { model: 'qwen05', metin: "Türkiye'nin başkenti", secili: new Set(), uzerinde: null, sepet: [], sayac: 0 };
+  let S = N.oturum(durum.model, durum.metin);
+  let hucre = () => null, dock = null;
+
+  const isiRenk = () => N.rampa([N.css('--kart'), N.css('--ikinci'), N.css('--vurgu')]);
+
+  function cizModeller() {
+    $('modeller').replaceChildren(...N.MODELLER.map((m) => N.el('li', {
+      class: m.id === durum.model ? 'on' : '', tabindex: '0', role: 'option', 'aria-selected': String(m.id === durum.model),
+      onclick: () => { durum.model = m.id; yenile(true); },
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); durum.model = m.id; yenile(true); } },
+    }, N.el('span', { text: m.ad }), N.el('span', { class: 'v', text: m.L + '×' + m.H }))));
+    $('model-aygit').textContent = S.model.aygit + ' · ' + S.model.boyut;
+  }
+  function cizIstem() {
+    $('hazir').replaceChildren(...N.HAZIR.map((h) => N.el('span', { tabindex: '0', text: h.metin,
+      onclick: () => { $('istem').value = h.metin; durum.metin = h.metin; yenile(true); },
+      onkeydown: (e) => { if (e.key === 'Enter') { $('istem').value = h.metin; durum.metin = h.metin; yenile(true); } } })));
+    $('tokenler').replaceChildren(...S.istem.tokenlar.map((t) => N.el('i', { text: N.tok(t) })));
+    $('token-say').textContent = S.T + ' belirteç → ' + N.tok(S.istem.hedef);
+  }
+  function cizIsi() {
+    hucre = N.isiCiz($('isi'), S, { renk: isiRenk(), secili: durum.secili, uzerinde: durum.uzerinde, cizgi: N.css('--murekkep'), bosluk: 1.5 });
+  }
+  function satir(k, v, on, tikla) {
+    return N.el('li', { class: on ? 'on' : '', tabindex: '0', onclick: tikla, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tikla(); } } },
+      N.el('span', { class: 'k', text: k }), N.el('span', { class: 'v', text: v }));
+  }
+  function cizSicak() {
+    $('sicak').replaceChildren(...S.sicak.map((s) => satir(N.ad(s.l, s.h), N.sayi(s.v), durum.secili.has(s.k), () => degistir(s.k))));
+  }
+  function cizSecim() {
+    $('secim-say').textContent = durum.secili.size ? durum.secili.size + ' head' : '';
+    if (!durum.secili.size) { $('secim').replaceChildren(N.el('li', { class: 'bos', text: 'Haritadan ya da sıcak noktalardan head seç.' })); return; }
+    $('secim').replaceChildren(...[...durum.secili].map((k) => satir(N.adK(k), 'bırak ×', false, () => degistir(k))));
+  }
+  function cizOlcum() {
+    const o = $('olcum');
+    if (!durum.secili.size) { o.replaceChildren(N.el('p', { class: 'bos', text: 'Seçim boş. Model şu an ' + N.yuzde(S.once) + ' olasılıkla “' + S.istem.hedef.trim() + '” diyor.' })); return; }
+    const r = S.olc([...durum.secili]);
+    o.replaceChildren(
+      N.el('div', { class: 'buyuk' }, N.el('span', { text: N.yuzde(r.once) }), N.el('small', { text: '→' }), N.el('span', { text: N.yuzde(r.sonra) })),
+      N.el('dl', { class: 'satirlar' },
+        N.el('dt', { text: 'Hedef' }), N.el('dd', { text: N.tok(S.istem.hedef) }),
+        N.el('dt', { text: 'Rakip' }), N.el('dd', { text: N.tok(S.istem.rakip) + ' ' + N.yuzde(r.rakipOnce) + ' → ' + N.yuzde(r.rakipSonra) }),
+        N.el('dt', { text: 'KL' }), N.el('dd', { text: N.sayi(r.kl, 3) }),
+        N.el('dt', { text: 'Yeni tahmin' }), N.el('dd', { class: r.degisti ? 'degisti' : '', text: N.tok(r.tahmin) })),
+      N.el('span', { class: 'eylem', tabindex: '0', role: 'button', text: 'Sepete koy (S)', onclick: sepeteKoy, onkeydown: (e) => { if (e.key === 'Enter') sepeteKoy(); } }));
+  }
+  function cizSepet() {
+    $('sepet-say').textContent = durum.sepet.length ? durum.sepet.length + ' ölçüm' : '';
+    if (!durum.sepet.length) { $('sepet').replaceChildren(N.el('li', { class: 'bos', text: 'Ölçümü beğenince S ile buraya bırak.' })); return; }
+    $('sepet').replaceChildren(...durum.sepet.map((s) => satir(s.ad + ' · ' + s.headler.map(N.adK).join(' + '), N.yuzde(s.sonra) + ' ×', false, () => {
+      durum.sepet = durum.sepet.filter((x) => x !== s); cizSepet(); cizKars();
+    })));
+  }
+  function cizKars() {
+    const k = $('kars');
+    if (!durum.sepet.length) { k.replaceChildren(N.el('p', { class: 'bos', text: 'Sepete en az bir ölçüm koyunca hepsi burada yan yana durur. Siyah çizgi kesimden önceki olasılık.' })); return; }
+    k.replaceChildren(...durum.sepet.map((s) => N.el('div', { class: 'cubuk', title: s.headler.map(N.adK).join(' + ') },
+      N.el('span', { class: 'ad', text: s.ad }),
+      (() => { const y = N.el('span', { class: 'yol' }); const i = N.el('i'); i.style.width = (s.sonra * 100).toFixed(1) + '%'; const b = N.el('b'); b.style.left = (s.once * 100).toFixed(1) + '%'; y.append(i, b); return y; })(),
+      N.el('span', { class: 'd', text: N.yuzde(s.sonra) })),
+    ), N.el('p', { class: 'ipucu', text: 'En çok düşüren: ' + [...durum.sepet].sort((a, b) => a.sonra - b.sonra)[0].ad }));
+  }
+  function sepeteKoy() {
+    if (!durum.secili.size) return;
+    const r = S.olc([...durum.secili]);
+    durum.sepet.push({ ad: 'Ö' + (++durum.sayac), headler: r.headler, once: r.once, sonra: r.sonra, kl: r.kl });
+    cizSepet(); cizKars(); kablo(true); dock && dock.yenile();
+  }
+  function degistir(k) {
+    durum.secili.has(k) ? durum.secili.delete(k) : durum.secili.add(k);
+    cizIsi(); cizSicak(); cizSecim(); cizOlcum(); kablo(); dock && dock.yenile();
+  }
+  function yenile(yeniOturum) {
+    if (yeniOturum) { S = N.oturum(durum.model, durum.metin); durum.secili.clear(); }
+    cizModeller(); cizIstem(); cizIsi(); cizSicak(); cizSecim(); cizOlcum(); cizSepet(); cizKars(); kablo(); dock && dock.yenile();
+  }
+
+  // Kablolar: kart kenarları arasında yumuşak eğriler.
+  const baglar = [['k-model', 'k-isi'], ['k-istem', 'k-isi'], ['k-isi', 'k-secim'], ['k-sicak', 'k-secim'], ['k-isi', 'k-sicak'], ['k-secim', 'k-olcum'], ['k-olcum', 'k-sepet'], ['k-sepet', 'k-kars'], ['k-secim', 'k-sistem']];
+  function kablo(parla) {
+    const svg = $('kablolar');
+    const kutu = (id) => { const e = $(id); return { x: e.offsetLeft, y: e.offsetTop, w: e.offsetWidth, h: e.offsetHeight }; };
+    svg.replaceChildren(...baglar.map(([a, b]) => {
+      const A = kutu(a), B = kutu(b);
+      let x1, y1, x2, y2, d;
+      if (B.x >= A.x + A.w - 10) {
+        x1 = A.x + A.w; y1 = A.y + Math.min(A.h / 2, 60); x2 = B.x; y2 = B.y + Math.min(B.h / 2, 60);
+        const dx = Math.max(40, (x2 - x1) / 2);
+        d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+      } else {
+        x1 = A.x + A.w / 2; y1 = A.y + A.h; x2 = B.x + B.w / 2; y2 = B.y;
+        const dy = Math.max(30, (y2 - y1) / 2);
+        d = `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`;
+      }
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', d);
+      const canli = (b === 'k-olcum' && durum.secili.size) || (parla && (b === 'k-sepet' || b === 'k-kars'));
+      if (canli) p.setAttribute('class', 'canli');
+      return p;
+    }));
+  }
+
+  // Isı haritası etkileşimi.
+  const isi = $('isi');
+  const konum = (e) => { const r = isi.getBoundingClientRect(); return hucre((e.clientX - r.left) * isi.clientWidth / r.width, (e.clientY - r.top) * isi.clientHeight / r.height); };
+  isi.addEventListener('pointermove', (e) => {
+    const c = konum(e);
+    const k = c ? c.k : null;
+    if (k === durum.uzerinde) return;
+    durum.uzerinde = k; cizIsi();
+    $('isi-ipucu').textContent = c ? N.ad(c.l, c.h) + ' · güç ' + N.sayi(S.g(c.l, c.h)) + (durum.secili.has(k) ? ' · seçili' : ' · tıkla seç') : 'Bir hücrenin üstüne gel.';
+  });
+  isi.addEventListener('pointerleave', () => { durum.uzerinde = null; cizIsi(); });
+  isi.addEventListener('click', (e) => { const c = konum(e); if (c) degistir(c.k); });
+
+  $('istem').addEventListener('input', (e) => { durum.metin = e.target.value; clearTimeout(cizIstem.t); cizIstem.t = setTimeout(() => yenile(true), 250); });
+
+  // Gezinme: boş tezgâhta sürükle, tekerlekle yakınlaş.
+  const tezgah = $('tezgah'), dunya = $('dunya');
+  const kam = { x: 20, y: 20, z: 1 };
+  const uygula = () => { dunya.style.transform = `translate(${kam.x}px,${kam.y}px) scale(${kam.z})`; $('yakin').textContent = '%' + Math.round(kam.z * 100); };
+  function sigdir() {
+    const w = tezgah.clientWidth, h = tezgah.clientHeight;
+    kam.z = Math.max(0.35, Math.min(1, (w - 32) / 1740, Math.max((h - 24) / 1480, 0.5)));
+    kam.x = 16; kam.y = 12; uygula();
+  }
+  let surukle = null;
+  tezgah.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.kart')) return;
+    surukle = { x: e.clientX, y: e.clientY, kx: kam.x, ky: kam.y };
+    tezgah.setPointerCapture(e.pointerId); tezgah.classList.add('surukle');
+  });
+  tezgah.addEventListener('pointermove', (e) => { if (!surukle) return; kam.x = surukle.kx + e.clientX - surukle.x; kam.y = surukle.ky + e.clientY - surukle.y; uygula(); });
+  const birak = () => { surukle = null; tezgah.classList.remove('surukle'); };
+  tezgah.addEventListener('pointerup', birak); tezgah.addEventListener('pointercancel', birak);
+  tezgah.addEventListener('wheel', (e) => {
+    if (!e.deltaY || e.target.closest('#sistem canvas')) return;
+    e.preventDefault();
+    const r = tezgah.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const z = Math.max(0.3, Math.min(2.2, kam.z * Math.exp(-e.deltaY * 0.0015)));
+    kam.x = mx - (mx - kam.x) * (z / kam.z); kam.y = my - (my - kam.y) * (z / kam.z); kam.z = z; uygula();
+  }, { passive: false });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.closest('.ns')) return;
+    if (e.key === 's' || e.key === 'S') sepeteKoy();
+    if (e.key === '0') sigdir();
+  });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => cizIsi());
+  new MutationObserver(() => cizIsi()).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  window.addEventListener('resize', () => cizIsi());
+
+  // Örnek durum: en sıcak iki head seçili, bir ölçüm sepette.
+  durum.secili.add(S.sicak[0].k);
+  yenile(false);
+  sepeteKoy();
+  durum.secili.add(S.sicak[1].k);
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => durum.secili, degis: (k) => degistir(k), sepet: () => durum.sepet, sekme: '3b' });
+  dock.karisim(0.7);
+  yenile(false);
+  sigdir();
+})();
+</script>
+</body>
+</html>

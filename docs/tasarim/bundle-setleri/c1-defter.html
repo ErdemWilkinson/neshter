@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Defter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=Victor+Mono:wght@400;600&display=swap">
+<style>
+  /* Düzen: tek sütun defter. Her hücre solda sayaç, üstte düzenlenebilir satır, altta çıktı. Bir satırı değiştirince ona bağlı hücreler yeniden hesaplanır. */
+  :root {
+    --kagit: #fafbfa; --murekkep: #1f2328; --soluk: #646c73; --cizgi: #e3e6e4; --hucre: #f1f3f2;
+    --vurgu: #0a7d6c; --isaret: #f2c94c; --uyari: #b4372b;
+    --f: "Newsreader", Georgia, serif; --m: "Victor Mono", ui-monospace, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --kagit: #131615; --murekkep: #e6e9e7; --soluk: #95a09b; --cizgi: #262b29; --hucre: #1a1e1c;
+    --vurgu: #45c4ae; --isaret: #8a7020; --uyari: #ff8f80; color-scheme: dark; } }
+  :root[data-theme="dark"] {
+    --kagit: #131615; --murekkep: #e6e9e7; --soluk: #95a09b; --cizgi: #262b29; --hucre: #1a1e1c;
+    --vurgu: #45c4ae; --isaret: #8a7020; --uyari: #ff8f80; color-scheme: dark; }
+  :root { --n-zemin: var(--kagit); --n-yuzey: var(--hucre); --n-murekkep: var(--murekkep); --n-soluk: var(--soluk); --n-cizgi: var(--cizgi); --n-vurgu: var(--vurgu); --n-ikinci: var(--soluk); --n-f: var(--m); --n-m: var(--m); }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--kagit); color: var(--murekkep); font: 400 17px/1.6 var(--f);
+    padding-block: 36px 72px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .defter { max-width: 48rem; margin: 0 auto; display: grid; gap: 22px; }
+  .bas { display: grid; gap: 6px; }
+  .bas a { color: var(--soluk); text-decoration: none; font: 400 13px var(--m); }
+  .bas a:hover, .bas a:focus-visible { color: var(--vurgu); }
+  .bas h1 { margin: 0; font: 600 clamp(32px, 5vw, 46px)/1.05 var(--f); letter-spacing: -0.015em; }
+  .bas p { margin: 0; color: var(--soluk); max-width: 60ch; }
+  .hucre { display: grid; grid-template-columns: 3rem minmax(0, 1fr); gap: 0 10px; }
+  .sayac { font: 400 12px var(--m); color: var(--soluk); text-align: right; padding-top: 9px; font-variant-numeric: tabular-nums; }
+  .sayac.taze { color: var(--vurgu); }
+  .govde { display: grid; gap: 8px; min-width: 0; }
+  .kod { display: flex; align-items: baseline; gap: 8px; background: var(--hucre); border: 1px solid var(--cizgi); border-radius: 6px; padding: 7px 10px; font: 400 14px var(--m); }
+  .kod:focus-within { border-color: var(--vurgu); }
+  .kod .ad { color: var(--vurgu); font-weight: 600; white-space: nowrap; }
+  .kod input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--murekkep); font: inherit; padding: 0; }
+  .kod input:focus { outline: none; }
+  .kod .sabit { color: var(--soluk); }
+  .cikti { font: 400 14px var(--m); min-width: 0; display: grid; gap: 6px; }
+  .cikti p { margin: 0; }
+  .cikti .uyari { color: var(--uyari); }
+  .cikti .vurgu { color: var(--vurgu); font-weight: 600; }
+  .yazi { font: 400 17px/1.6 var(--f); }
+  .yazi p { margin: 0; }
+  .yazi mark { background: var(--isaret); color: inherit; padding: 0 2px; }
+  .tok { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tok i { font-style: normal; border: 1px solid var(--cizgi); padding: 0 5px; border-radius: 3px; }
+  .tok i.hedef { border-color: var(--vurgu); color: var(--vurgu); }
+  .isi-sar { overflow-x: auto; }
+  canvas.isi { width: 100%; max-width: 30rem; height: 300px; display: block; cursor: pointer; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td, th { text-align: left; padding: 2px 18px 2px 0; font-weight: 400; white-space: nowrap; }
+  th { color: var(--soluk); }
+  svg.lens { width: 100%; max-width: 30rem; height: 110px; display: block; }
+  .not { min-height: 3em; padding: 2px 0; outline: none; border-bottom: 1px dashed var(--cizgi); }
+  .not:focus { border-bottom-color: var(--vurgu); }
+  .ara { color: var(--soluk); font-style: italic; }
+</style>
+</head>
+<body>
+<main class="defter">
+  <div class="bas">
+    <a href="index.html">← Setler</a>
+    <h1>Defter</h1>
+    <p>Neşter oturumu bir defter gibi. Yeşil adlı satırlar düzenlenebilir; birini değiştirince ona bağlı bütün hücreler kendiliğinden yeniden hesaplanır. Isı haritasına tıklamak da “kapat” satırını yazar.</p>
+  </div>
+
+  <section class="hucre"><span class="sayac">✎</span><div class="govde yazi"><p>Soru: <mark>Model “Ankara” cevabını hangi head’lerle buluyor?</mark> Önce modeli ve istemi sabitleyip ısıya bakalım.</p></div></section>
+
+  <section class="hucre" data-h="model"><span class="sayac"></span><div class="govde">
+    <label class="kod"><span class="ad">model</span><span class="sabit">=</span><input id="g-model" value="qwen05" spellcheck="false"></label>
+    <div class="cikti" id="c-model"></div></div></section>
+
+  <section class="hucre" data-h="istem"><span class="sayac"></span><div class="govde">
+    <label class="kod"><span class="ad">istem</span><span class="sabit">=</span><input id="g-istem" value="Türkiye'nin başkenti" spellcheck="false"></label>
+    <div class="cikti" id="c-istem"></div></div></section>
+
+  <section class="hucre" data-h="isi"><span class="sayac"></span><div class="govde">
+    <div class="kod"><span class="ad">ısı</span><span class="sabit">(model, istem)</span></div>
+    <div class="cikti" id="c-isi"></div></div></section>
+
+  <section class="hucre" data-h="kapat"><span class="sayac"></span><div class="govde">
+    <label class="kod"><span class="ad">kapat</span><span class="sabit">=</span><input id="g-kapat" value="" spellcheck="false" placeholder="K14·H3, K18·H7"></label>
+    <div class="cikti" id="c-kapat"></div></div></section>
+
+  <section class="hucre" data-h="olc"><span class="sayac"></span><div class="govde">
+    <div class="kod"><span class="ad">ölç</span><span class="sabit">(kapat)</span></div>
+    <div class="cikti" id="c-olc"></div></div></section>
+
+  <section class="hucre" data-h="lens"><span class="sayac"></span><div class="govde">
+    <div class="kod"><span class="ad">lens</span><span class="sabit">(kapat)</span></div>
+    <div class="cikti" id="c-lens"></div></div></section>
+
+  <section class="hucre" data-h="sistem"><span class="sayac"></span><div class="govde">
+    <div class="kod"><span class="ad">sistem</span><span class="sabit">(model, istem, kapat) · bütün görünümler</span></div>
+    <div class="cikti"><div id="sistem"></div></div></div></section>
+
+  <section class="hucre"><span class="sayac">✎</span><div class="govde yazi">
+    <p class="ara">Not (buraya yazabilirsin):</p>
+    <div class="not" id="not" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Not"></div></div></section>
+</main>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id), el = N.el;
+  const sayac = {}; let S = null, kapali = [], dock = null;
+  const NS = 'http://www.w3.org/2000/svg';
+
+  function damgala(h) {
+    sayac[h] = (sayac[h] || 0) + 1;
+    const s = document.querySelector('[data-h="' + h + '"] .sayac');
+    s.textContent = '[' + sayac[h] + ']'; s.classList.remove('taze'); void s.offsetWidth; s.classList.add('taze');
+    clearTimeout(s.t); s.t = setTimeout(() => s.classList.remove('taze'), 900);
+  }
+  const p = (...c) => el('p', null, ...c);
+
+  // Bağımlılık: model, istem → isi → (kapat) → olc, lens
+  function hModel() {
+    const v = $('g-model').value.trim().toLowerCase();
+    const m = N.MODELLER.find((x) => x.id === v || x.kisa.toLowerCase() === v);
+    damgala('model');
+    if (!m) { $('c-model').replaceChildren(p(el('span', { class: 'uyari', text: '“' + v + '” bulunamadı. ' }), 'Seçenekler: ' + N.MODELLER.map((x) => x.id).join(', '))); return false; }
+    $('c-model').replaceChildren(p(el('span', { class: 'vurgu', text: m.ad }), ' · ' + m.L + ' katman × ' + m.H + ' head · ' + m.aygit + ' · ' + m.boyut));
+    hModel.m = m; return true;
+  }
+  function hIstem() {
+    damgala('istem');
+    S = N.oturum(hModel.m.id, $('g-istem').value);
+    $('c-istem').replaceChildren(el('div', { class: 'tok' }, ...S.istem.tokenlar.map((t) => el('i', { text: N.tok(t) })), el('i', { class: 'hedef', text: '→ ' + N.tok(S.istem.hedef) + ' ' + N.yuzde(S.once) })));
+  }
+  let hucre = () => null;
+  function hIsi() {
+    damgala('isi');
+    if (!$('isi-tuval')) {
+      const c = el('canvas', { class: 'isi', id: 'isi-tuval', 'aria-label': 'Isı haritası; tıklayınca kapat satırına eklenir' });
+      c.addEventListener('click', (e) => {
+        const r = c.getBoundingClientRect(), o = hucre(e.clientX - r.left, e.clientY - r.top);
+        if (!o) return;
+        const set = new Set(kapali); set.has(o.k) ? set.delete(o.k) : set.add(o.k);
+        $('g-kapat').value = [...set].map(N.adK).join(', '); hKapat();
+      });
+      $('c-isi').replaceChildren(el('div', { class: 'isi-sar' }, c), p(el('span', { id: 'isi-alt' })));
+    }
+    const c = $('isi-tuval'); c.style.height = Math.min(360, S.L * 14) + 'px';
+    hucre = N.isiCiz(c, S, { renk: N.rampa([N.css('--hucre'), N.css('--vurgu'), N.css('--murekkep')]), secili: new Set(kapali), cizgi: N.css('--isaret'), bosluk: 1.5 });
+    $('isi-alt').textContent = 'En sıcak üç: ' + S.sicak.slice(0, 3).map((s) => N.ad(s.l, s.h) + ' (' + N.sayi(s.v) + ')').join(', ');
+  }
+  function coz(metin) {
+    const iyi = [], kotu = [];
+    for (const t of String(metin).split(/[\s,+;]+/).filter(Boolean)) {
+      const m = t.match(/^k?(\d+)[·.\-:]h?(\d+)$/i);
+      if (m && +m[1] < S.L && +m[2] < S.H) iyi.push(N.anahtar(+m[1], +m[2])); else kotu.push(t);
+    }
+    return { iyi: [...new Set(iyi)], kotu };
+  }
+  function hKapat() {
+    damgala('kapat');
+    const r = coz($('g-kapat').value); kapali = r.iyi;
+    $('c-kapat').replaceChildren(
+      p(kapali.length ? kapali.length + ' head kapalı: ' + kapali.map(N.adK).join(' + ') : 'Hiçbir şey kapalı değil.'),
+      r.kotu.length ? p(el('span', { class: 'uyari', text: 'Anlaşılmadı: ' + r.kotu.join(', ') + ' (biçim K14·H3; katman 0–' + (S.L - 1) + ', head 0–' + (S.H - 1) + ')' })) : null);
+    hIsi(); hOlc(); hLens();
+    if (dock) { damgala('sistem'); dock.yenile(); }
+  }
+  function hOlc() {
+    damgala('olc');
+    const r = S.olc(kapali);
+    $('c-olc').replaceChildren(el('table', null,
+      el('tr', null, el('th', { text: '' }), el('th', { text: 'önce' }), el('th', { text: 'sonra' })),
+      el('tr', null, el('td', { text: N.tok(S.istem.hedef) }), el('td', { text: N.yuzde(r.once, 1) }), el('td', { class: 'vurgu', text: N.yuzde(r.sonra, 1) })),
+      el('tr', null, el('td', { text: N.tok(S.istem.rakip) }), el('td', { text: N.yuzde(r.rakipOnce, 1) }), el('td', { text: N.yuzde(r.rakipSonra, 1) })),
+      el('tr', null, el('td', { text: 'KL' }), el('td'), el('td', { text: N.sayi(r.kl, 3) })),
+      el('tr', null, el('td', { text: 'tahmin' }), el('td', { text: N.tok(S.istem.hedef) }), el('td', { class: r.degisti ? 'uyari' : '', text: N.tok(r.tahmin) }))));
+  }
+  function hLens() {
+    damgala('lens');
+    const L = S.L, a = S.lens([]), b = S.lens(kapali), W = 480, H = 100;
+    const yol = (rows) => 'M' + rows.map((row, l) => (l / (L - 1) * W).toFixed(1) + ',' + (H - 6 - (row.find((x) => x.tok === S.istem.hedef) || { p: 0 }).p * (H - 14)).toFixed(1)).join(' L');
+    const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('class', 'lens'); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('preserveAspectRatio', 'none');
+    const pth = (d, s, w, dash) => { const e = document.createElementNS(NS, 'path'); e.setAttribute('d', d); e.setAttribute('fill', 'none'); e.setAttribute('stroke', s); e.setAttribute('stroke-width', w); e.setAttribute('vector-effect', 'non-scaling-stroke'); if (dash) e.setAttribute('stroke-dasharray', dash); return e; };
+    svg.append(pth(yol(a), N.css('--soluk'), 1.5, '3 3'), pth(yol(b), N.css('--vurgu'), 2.5));
+    const son = b[L - 1][0];
+    $('c-lens').replaceChildren(svg, p('“' + S.istem.hedef.trim() + '” olasılığı katman katman. Kesikli: kapatmadan önce. Son katmanda 1. sırada: ', el('span', { class: 'vurgu', text: N.tok(son.tok) })));
+  }
+
+  function hepsi() { if (!hModel()) return; hIstem(); hKapat(); }
+  let zaman;
+  $('g-model').addEventListener('input', () => { clearTimeout(zaman); zaman = setTimeout(hepsi, 300); });
+  $('g-istem').addEventListener('input', () => { clearTimeout(zaman); zaman = setTimeout(() => { if (hModel.m) { hIstem(); hKapat(); } }, 300); });
+  $('g-kapat').addEventListener('input', () => { clearTimeout(zaman); zaman = setTimeout(hKapat, 250); });
+  try { $('not').textContent = localStorage.getItem('neshter-defter-not') || ''; } catch (e) { /* depolama yoksa boş başla */ }
+  if (!$('not').textContent) $('not').textContent = 'Örnek not: en sıcak iki head’i birlikte kapatınca düşüş, tek tek kapatınca görülen düşüşlerin toplamından büyük mü? Sıradaki deneme bu.';
+  $('not').addEventListener('input', () => { try { localStorage.setItem('neshter-defter-not', $('not').textContent); } catch (e) { /* önemsiz */ } });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => S && (hIsi(), hLens()));
+  new MutationObserver(() => S && (hIsi(), hLens())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  addEventListener('resize', () => S && hIsi());
+
+  hModel(); hIstem();
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => new Set(kapali), sekme: '3b',
+    degis: (k) => { const set = new Set(kapali); set.has(k) ? set.delete(k) : set.add(k); $('g-kapat').value = [...set].map(N.adK).join(', '); hKapat(); } });
+  dock.karisim(0.6);
+  $('g-kapat').value = S.sicak.slice(0, 2).map((s) => N.ad(s.l, s.h)).join(', ');
+  hKapat();
+})();
+</script>
+</body>
+</html>

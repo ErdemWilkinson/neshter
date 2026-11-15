@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Atlas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;600;700&family=Azeret+Mono:wght@400;600&display=swap">
+<style>
+  /* Düzen: model bir disk. İç halka katman 0, dış halka son katman; dilimler head. Ortada canlı ölçüm, yanda seçim ve sepet. Koyu öncelikli. */
+  :root {
+    --zemin: #0e1a1f; --yuzey: #13242b; --murekkep: #e9f1ef; --soluk: #8aa3a6; --cizgi: #21363e;
+    --dusuk: #16303a; --orta: #3fb8af; --yuksek: #f4e9c1; --vurgu: #ff7a59;
+    --f: "Familjen Grotesk", "Segoe UI", system-ui, sans-serif; --m: "Azeret Mono", ui-monospace, Consolas, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+    --zemin: #eef3f2; --yuzey: #ffffff; --murekkep: #10252b; --soluk: #557177; --cizgi: #d3e0df;
+    --dusuk: #e3ecea; --orta: #2a9d94; --yuksek: #0c3b44; --vurgu: #d9502e; color-scheme: light; } }
+  :root[data-theme="light"] {
+    --zemin: #eef3f2; --yuzey: #ffffff; --murekkep: #10252b; --soluk: #557177; --cizgi: #d3e0df;
+    --dusuk: #e3ecea; --orta: #2a9d94; --yuksek: #0c3b44; --vurgu: #d9502e; color-scheme: light; }
+  :root { --n-zemin: var(--zemin); --n-yuzey: var(--yuzey); --n-murekkep: var(--murekkep); --n-soluk: var(--soluk); --n-cizgi: var(--cizgi); --n-vurgu: var(--vurgu); --n-ikinci: var(--orta); --n-f: var(--f); --n-m: var(--m); }
+  * { box-sizing: border-box; }
+  .sistemler { display: grid; gap: 10px; border-top: 1px solid var(--cizgi); padding-top: 18px; }
+  .sistemler h2 { margin: 0; font: 600 12px var(--f); letter-spacing: 0.1em; text-transform: uppercase; color: var(--soluk); }
+  body { margin: 0; background: var(--zemin); color: var(--murekkep); font: 400 15px/1.5 var(--f);
+    padding-block: 20px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .sayfa { max-width: 76rem; margin: 0 auto; display: grid; gap: 18px; }
+  .bas { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; }
+  .bas a { color: var(--soluk); text-decoration: none; font-size: 13px; }
+  .bas a:hover, .bas a:focus-visible { color: var(--vurgu); }
+  .bas h1 { margin: 0; font: 700 clamp(28px, 4vw, 40px)/1 var(--f); letter-spacing: -0.02em; }
+  .bas p { margin: 0; color: var(--soluk); flex-basis: 100%; max-width: 62ch; }
+  .secenek { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--soluk); }
+  .secenek span[tabindex] { cursor: pointer; padding-bottom: 2px; border-bottom: 1px solid transparent; }
+  .secenek span[tabindex]:hover, .secenek span[tabindex]:focus-visible { color: var(--murekkep); outline: none; border-bottom-color: var(--cizgi); }
+  .secenek span.on { color: var(--murekkep); border-bottom-color: var(--orta); }
+  .govde { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: 28px; align-items: start; }
+  .disk { position: relative; width: 100%; max-width: 46rem; aspect-ratio: 1; justify-self: center; }
+  .disk canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; touch-action: manipulation; }
+  .merkez { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 26%; text-align: center; pointer-events: none; display: grid; gap: 2px; }
+  .merkez small { font: 400 11px var(--m); color: var(--soluk); letter-spacing: 0.04em; }
+  .merkez b { font: 700 clamp(22px, 4.2vw, 40px)/1 var(--f); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .merkez span { font: 400 12px var(--m); }
+  .merkez .degisti { color: var(--vurgu); }
+  .ipucu { position: absolute; pointer-events: none; background: var(--yuzey); border: 1px solid var(--cizgi); padding: 6px 9px; border-radius: 4px; font: 400 12px var(--m); white-space: nowrap; transform: translate(12px, 12px); }
+  aside { display: grid; gap: 22px; }
+  aside h2 { margin: 0 0 8px; font: 600 12px var(--f); letter-spacing: 0.1em; text-transform: uppercase; color: var(--soluk); }
+  .etiketler { display: flex; flex-wrap: wrap; gap: 6px; }
+  .etiketler span { font: 400 12px var(--m); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--cizgi); cursor: pointer; }
+  .etiketler span.on { border-color: var(--vurgu); color: var(--vurgu); }
+  .etiketler span:focus-visible { outline: 2px solid var(--orta); outline-offset: 1px; }
+  .bos { color: var(--soluk); font-size: 13px; margin: 0; }
+  .sepet { display: grid; gap: 10px; }
+  .kalem { display: grid; grid-template-columns: 2.4rem 1fr auto; gap: 10px; align-items: center; cursor: pointer; }
+  .kalem .no { font: 600 12px var(--m); color: var(--soluk); }
+  .kalem .ad { font: 400 12px var(--m); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kalem .yay { width: 54px; height: 54px; }
+  .kalem:hover .ad, .kalem:focus-visible .ad { color: var(--vurgu); }
+  .kalem:focus-visible { outline: none; }
+  .eylem { color: var(--vurgu); cursor: pointer; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+  .lejant { display: flex; gap: 10px; align-items: center; font: 400 11px var(--m); color: var(--soluk); }
+  .lejant i { width: 120px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--dusuk), var(--orta), var(--yuksek)); }
+  @media (max-width: 900px) { .govde { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<div class="sayfa">
+  <div class="bas">
+    <a href="index.html">← Setler</a>
+    <h1>Atlas</h1>
+    <p>Modelin tamamı tek bir diskte. Merkeze yakın halkalar ilk katmanlar, dış halkalar son katmanlar; her dilim bir head. Bir hücreye tıkla, kapanır; ortadaki sayı hedef sözcüğün olasılığı.</p>
+    <div class="secenek" id="modeller"></div>
+    <div class="secenek" id="istemler"></div>
+  </div>
+  <div class="govde">
+    <div class="disk" id="disk">
+      <canvas id="atlas" aria-label="Katman halkaları ve head dilimleri"></canvas>
+      <div class="merkez" aria-live="polite"><small id="m-ust"></small><b id="m-sayi"></b><span id="m-alt"></span></div>
+      <div class="ipucu" id="ipucu" hidden></div>
+    </div>
+    <aside>
+      <section><h2>Kapalı head'ler</h2><div class="etiketler" id="secim"></div></section>
+      <section><h2>Sıcak noktalar</h2><div class="etiketler" id="sicak"></div></section>
+      <section><h2>Sepet</h2><div class="sepet" id="sepet"></div></section>
+      <div class="lejant"><span>soğuk</span><i></i><span>sıcak</span></div>
+    </aside>
+  </div>
+  <section class="sistemler"><h2>Neşter sistemleri · aynı seçim, uygulamadaki bütün görünümler</h2><div id="sistem"></div></section>
+</div>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id), el = N.el;
+  const d = { model: 'qwen05', metin: "Türkiye'nin başkenti", secili: new Set(), sepet: [], no: 0, uzerinde: null };
+  let S, geo = null, dock = null;
+
+  function secenek(kap, ogeler, aktif, sec) {
+    $(kap).replaceChildren(...ogeler.map(([id, ad]) => el('span', { tabindex: '0', class: id === aktif ? 'on' : '', text: ad,
+      onclick: () => sec(id), onkeydown: (e) => { if (e.key === 'Enter') sec(id); } })));
+  }
+  function yukle() {
+    S = N.oturum(d.model, d.metin); d.secili.clear();
+    secenek('modeller', N.MODELLER.map((m) => [m.id, m.ad]), d.model, (id) => { d.model = id; yukle(); });
+    secenek('istemler', N.HAZIR.map((h) => [h.metin, '“' + h.metin + '”']), d.metin, (m) => { d.metin = m; yukle(); });
+    ciz();
+  }
+  const rampa = () => N.rampa([N.css('--dusuk'), N.css('--orta'), N.css('--yuksek')]);
+
+  function ciz() {
+    const c = $('atlas'), dpr = devicePixelRatio || 1, w = c.clientWidth;
+    if (!w) return;
+    c.width = w * dpr; c.height = w * dpr;
+    const x = c.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, w);
+    const cx = w / 2, r0 = w * 0.16, R = w * 0.47, dr = (R - r0) / S.L, da = (Math.PI * 2) / S.H, bas = -Math.PI / 2;
+    geo = { cx, r0, R, dr, da, bas };
+    const rn = rampa(), bosluk = Math.min(0.012, 0.6 / S.L);
+    for (let l = 0; l < S.L; l++) for (let h = 0; h < S.H; h++) {
+      const ri = r0 + l * dr + 0.6, ro = r0 + (l + 1) * dr - 0.6, a0 = bas + h * da + bosluk, a1 = bas + (h + 1) * da - bosluk;
+      x.beginPath(); x.arc(cx, cx, ro, a0, a1); x.arc(cx, cx, ri, a1, a0, true); x.closePath();
+      x.fillStyle = rn(S.g(l, h)); x.fill();
+      const k = N.anahtar(l, h);
+      if (d.secili.has(k)) { x.lineWidth = 2; x.strokeStyle = N.css('--vurgu'); x.stroke(); }
+      else if (d.uzerinde === k) { x.lineWidth = 1.5; x.strokeStyle = N.css('--murekkep'); x.stroke(); }
+    }
+    // Head numaraları dış çevrede, katman işaretleri tepede.
+    x.fillStyle = N.css('--soluk'); x.font = '11px ' + N.css('--m'); x.textAlign = 'center'; x.textBaseline = 'middle';
+    for (let h = 0; h < S.H; h++) { const a = bas + (h + 0.5) * da; x.fillText('H' + h, cx + Math.cos(a) * (R + 14), cx + Math.sin(a) * (R + 14)); }
+    x.textAlign = 'left';
+    [0, Math.floor(S.L / 2), S.L - 1].forEach((l) => x.fillText('K' + l, cx + 4, cx - (r0 + (l + 0.5) * dr)));
+    merkez(); yan(); dock && dock.yenile();
+  }
+  function merkez() {
+    const r = S.olc([...d.secili]);
+    $('m-ust').textContent = N.tok(S.istem.hedef).toUpperCase();
+    $('m-sayi').textContent = N.yuzde(r.sonra, 1);
+    $('m-alt').textContent = d.secili.size ? (r.degisti ? 'tahmin artık ' + N.tok(r.tahmin) : 'önce ' + N.yuzde(r.once, 1)) : 'hiçbir şey kapalı değil';
+    $('m-alt').className = r.degisti ? 'degisti' : '';
+  }
+  function etiket(k, on, tik) { return el('span', { tabindex: '0', class: on ? 'on' : '', text: N.adK(k), onclick: tik, onkeydown: (e) => { if (e.key === 'Enter') tik(); } }); }
+  function yan() {
+    $('secim').replaceChildren(...(d.secili.size ? [...[...d.secili].map((k) => etiket(k, true, () => degis(k))),
+      el('span', { class: 'eylem', tabindex: '0', text: 'sepete koy', onclick: sepeteKoy, onkeydown: (e) => { if (e.key === 'Enter') sepeteKoy(); } })]
+      : [el('p', { class: 'bos', text: 'Diskte bir hücreye tıkla.' })]));
+    $('sicak').replaceChildren(...S.sicak.slice(0, 8).map((s) => etiket(s.k, d.secili.has(s.k), () => degis(s.k))));
+    if (!d.sepet.length) { $('sepet').replaceChildren(el('p', { class: 'bos', text: 'Kapatmayı beğenince “sepete koy”. Sepetteki bir kaleme tıklarsan seçim geri gelir.' })); return; }
+    $('sepet').replaceChildren(...d.sepet.map((s) => {
+      const c = el('canvas', { class: 'yay', width: '108', height: '108', 'aria-hidden': 'true' });
+      const x = c.getContext('2d'); x.scale(2, 2); x.lineWidth = 6; x.lineCap = 'round';
+      x.strokeStyle = N.css('--cizgi'); x.beginPath(); x.arc(27, 27, 22, 0, Math.PI * 2); x.stroke();
+      x.strokeStyle = N.css('--orta'); x.beginPath(); x.arc(27, 27, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * s.sonra); x.stroke();
+      x.fillStyle = N.css('--murekkep'); x.font = '600 11px ' + N.css('--m'); x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(N.yuzde(s.sonra), 27, 28);
+      const geri = () => { d.secili = new Set(s.headler); ciz(); };
+      return el('div', { class: 'kalem', tabindex: '0', onclick: geri, onkeydown: (e) => { if (e.key === 'Enter') geri(); } },
+        el('span', { class: 'no', text: 'Ö' + s.no }), el('span', { class: 'ad', text: s.headler.map(N.adK).join(' + ') }), c);
+    }));
+  }
+  function degis(k) { d.secili.has(k) ? d.secili.delete(k) : d.secili.add(k); ciz(); }
+  function sepeteKoy() { if (!d.secili.size) return; const r = S.olc([...d.secili]); d.no++; d.sepet.unshift({ no: d.no, ad: 'Ö' + d.no, headler: r.headler, once: r.once, sonra: r.sonra }); ciz(); }
+
+  function bul(e) {
+    if (!geo) return null;
+    const c = $('atlas'), b = c.getBoundingClientRect();
+    const px = (e.clientX - b.left) * c.clientWidth / b.width - geo.cx, py = (e.clientY - b.top) * c.clientWidth / b.height - geo.cx;
+    const r = Math.hypot(px, py);
+    if (r < geo.r0 || r > geo.R) return null;
+    let a = Math.atan2(py, px) - geo.bas; a = ((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const l = Math.floor((r - geo.r0) / geo.dr), h = Math.floor(a / geo.da);
+    return l >= 0 && l < S.L && h >= 0 && h < S.H ? { l, h, k: N.anahtar(l, h) } : null;
+  }
+  const c = $('atlas'), ip = $('ipucu');
+  c.addEventListener('pointermove', (e) => {
+    const o = bul(e), k = o ? o.k : null;
+    if (o) {
+      const b = $('disk').getBoundingClientRect(), tek = S.olc([o.k]);
+      ip.hidden = false; ip.style.left = (e.clientX - b.left) + 'px'; ip.style.top = (e.clientY - b.top) + 'px';
+      ip.textContent = N.ad(o.l, o.h) + ' · güç ' + N.sayi(S.g(o.l, o.h)) + ' · tek başına ' + N.yuzde(tek.sonra);
+    } else ip.hidden = true;
+    if (k !== d.uzerinde) { d.uzerinde = k; ciz(); }
+  });
+  c.addEventListener('pointerleave', () => { ip.hidden = true; d.uzerinde = null; ciz(); });
+  c.addEventListener('click', (e) => { const o = bul(e); if (o) degis(o.k); });
+  new ResizeObserver(() => S && ciz()).observe($('disk'));
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => ciz());
+  new MutationObserver(() => ciz()).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => d.secili, degis: (k) => degis(k), sepet: () => d.sepet, sekme: '3b' });
+  dock.karisim(0.65);
+  yukle();
+  d.secili.add(S.sicak[0].k); d.secili.add(S.sicak[1].k); sepeteKoy();
+  d.secili = new Set([S.sicak[2].k]); ciz();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Zaman Çizelgesi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;800&family=Fragment+Mono&display=swap">
+<style>
+  /* Düzen: üstte deneyi bir cümle olarak kur, altta deneyler dikey bir zaman çizgisine dizilir; iki deneye tıklayınca yanda farkları çıkar. */
+  :root {
+    --zemin: #f4f5f8; --yuzey: #ffffff; --murekkep: #191c24; --soluk: #636a7a; --cizgi: #dde0e7;
+    --a: #2f54eb; --b: #d9730d; --kotu: #c0392b;
+    --f: "Hanken Grotesk", "Segoe UI", system-ui, sans-serif; --m: "Fragment Mono", ui-monospace, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --zemin: #101218; --yuzey: #171a22; --murekkep: #e6e8ee; --soluk: #8f96a6; --cizgi: #272b36;
+    --a: #7d97ff; --b: #ffa552; --kotu: #ff8577; color-scheme: dark; } }
+  :root[data-theme="dark"] {
+    --zemin: #101218; --yuzey: #171a22; --murekkep: #e6e8ee; --soluk: #8f96a6; --cizgi: #272b36;
+    --a: #7d97ff; --b: #ffa552; --kotu: #ff8577; color-scheme: dark; }
+  :root { --n-zemin: var(--zemin); --n-yuzey: var(--yuzey); --n-murekkep: var(--murekkep); --n-soluk: var(--soluk); --n-cizgi: var(--cizgi); --n-vurgu: var(--b); --n-ikinci: var(--a); --n-f: var(--f); --n-m: var(--m); }
+  * { box-sizing: border-box; }
+  .sistemler { background: var(--yuzey); border: 1px solid var(--cizgi); border-radius: 10px; padding: 14px 18px; display: grid; gap: 8px; min-width: 0; }
+  .sistemler h2 { margin: 0; font: 800 16px var(--f); }
+  body { margin: 0; background: var(--zemin); color: var(--murekkep); font: 400 16px/1.55 var(--f);
+    padding-block: 28px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .sayfa { max-width: 70rem; margin: 0 auto; display: grid; gap: 28px; }
+  .bas { display: grid; gap: 6px; }
+  .bas a { color: var(--soluk); text-decoration: none; font-size: 13px; }
+  .bas a:hover, .bas a:focus-visible { color: var(--a); }
+  .bas h1 { margin: 0; font: 800 clamp(30px, 4.6vw, 48px)/1 var(--f); letter-spacing: -0.03em; }
+  .cumle { background: var(--yuzey); border: 1px solid var(--cizgi); border-radius: 10px; padding: 18px 20px; display: grid; gap: 12px; }
+  .cumle .soz { font: 400 clamp(18px, 2.4vw, 24px)/1.5 var(--f); letter-spacing: -0.01em; }
+  .cumle select, .cumle input { font: 600 1em var(--f); color: var(--a); background: transparent; border: 0; border-bottom: 2px solid color-mix(in srgb, var(--a) 35%, transparent); padding: 0 2px; }
+  .cumle input { width: 12em; max-width: 100%; }
+  .cumle select:focus, .cumle input:focus { outline: none; border-bottom-color: var(--a); }
+  .cumle .headler { color: var(--a); font-weight: 600; }
+  .cumle .headler span { cursor: pointer; }
+  .cumle .headler span:hover { text-decoration: line-through; }
+  .cumle .bos { color: var(--soluk); font-weight: 400; font-style: italic; }
+  .cips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; color: var(--soluk); }
+  .cips span[tabindex] { font: 400 12px var(--m); padding: 3px 8px; border: 1px solid var(--cizgi); border-radius: 999px; cursor: pointer; color: var(--murekkep); }
+  .cips span[tabindex].on { border-color: var(--a); color: var(--a); }
+  .cips span[tabindex]:focus-visible { outline: 2px solid var(--a); outline-offset: 1px; }
+  .kaydet { font: 600 14px var(--f); color: var(--a); cursor: pointer; justify-self: start; text-decoration: underline; text-underline-offset: 4px; }
+  .kaydet:focus-visible { outline: 2px solid var(--a); outline-offset: 3px; }
+  .govde { display: grid; grid-template-columns: minmax(0, 1fr) 21rem; gap: 32px; align-items: start; }
+  .cizgi { list-style: none; margin: 0; padding: 0; position: relative; display: grid; gap: 4px; }
+  .cizgi::before { content: ""; position: absolute; left: 5.4rem; top: 6px; bottom: 6px; width: 2px; background: var(--cizgi); }
+  .olay { display: grid; grid-template-columns: 4.6rem 1.6rem minmax(0, 1fr); gap: 0 8px; padding: 10px 8px; border-radius: 8px; cursor: pointer; position: relative; }
+  .olay:hover { background: color-mix(in srgb, var(--murekkep) 4%, transparent); }
+  .olay:focus-visible { outline: 2px solid var(--a); outline-offset: 0; }
+  .olay time { font: 400 12px var(--m); color: var(--soluk); text-align: right; padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .olay .nokta { width: 12px; height: 12px; border-radius: 50%; background: var(--zemin); border: 2px solid var(--soluk); margin: 5px auto 0; position: relative; z-index: 1; }
+  .olay.A .nokta { background: var(--a); border-color: var(--a); }
+  .olay.B .nokta { background: var(--b); border-color: var(--b); }
+  .olay .ic { display: grid; gap: 4px; min-width: 0; }
+  .olay .ust { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .olay .ust b { font-weight: 600; }
+  .olay .ust small { font: 400 12px var(--m); color: var(--soluk); }
+  .olay .ornek { font: 400 11px var(--m); color: var(--soluk); border: 1px solid var(--cizgi); border-radius: 3px; padding: 0 4px; }
+  .olay .bar { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--murekkep) 8%, transparent); position: relative; max-width: 22rem; }
+  .olay .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--soluk); }
+  .olay.A .bar i { background: var(--a); } .olay.B .bar i { background: var(--b); }
+  .olay .bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--murekkep); }
+  .olay .alt { font: 400 12.5px var(--m); color: var(--soluk); }
+  .olay .alt .kotu { color: var(--kotu); }
+  aside { position: sticky; top: max(16px, env(safe-area-inset-top, 0px)); background: var(--yuzey); border: 1px solid var(--cizgi); border-radius: 10px; padding: 16px 18px; display: grid; gap: 14px; }
+  aside h2 { margin: 0; font: 800 18px var(--f); letter-spacing: -0.01em; }
+  aside p { margin: 0; color: var(--soluk); font-size: 14px; }
+  .fark { display: grid; grid-template-columns: auto 1fr 1fr; gap: 6px 12px; font-size: 14px; align-items: baseline; }
+  .fark .baslik { font: 600 11px var(--f); letter-spacing: 0.08em; text-transform: uppercase; color: var(--soluk); }
+  .fark .A { color: var(--a); font: 600 14px var(--m); } .fark .B { color: var(--b); font: 600 14px var(--m); }
+  .fark span { min-width: 0; overflow-wrap: anywhere; }
+  .hukum { font-size: 15px; color: var(--murekkep) !important; }
+  @media (max-width: 900px) { .govde { grid-template-columns: minmax(0, 1fr); } aside { position: static; order: -1; } }
+</style>
+</head>
+<body>
+<div class="sayfa">
+  <div class="bas">
+    <a href="index.html">← Setler</a>
+    <h1>Zaman Çizelgesi</h1>
+  </div>
+
+  <section class="cumle" aria-label="Yeni deney">
+    <div class="soz">
+      <select id="model" aria-label="Model"></select> modelinde
+      “<input id="istem" aria-label="İstem" autocomplete="off" spellcheck="false">” için
+      <span class="headler" id="headler"></span> kapatılırsa ne olur?
+    </div>
+    <div class="cips" id="cips"></div>
+    <span class="kaydet" id="kaydet" tabindex="0" role="button">Deneyi çizelgeye ekle ↵</span>
+  </section>
+
+  <section class="sistemler"><h2>Neşter sistemleri</h2><div id="sistem"></div></section>
+
+  <div class="govde">
+    <ol class="cizgi" id="cizgi" aria-label="Deneyler, yeniden eskiye"></ol>
+    <aside aria-live="polite" id="kars"></aside>
+  </div>
+</div>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id), el = N.el;
+  const d = { model: 'qwen05', metin: "Türkiye'nin başkenti", secili: new Set(), olaylar: [], A: null, B: null, no: 0 };
+  let S, dock = null;
+  $('model').replaceChildren(...N.MODELLER.map((m) => el('option', { value: m.id, text: m.kisa })));
+  $('model').value = d.model; $('istem').value = d.metin;
+
+  function yukle() { S = N.oturum(d.model, d.metin); d.secili.clear(); cumle(); }
+  function cumle() {
+    $('headler').replaceChildren(...(d.secili.size ? [...d.secili].flatMap((k, i) => [i ? ' + ' : '', el('span', { title: 'Çıkarmak için tıkla', text: N.adK(k), onclick: () => { d.secili.delete(k); cumle(); } })])
+      : [el('span', { class: 'bos', text: 'aşağıdan head seç,' })]));
+    $('cips').replaceChildren('Sıcak noktalar:', ...S.sicak.slice(0, 8).map((s) => el('span', { tabindex: '0', class: d.secili.has(s.k) ? 'on' : '', text: N.ad(s.l, s.h) + ' ' + N.sayi(s.v, 1),
+      onclick: () => degis(s.k), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); degis(s.k); } } })));
+    dock && dock.yenile();
+  }
+  function degis(k) { d.secili.has(k) ? d.secili.delete(k) : d.secili.add(k); cumle(); }
+  function ekle(saat, ornek) {
+    if (!d.secili.size) { $('headler').animate?.([{ opacity: 0.3 }, { opacity: 1 }], { duration: 400 }); return; }
+    const r = S.olc([...d.secili]);
+    const o = { no: ++d.no, saat: saat || new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }), model: S.model.kisa, istem: S.istem.metin, hedef: S.istem.hedef, r, ornek };
+    d.olaylar.unshift(o);
+    if (!ornek) { d.B = d.A; d.A = o; }
+    ciz();
+  }
+  function sec(o) {
+    if (d.A === o) d.A = null; else if (d.B === o) d.B = null;
+    else if (!d.A) d.A = o; else if (!d.B) d.B = o; else { d.B = d.A; d.A = o; }
+    ciz();
+  }
+  function ciz() {
+    $('cizgi').replaceChildren(...d.olaylar.map((o) => {
+      const sinif = o === d.A ? 'A' : o === d.B ? 'B' : '';
+      const bar = el('div', { class: 'bar' }); const i = el('i'); i.style.width = (o.r.sonra * 100) + '%'; const b = el('b'); b.style.left = (o.r.once * 100) + '%'; bar.append(i, b);
+      return el('li', { class: 'olay ' + sinif, tabindex: '0', onclick: () => sec(o), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sec(o); } } },
+        el('time', { text: o.saat }), el('span', { class: 'nokta' }),
+        el('div', { class: 'ic' },
+          el('div', { class: 'ust' }, el('b', { text: 'D' + o.no + ' · ' + o.r.headler.map(N.adK).join(' + ') }), el('small', { text: o.model + ' · “' + o.istem + '”' }), o.ornek ? el('span', { class: 'ornek', text: 'örnek' }) : null),
+          bar,
+          el('div', { class: 'alt' }, N.tok(o.hedef) + ' ' + N.yuzde(o.r.once) + ' → ' + N.yuzde(o.r.sonra) + ' · KL ' + N.sayi(o.r.kl, 2) + ' · ', o.r.degisti ? el('span', { class: 'kotu', text: 'tahmin ' + N.tok(o.r.tahmin) }) : 'tahmin yerinde')));
+    }));
+    kars(); dock && dock.yenile();
+  }
+  function kars() {
+    const A = d.A, B = d.B, k = $('kars');
+    if (!A || !B) {
+      k.replaceChildren(el('h2', { text: 'Karşılaştır' }), el('p', { text: A ? 'Bir deney daha seç; ikisinin farkı burada çıkar.' : 'Çizelgeden iki deneye tıkla. İlki mavi, ikincisi turuncu olur.' }));
+      return;
+    }
+    const ha = new Set(A.r.headler), hb = new Set(B.r.headler);
+    const ortak = [...ha].filter((x) => hb.has(x)), yalnizA = [...ha].filter((x) => !hb.has(x)), yalnizB = [...hb].filter((x) => !ha.has(x));
+    const ayni = A.model === B.model && A.istem === B.istem;
+    const fark = A.r.sonra - B.r.sonra;
+    const satir = (ad, a, b) => [el('span', { class: 'baslik', text: ad }), el('span', { class: 'A', text: a }), el('span', { class: 'B', text: b })];
+    k.replaceChildren(el('h2', { text: 'D' + A.no + ' ile D' + B.no }),
+      el('div', { class: 'fark' }, el('span'), el('span', { class: 'A', text: 'D' + A.no }), el('span', { class: 'B', text: 'D' + B.no }),
+        ...satir('sonra', N.yuzde(A.r.sonra, 1), N.yuzde(B.r.sonra, 1)),
+        ...satir('düşüş', N.yuzde(A.r.once - A.r.sonra, 1), N.yuzde(B.r.once - B.r.sonra, 1)),
+        ...satir('KL', N.sayi(A.r.kl, 3), N.sayi(B.r.kl, 3)),
+        ...satir('tahmin', N.tok(A.r.tahmin), N.tok(B.r.tahmin)),
+        ...satir('yalnız', yalnizA.map(N.adK).join(' ') || '—', yalnizB.map(N.adK).join(' ') || '—')),
+      el('p', { text: ortak.length ? 'Ortak head: ' + ortak.map(N.adK).join(', ') : 'Ortak head yok.' }),
+      el('p', { class: 'hukum', text: !ayni ? 'Dikkat: farklı model ya da istem; sayılar doğrudan kıyaslanmaz.'
+        : Math.abs(fark) < 0.01 ? 'İkisi hedefi aynı ölçüde düşürüyor.'
+        : 'D' + (fark < 0 ? A.no : B.no) + ' hedefi ' + N.yuzde(Math.abs(fark), 1) + ' daha fazla düşürüyor.' }));
+  }
+  $('model').addEventListener('change', (e) => { d.model = e.target.value; yukle(); });
+  $('istem').addEventListener('input', (e) => { d.metin = e.target.value; clearTimeout(yukle.t); yukle.t = setTimeout(yukle, 250); });
+  $('istem').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ekle(); } });
+  $('kaydet').addEventListener('click', () => ekle());
+  $('kaydet').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ekle(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target === document.body) ekle(); });
+
+  // Örnek geçmiş: aynı istemde dört deneme.
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => d.secili, degis: (k) => degis(k), sepet: () => d.olaylar.filter((o) => o.istem === S.istem.metin).map((o) => ({ ad: 'D' + o.no, headler: o.r.headler, once: o.r.once, sonra: o.r.sonra })), sekme: '3b' });
+  dock.karisim(0.6);
+  yukle();
+  const s = S.sicak;
+  [[['09:12'], [s[3].k]], [['09:20'], [s[0].k]], [['09:31'], [s[1].k]], [['09:47'], [s[0].k, s[1].k]]].forEach(([[saat], ks]) => { d.secili = new Set(ks); ekle(saat, true); });
+  d.A = d.olaylar[0]; d.B = d.olaylar[2];
+  d.secili = new Set([s[2].k]); cumle(); ciz();
+})();
+</script>
+</body>
+</html>

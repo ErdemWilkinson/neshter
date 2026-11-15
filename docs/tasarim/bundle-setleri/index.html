@@ -1,0 +1,121 @@
+<title>Neşter Bundle Setleri</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=Archivo:wdth,wght@75,800&family=Red+Hat+Display:wght@900&family=Geist:wght@700&family=Familjen+Grotesk:wght@700&family=Schibsted+Grotesk:wght@800&family=Jost:wght@300;700&family=Newsreader:opsz,wght@6..72,600&family=Hanken+Grotesk:wght@800&family=Archivo+Narrow:wght@700&display=swap">
+<style>
+  /* Düzen: üç set alt alta; her set kendi başlığıyla, içinde üç omurga satırı. Satırın adı kendi yazı yüzüyle, yanında tarif ve renkleri. */
+  :root {
+    --zemin: #f2f3f4; --murekkep: #18191c; --soluk: #61656d; --cizgi: #d9dbde; --vurgu: #b8461f;
+    --f: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --zemin: #121315; --murekkep: #ebecee; --soluk: #9a9ea6; --cizgi: #2a2c30; --vurgu: #ff8a5c; color-scheme: dark; } }
+  :root[data-theme="dark"] { --zemin: #121315; --murekkep: #ebecee; --soluk: #9a9ea6; --cizgi: #2a2c30; --vurgu: #ff8a5c; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { background: var(--zemin); color: var(--murekkep); font: 400 1rem/1.6 var(--f);
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; }
+  .sayfa { max-width: 66rem; margin: 0 auto; display: grid; gap: 48px; }
+  header { display: grid; gap: 10px; max-width: 48rem; }
+  header small { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--soluk); }
+  h1 { margin: 0; font: 700 clamp(2rem, 4.5vw, 3rem)/1.05 var(--f); letter-spacing: -0.03em; text-wrap: balance; }
+  header p { margin: 0; color: var(--soluk); }
+  .akis { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 0.85rem; color: var(--soluk); align-items: center; }
+  .akis b { color: var(--murekkep); font-weight: 600; }
+  .set { display: grid; gap: 12px; }
+  .set-bas { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 14px; align-items: baseline; }
+  .set-bas .harf { font: 700 2.4rem/1 var(--f); color: var(--vurgu); grid-row: span 2; }
+  .set-bas h2 { margin: 0; font: 700 1.3rem/1.2 var(--f); letter-spacing: -0.01em; }
+  .set-bas p { margin: 0; color: var(--soluk); font-size: 0.95rem; max-width: 60ch; }
+  ol { list-style: none; margin: 0; padding: 0; display: grid; }
+  li { border-top: 1px solid var(--cizgi); }
+  li:last-child { border-bottom: 1px solid var(--cizgi); }
+  li a { display: grid; grid-template-columns: 3rem minmax(0, 14rem) minmax(0, 1fr) auto; gap: 8px 24px; align-items: center;
+    padding: 22px 8px; color: inherit; text-decoration: none; border-radius: 8px; transition: background 0.2s; }
+  li a:hover, li a:focus-visible { background: color-mix(in srgb, var(--murekkep) 5%, transparent); outline: none; }
+  li a:focus-visible { box-shadow: inset 0 0 0 2px var(--vurgu); }
+  .no { font-weight: 600; color: var(--soluk); font-variant-numeric: tabular-nums; }
+  .ad { font-size: 1.8rem; line-height: 1; }
+  .tarif { display: grid; gap: 4px; min-width: 0; }
+  .tarif b { font-weight: 600; }
+  .tarif span { color: var(--soluk); font-size: 0.92rem; }
+  .renk { display: flex; gap: 4px; }
+  .renk i { width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.35); }
+  .son { color: var(--soluk); font-size: 0.92rem; max-width: 50rem; margin: 0; }
+  @media (max-width: 720px) { li a { grid-template-columns: 2.4rem minmax(0, 1fr); } .tarif, .renk { grid-column: 2; } }
+  @media (prefers-reduced-motion: reduce) { li a { transition: none; } }
+</style>
+
+<div class="sayfa">
+  <header>
+    <small>Neşter · tasarım bundle setleri</small>
+    <h1>Aynı iş akışı, dokuz ayrı omurga</h1>
+    <p>Üç set, her sette üç tasarım. Hepsi Neşter'in kendi işini yapıyor; veriler sahte ama Neşter'in biçiminde ve tutarlı. Bir head'i kapatınca olasılık gerçekten düşüyor, bir bağı kesince akış gerçekten daralıyor.</p>
+    <p>Her bundle'da uygulamadaki bütün sistemler de var. <b>Sıcak noktalar</b>, <b>2B ısı haritası</b>, <b>Liste</b>, <b>3B</b> (üstten ısı haritası, kaydırıcıyla bağ grafiğine yükselir), <b>Katman katman</b>, <b>Dikkat</b>, <b>Kavram avı</b>, <b>Karşılaştır</b> ve <b>Kaydet</b>. Her bundle bunları kendi omurgasında başka bir yere koyuyor ama seçim her yerde aynı.</p>
+    <div class="akis"><b>model</b>→<b>istem</b>→<b>ısı haritası</b>→<b>sıcak noktalar</b>→<b>head seç</b>→<b>ölç</b>→<b>sepet</b>→<b>karşılaştır</b>→<b>kaydet</b> · ayrıca <b>logit lens</b>, <b>dikkat</b>, <b>bağ grafiği</b></div>
+  </header>
+
+  <section class="set">
+    <div class="set-bas"><span class="harf">A</span><h2>Çalışma tezgâhı</h2><p>Her gün açılan, hızlı iş gören düzenler. Ölçüm, sepet ve karşılaştırma hep göz önünde.</p></div>
+    <ol>
+      <li><a href="a1-tezgah.html">
+        <span class="no">A1</span><span class="ad" style="font-family:'Archivo',sans-serif;font-weight:800;font-stretch:75%;text-transform:uppercase">Tezgâh</span>
+        <span class="tarif"><b>Kartlar ve kablolar</b><span>Model, istem, ısı, sıcak noktalar, seçim, ölçüm, sepet ve karşılaştırma ayrı kartlar; aralarındaki kablo verinin yolunu gösterir. Sürükle, yakınlaş.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#e4e7ea"></i><i style="background:#1d2329"></i><i style="background:#2f6f8f"></i><i style="background:#d0471b"></i></span>
+      </a></li>
+      <li><a href="a2-konsol.html">
+        <span class="no">A2</span><span class="ad" style="font-family:'Red Hat Display',sans-serif;font-weight:900">konsol›</span>
+        <span class="tarif"><b>Yalnızca klavye</b><span>“seç K14·H3”, “ölç”, “sepet”, “karşılaştır”, “lens”, “dikkat”, “kes 4”. Çıktılar dökümün içine çizilir; altı çizili her şeye tıklamak komutu yazar.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#1b1714"></i><i style="background:#efe6d8"></i><i style="background:#e7a33e"></i><i style="background:#5cc8d6"></i></span>
+      </a></li>
+      <li><a href="a3-bolme.html">
+        <span class="no">A3</span><span class="ad" style="font-family:'Geist',sans-serif;font-weight:700;letter-spacing:-0.03em">Üç Bölme</span>
+        <span class="tarif"><b>Gezgin, harita, denetçi</b><span>Kod düzenleyicisi gibi: solda listeler, ortada harita ve dikkat, sağda canlı ölçüm ve lens. Oklarla gez, boşlukla seç, enter ile sepete at.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#f5f6f8"></i><i style="background:#14171c"></i><i style="background:#1d4ed8"></i><i style="background:#e0662a"></i></span>
+      </a></li>
+    </ol>
+  </section>
+
+  <section class="set">
+    <div class="set-bas"><span class="harf">B</span><h2>Harita ve akış</h2><p>Modeli bir bütün olarak görmek için. Isı haritası ve bağ grafiği sahnenin kendisi oluyor.</p></div>
+    <ol>
+      <li><a href="b1-atlas.html">
+        <span class="no">B1</span><span class="ad" style="font-family:'Familjen Grotesk',sans-serif;font-weight:700">Atlas</span>
+        <span class="tarif"><b>Model bir disk</b><span>Halkalar katman, dilimler head. Hücreye tıkla, kapanır; ortadaki sayı anında düşer. Sepetteki kalemler küçük halkalar.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#0e1a1f"></i><i style="background:#3fb8af"></i><i style="background:#f4e9c1"></i><i style="background:#ff7a59"></i></span>
+      </a></li>
+      <li><a href="b2-nehir.html">
+        <span class="no">B2</span><span class="ad" style="font-family:'Schibsted Grotesk',sans-serif;font-weight:800;letter-spacing:-0.03em">Nehir</span>
+        <span class="tarif"><b>Bağ grafiği akan su</b><span>Belirteçlerden tahmine kollar akıyor; kalınlık taşınan etki. Kola tıkla, kesilir, aşağı akış daralır; lens eğrisi de düşer.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#eef2ef"></i><i style="background:#13221d"></i><i style="background:#2a7f8f"></i><i style="background:#c2410c"></i></span>
+      </a></li>
+      <li><a href="b3-takimyildiz.html">
+        <span class="no">B3</span><span class="ad" style="font-family:'Jost',sans-serif;font-weight:300">Takım<b style="font-weight:700">yıldız</b></span>
+        <span class="tarif"><b>Üç boyutlu gökyüzü</b><span>Bağ grafiği yavaşça dönen bir takımyıldız. Sürükle, döndür; bir yıldıza tıkla, söndür. Köşede hedefin parlaklığı.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#0b0d17"></i><i style="background:#7c8ae6"></i><i style="background:#ffd58a"></i><i style="background:#ff6b6b"></i></span>
+      </a></li>
+    </ol>
+  </section>
+
+  <section class="set">
+    <div class="set-bas"><span class="harf">C</span><h2>Kayıt ve okuma</h2><p>Deneyleri biriktirmek, geri dönüp okumak ve kıyaslamak için. Sepet burada bir arşive dönüşüyor.</p></div>
+    <ol>
+      <li><a href="c1-defter.html">
+        <span class="no">C1</span><span class="ad" style="font-family:'Newsreader',serif;font-weight:600">Defter</span>
+        <span class="tarif"><b>Canlı hücreler</b><span>Model, istem, kapat satırları düzenlenebilir; birini değiştirince bağlı hücreler kendini yeniden hesaplar. Aralara not yazılır.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#fafbfa"></i><i style="background:#1f2328"></i><i style="background:#0a7d6c"></i><i style="background:#f2c94c"></i></span>
+      </a></li>
+      <li><a href="c2-zaman.html">
+        <span class="no">C2</span><span class="ad" style="font-family:'Hanken Grotesk',sans-serif;font-weight:800;letter-spacing:-0.03em">Zaman</span>
+        <span class="tarif"><b>Deney çizelgesi</b><span>Deneyi bir cümle olarak kur, çizelgeye ekle. İki deneye tıkla; yanda hangisinin hedefi daha çok düşürdüğü yazar.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#f4f5f8"></i><i style="background:#191c24"></i><i style="background:#2f54eb"></i><i style="background:#d9730d"></i></span>
+      </a></li>
+      <li><a href="c3-fisler.html">
+        <span class="no">C3</span><span class="ad" style="font-family:'Archivo Narrow',sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:0.04em">Fişler</span>
+        <span class="tarif"><b>Masadaki deste</b><span>Her sıcak head bir fiş: gücü, dikkat deseni, kapatınca ne olduğu. Kaydırarak geç, tıklayıp dosyaya at; dosya birlikte ölçülür.</span></span>
+        <span class="renk" aria-hidden="true"><i style="background:#d9dde3"></i><i style="background:#fffdf6"></i><i style="background:#b9d0e8"></i><i style="background:#d24b45"></i></span>
+      </a></li>
+    </ol>
+  </section>
+
+  <p class="son">Uygulamanın kodu değişmedi; bunlar Neşter için omurga denemeleri. Beğendiğin omurgayı (ya da iki omurganın karışımını) söyle, Neşter'in arayüzüne onu taşıyalım.</p>
+</div>

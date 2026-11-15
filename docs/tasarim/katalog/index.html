@@ -1,0 +1,331 @@
+<title>Neşter Varyant Kataloğu</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Düzen: yapışkan sınıf şeridi + ortak model/istem/seçim çubuğu; altında sınıflar, her sınıfta varyant kartları ızgarası. */
+  :root {
+    --zemin: #eef0f3; --kart: #ffffff; --murekkep: #15181d; --soluk: #5f6672; --cizgi: #dde1e7;
+    --vurgu: #e8590c; --ikinci: #2b59c3;
+    --f: "Inter Tight", "Segoe UI", system-ui, sans-serif; --m: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --zemin: #0f1114; --kart: #171a1f; --murekkep: #e8eaee; --soluk: #959caa; --cizgi: #272b33; --vurgu: #ff8a4c; --ikinci: #7ea2ff; color-scheme: dark; } }
+  :root[data-theme="dark"] { --zemin: #0f1114; --kart: #171a1f; --murekkep: #e8eaee; --soluk: #959caa; --cizgi: #272b33; --vurgu: #ff8a4c; --ikinci: #7ea2ff; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--zemin); color: var(--murekkep); font: 400 15px/1.5 var(--f); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--kart); }
+  .ic { max-width: 92rem; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .bas { padding-block: 32px 18px; display: grid; gap: 8px; }
+  .bas small { font: 500 12px var(--m); color: var(--soluk); letter-spacing: 0.04em; }
+  .bas h1 { margin: 0; font: 800 clamp(30px, 4.6vw, 52px)/1 var(--f); letter-spacing: -0.035em; }
+  .bas p { margin: 0; color: var(--soluk); max-width: 70ch; }
+  .serit { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--kart); border-block: 1px solid var(--cizgi); }
+  .serit .ic { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; padding-block: 8px; }
+  .serit nav { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+  .serit nav a { color: var(--soluk); text-decoration: none; font-weight: 500; font-size: 14px; padding: 4px 0; border-bottom: 2px solid transparent; }
+  .serit nav a:hover, .serit nav a:focus-visible { color: var(--murekkep); outline: none; border-bottom-color: var(--cizgi); }
+  .serit nav a.on { color: var(--murekkep); border-bottom-color: var(--vurgu); }
+  .serit nav a b { font: 400 11px var(--m); color: var(--soluk); margin-left: 3px; }
+  .ortak { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; color: var(--soluk); margin-left: auto; }
+  .ortak span[tabindex] { cursor: pointer; }
+  .ortak span[tabindex].on { color: var(--murekkep); font-weight: 600; text-decoration: underline; text-decoration-color: var(--vurgu); text-underline-offset: 4px; }
+  .ortak span[tabindex]:focus-visible { outline: 2px solid var(--vurgu); outline-offset: 2px; }
+  .ortak .secim { font: 500 12px var(--m); color: var(--murekkep); }
+  .ortak .temizle { color: var(--vurgu); }
+  section.sinif { padding-block: 34px 8px; scroll-margin-top: 64px; }
+  .sinif-bas { display: grid; gap: 4px; margin-bottom: 16px; }
+  .sinif-bas h2 { margin: 0; font: 800 26px/1.1 var(--f); letter-spacing: -0.02em; }
+  .sinif-bas p { margin: 0; color: var(--soluk); max-width: 70ch; }
+  .izgara { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr)); gap: 14px; }
+  .izgara.genis { grid-template-columns: repeat(auto-fill, minmax(min(100%, 30rem), 1fr)); }
+  .kart { background: var(--kart); border: 1px solid var(--cizgi); border-radius: 10px; padding: 12px 14px 10px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+  .kart header { display: flex; align-items: baseline; gap: 8px; }
+  .kart .no { font: 500 11px var(--m); color: var(--soluk); }
+  .kart h3 { margin: 0; font: 700 16px var(--f); letter-spacing: -0.01em; }
+  .kart .tarif { margin: 0; font-size: 13px; color: var(--soluk); min-height: 2.9em; }
+  .sahne { position: relative; min-width: 0; border-radius: 6px; overflow: hidden; }
+  .sahne canvas { display: block; width: 100%; touch-action: pan-y; }
+  .sahne.uc canvas { touch-action: none; cursor: grab; }
+  .kart footer { font: 400 11.5px var(--m); color: var(--soluk); min-height: 1.6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .son { padding-block: 30px 90px; color: var(--soluk); font-size: 14px; }
+  /* İskelet ve ölçüm kartlarının içindeki küçük parçalar */
+  .mini { font: 400 12px var(--f); color: var(--murekkep); }
+  .mini .p { background: color-mix(in srgb, var(--murekkep) 4%, var(--kart)); border: 1px solid var(--cizgi); border-radius: 6px; padding: 6px 8px; min-width: 0; min-height: 0; overflow: hidden; display: grid; gap: 4px; align-content: start; }
+  .mini .p > b { font: 600 10px var(--f); letter-spacing: 0.08em; text-transform: uppercase; color: var(--soluk); }
+  .mini canvas { width: 100%; display: block; }
+  .mini .liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; font: 400 11px var(--m); }
+  .mini .liste li { display: flex; justify-content: space-between; gap: 6px; padding: 2px 4px; border-radius: 3px; cursor: pointer; }
+  .mini .liste li:hover { background: color-mix(in srgb, var(--murekkep) 7%, transparent); }
+  .mini .liste li.on { background: color-mix(in srgb, var(--vurgu) 18%, transparent); }
+  .mini .buyuk { font: 800 22px/1 var(--f); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .mini .kucuk { font: 400 10.5px var(--m); color: var(--soluk); }
+  .mini .sekme { display: flex; gap: 10px; font-size: 11px; color: var(--soluk); border-bottom: 1px solid var(--cizgi); }
+  .mini .sekme span { padding: 3px 0; cursor: pointer; }
+  .mini .sekme span.on { color: var(--murekkep); border-bottom: 2px solid var(--vurgu); }
+  .mini input { font: 400 12px var(--m); width: 100%; padding: 5px 7px; border: 1px solid var(--cizgi); border-radius: 5px; background: var(--kart); color: var(--murekkep); }
+  .mini input:focus { outline: 2px solid var(--vurgu); outline-offset: 0; }
+  /* Şu anki Neşter kartı: uygulamanın kendi koyu paleti, her temada aynı. */
+  .kart.simdiki { --kart: #121722; --murekkep: #e6eaf2; --soluk: #a7b0c0; --cizgi: #222a38; --vurgu: #ff7a45; --ikinci: #2ee6c5;
+    --f: "Space Grotesk", "Segoe UI", sans-serif; --m: "JetBrains Mono", ui-monospace, monospace;
+    background: #0b0e13; color: #e6eaf2; border: 2px solid #2ee6c5; color-scheme: dark; }
+  .kart.simdiki .no { color: #0b0e13; background: #2ee6c5; padding: 1px 6px; border-radius: 999px; font-weight: 600; }
+  .kiyasla { margin-left: auto; font: 500 12px var(--f); color: var(--ikinci); cursor: pointer; white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; }
+  .kiyasla:focus-visible { outline: 2px solid var(--vurgu); outline-offset: 2px; }
+  .kiyas { position: fixed; inset: 0; z-index: 20; background: color-mix(in srgb, var(--zemin) 70%, transparent); backdrop-filter: blur(6px); display: grid; place-items: center;
+    padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px)); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .kiyas-ic { width: min(100%, 96rem); max-height: 100%; overflow: auto; display: grid; gap: 10px; background: var(--zemin); border: 1px solid var(--cizgi); border-radius: 12px; padding: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  .kiyas-bas { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .kiyas-bas h2 { margin: 0; font: 800 20px var(--f); }
+  .kiyas-bas span { color: var(--soluk); font-size: 13px; }
+  .kiyas-bas button { margin-left: auto; font: 600 13px var(--f); padding: 6px 12px; border-radius: 999px; border: 1px solid var(--cizgi); background: var(--kart); color: var(--murekkep); cursor: pointer; }
+  .kiyas-iki { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 12px; align-items: start; }
+  @media (max-width: 760px) { .ortak { margin-left: 0; } .serit { position: static; } }
+</style>
+
+<div class="ic bas">
+  <small>Neşter · varyant kataloğu · sınıf sınıf</small>
+  <h1>Yetmiş altı çizim, tek seçim</h1>
+  <p>En üstte <b>Seçtiklerin</b>: işaretlerinde beğendiğin parçalardan kurulmuş yeni Neşter taslağı. Altında ısı haritaları, 3B sahneler, iskeletler, ölçüm göstergeleri, lens ve dikkat. Her sınıfın başında turkuaz çerçeveli <b>şu anki Neşter</b> kartı var; öbür her kartta “şu ankiyle kıyasla” ikisini yan yana açar. Hepsi aynı modele ve aynı seçime bağlı. Bir varyantta bir head’e tıkla, öbürlerinin hepsinde seçili olur. 3B kartları sürükleyerek döndür. Beğenmediğin her şeye sol alttaki <b>✎ İşaretle</b> ile not bırak; notları ben okuyup düzeltirim.</p>
+</div>
+<div class="serit"><div class="ic">
+  <nav id="sinif-nav" aria-label="Sınıflar"></nav>
+  <div class="ortak" id="ortak"></div>
+</div></div>
+<main class="ic" id="sinifler"></main>
+<p class="ic son">Veriler sahte ama Neşter’in biçiminde. Bir varyantı beğenirsen adını söyle (ör. “ısı 04 Petek, 3B 03 Katman plakaları, iskelet 06”); Neşter’e onları taşırım.</p>
+
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+/* Katalog çekirdeği: ortak durum, kart kurma, tuval yardımcıları, 3B izdüşüm. Varyantlar ayrı dosyalarda Katalog.ekle ile kaydolur. */
+(function () {
+  const N = window.Nester;
+  const K = window.Katalog = { varyantlar: [], ekle(v) { this.varyantlar.push(v); } };
+  K.SINIFLAR = [
+    { id: 'isi', ad: 'Isı haritaları', tarif: 'Katman × head gücü, on iki farklı biçimde. Satır ya da halka katman, sütun ya da dilim head. Tıkla, seç.' },
+    { id: 'uc', ad: '3B sistemler', tarif: 'Aynı veri üç boyutta: sütunlar, arazi, plakalar, küre, tüp, sarmal, yükselen bağlar ve akan parçacıklar. Sürükle, döndür.', genis: true },
+    { id: 'iskelet', ad: 'İskeletler', tarif: 'Neşter ekranının on ayrı omurgası, küçük ama çalışan hâlde. Paneller gerçek; içlerindeki haritaya ve listeye tıklanır.', genis: true },
+    { id: 'olcum', ad: 'Ölçüm göstergeleri', tarif: 'Seçili head’ler kapatılınca hedef olasılığının nasıl düştüğü, altı farklı anlatımla.' },
+    { id: 'lens', ad: 'Lens ve dikkat', tarif: 'Katman katman tahmin ve dikkat desenleri için altı çizim.' },
+  ];
+  K.RAMPA = {
+    viridis: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'],
+    magma: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
+    kor: ['#2a0c05', '#8c1d04', '#e2541b', '#ffb347', '#fff1c1'],
+    buz: ['#0b1d3a', '#1f4e9c', '#3f8fe0', '#9fe3ff', '#f2fbff'],
+    yosun: ['#f1f5e4', '#b9da86', '#5fa859', '#2c6e4f', '#0e3a2e'],
+    toprak: ['#f6efe3', '#e2c290', '#c0843f', '#7f4a1e', '#3a200c'],
+  };
+  const d = { model: 'qwen05', metin: "Türkiye'nin başkenti", secili: new Set(), S: null };
+  d.S = N.oturum(d.model, d.metin);
+  const kartlar = [];
+
+  const ctx = {
+    N, d,
+    S: () => d.S,
+    secili: () => d.secili,
+    degis(k) { d.secili.has(k) ? d.secili.delete(k) : d.secili.add(k); hepsi(); },
+    ayarla(anahtarlar) { d.secili = new Set(anahtarlar); hepsi(); },
+    css: (ad) => N.css(ad),
+    rampa: (ad) => N.rampa(K.RAMPA[ad] || ad),
+    rampaTema: () => N.rampa([N.css('--kart'), N.css('--ikinci'), N.css('--vurgu')]),
+    // 3B izdüşüm: yaw/pitch ile döndür, ortografik + hafif perspektif.
+    P(kam, w, h, olcek, kaydir) {
+      const cy = Math.cos(kam.yaw), sy = Math.sin(kam.yaw), cp = Math.cos(kam.pitch), sp = Math.sin(kam.pitch), s = olcek * (kam.zoom || 1);
+      const oy = h / 2 + (kaydir || 0);
+      return (X, Y, Z) => {
+        const xr = X * cy - Z * sy, zr = X * sy + Z * cy;
+        const derin = zr * cp + Y * sp, f = 1 + derin * 0.04;
+        return [w / 2 + xr * s * f, oy + (zr * sp - Y * cp) * s * f, derin];
+      };
+    },
+    izgara(w, h, sol, ust, sag, alt) {
+      const S = d.S, cw = (w - sol - (sag || 0)) / S.H, ch = (h - ust - (alt || 0)) / S.L;
+      return { cw, ch, sol, ust, hucre(px, py) { const hh = Math.floor((px - sol) / cw), l = Math.floor((py - ust) / ch); return l >= 0 && l < S.L && hh >= 0 && hh < S.H ? N.anahtar(l, hh) : null; } };
+    },
+    // "Bizim noktalar": nokta matrisi (büyüklük güç) + viridis renkleri; seçili kırmızı halka.
+    noktaIsi(x, X0, Y0, W, H, rampaAd) {
+      const S = d.S, cw = W / S.H, ch = H / S.L, r = Math.min(cw, ch) / 2 - 0.5, rn = ctx.rampa(rampaAd || 'viridis');
+      for (let l = 0; l < S.L; l++) for (let hh = 0; hh < S.H; hh++) {
+        const v = S.g(l, hh), cx = X0 + (hh + 0.5) * cw, cy = Y0 + (l + 0.5) * ch;
+        x.globalAlpha = 0.45 + 0.55 * v; x.fillStyle = rn(v); x.beginPath(); x.arc(cx, cy, Math.max(0.9, r * Math.sqrt(v)), 0, Math.PI * 2); x.fill();
+        if (d.secili.has(N.anahtar(l, hh))) { x.globalAlpha = 1; x.strokeStyle = '#ff3b30'; x.lineWidth = 2; x.beginPath(); x.arc(cx, cy, r + 0.5, 0, Math.PI * 2); x.stroke(); }
+      }
+      x.globalAlpha = 1;
+      return (px, py) => { const hh = Math.floor((px - X0) / cw), l = Math.floor((py - Y0) / ch); return l >= 0 && l < S.L && hh >= 0 && hh < S.H ? N.anahtar(l, hh) : null; };
+    },
+    etiket(k) { const { l, h } = N.ac(k); return N.ad(l, h) + ' · güç ' + N.sayi(d.S.g(l, h)) + (d.secili.has(k) ? ' · seçili' : ''); },
+    // İskelet/ölçüm kartları için küçük parçalar
+    mini: {
+      isi(kap, yuk, rampaAd) {
+        const c = N.el('canvas'); c.style.height = (yuk || 120) + 'px'; c.style.cursor = 'pointer'; kap.append(c);
+        let bul = () => null;
+        const ciz = () => { bul = N.isiCiz(c, d.S, { renk: rampaAd ? ctx.rampa(rampaAd) : ctx.rampaTema(), secili: d.secili, cizgi: N.css('--murekkep'), bosluk: 1 }); };
+        c.addEventListener('click', (e) => { const r = c.getBoundingClientRect(), o = bul(e.clientX - r.left, e.clientY - r.top); if (o) ctx.degis(o.k); });
+        return ciz;
+      },
+      sicak(kap, n) {
+        const ul = N.el('ul', { class: 'liste' }); kap.append(ul);
+        return () => ul.replaceChildren(...d.S.sicak.slice(0, n || 6).map((s) => N.el('li', { class: d.secili.has(s.k) ? 'on' : '', onclick: () => ctx.degis(s.k) }, N.el('span', { text: N.ad(s.l, s.h) }), N.el('span', { text: N.sayi(s.v) }))));
+      },
+      olcum(kap) {
+        const b = N.el('div', { class: 'buyuk' }), k = N.el('div', { class: 'kucuk' }); kap.append(b, k);
+        return () => { const r = d.S.olc([...d.secili]); b.textContent = N.yuzde(r.once) + ' → ' + N.yuzde(r.sonra); k.textContent = (d.secili.size ? d.secili.size + ' head kapalı · ' : 'seçim yok · ') + 'tahmin ' + N.tok(r.tahmin); };
+      },
+      // Genel tuval: f(x, w, h) çizer, isterse bul(px, py) döndürür.
+      tuval(kap, yuk, f) {
+        const c = N.el('canvas'); c.style.cssText = 'display:block;width:100%;height:' + (yuk || 120) + 'px'; kap.append(c);
+        let bul = () => null;
+        const ciz = () => { const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight; if (!w) return; c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); const x = c.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h); x.font = '11px ' + N.css('--m'); bul = f(x, w, h) || (() => null); };
+        c.addEventListener('click', (e) => { const r = c.getBoundingClientRect(), k = bul(e.clientX - r.left, e.clientY - r.top); if (k) { c.style.cursor = 'pointer'; ctx.degis(typeof k === 'string' ? k : k.k); } });
+        c.addEventListener('pointermove', (e) => { const r = c.getBoundingClientRect(); c.style.cursor = bul(e.clientX - r.left, e.clientY - r.top) ? 'pointer' : 'default'; });
+        return ciz;
+      },
+      nokta(kap, yuk) { return ctx.mini.tuval(kap, yuk, (x, w, h) => ctx.noktaIsi(x, 0, 0, w, h)); },
+      metin(kap, f) { const p = N.el('div', { class: 'kucuk' }); kap.append(p); return () => { p.textContent = f(); }; },
+    },
+  };
+  K.ctx = ctx;
+
+  function ortakCiz() {
+    const o = document.getElementById('ortak');
+    const sec = (ad, on, f) => N.el('span', { tabindex: '0', class: on ? 'on' : '', text: ad, onclick: f, onkeydown: (e) => { if (e.key === 'Enter') f(); } });
+    o.replaceChildren(
+      ...N.MODELLER.map((m) => sec(m.kisa, m.id === d.model, () => { d.model = m.id; yukle(); })),
+      N.el('span', { text: '·' }),
+      ...N.HAZIR.map((h) => sec('“' + h.metin + '”', h.metin === d.metin, () => { d.metin = h.metin; yukle(); })),
+      N.el('span', { text: '·' }),
+      N.el('span', { class: 'secim', text: d.secili.size ? [...d.secili].map(N.adK).join(' + ') : 'seçim yok' }),
+      d.secili.size ? sec('temizle', false, () => { d.secili.clear(); hepsi(); }) : null);
+    const t = o.querySelector('.temizle'); if (t) t.className = 'temizle';
+    o.lastChild && o.lastChild.textContent === 'temizle' && o.lastChild.classList.add('temizle');
+  }
+  function yukle() { d.S = N.oturum(d.model, d.metin); d.secili = new Set([d.S.sicak[0].k, d.S.sicak[1].k]); hepsi(); }
+
+  function kartKur(v, no, kiyasta) {
+    const kart = N.el('article', { class: 'kart' + (v.simdiki ? ' simdiki' : ''), id: (kiyasta ? 'k-' : 'v-') + v.id, 'data-varyant': (kiyasta ? 'kıyas · ' : '') + v.id + ' · ' + v.ad });
+    const sahne = N.el('div', { class: 'sahne' + (v.uc ? ' uc' : '') });
+    const ayak = N.el('footer', { text: v.ipucu || (v.uc ? 'sürükle: döndür · tıkla: seç' : 'tıkla: seç') });
+    const bas = N.el('header', null, N.el('span', { class: 'no', text: v.simdiki ? 'şu anki' : String(no).padStart(2, '0') }), N.el('h3', { text: v.ad }));
+    if (!v.simdiki && !kiyasta && (v.kiyas || K.varyantlar.some((q) => q.simdiki && q.sinif === v.sinif))) bas.append(N.el('button', { type: 'button', class: 'kiyasla', text: 'şu ankiyle kıyasla', onclick: () => kiyasAc(v) }));
+    kart.append(bas, N.el('p', { class: 'tarif', text: v.tarif }), sahne, ayak);
+    const kayit = { v, kart, sahne, ayak, gorunur: false, kirli: true, kam: Object.assign({ yaw: -0.55, pitch: 0.72, zoom: 1 }, v.kam || {}), bul: () => null, t0: performance.now() };
+    if (v.dom) {
+      kayit.ciz = v.dom(sahne, ctx, kayit) || (() => {});
+    } else {
+      const c = N.el('canvas', { 'aria-label': v.ad + ' çizimi' });
+      c.style.height = (v.yuk || 280) + 'px'; sahne.append(c); kayit.c = c;
+      kayit.ciz = (t) => {
+        const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+        if (!w) return;
+        if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+        const x = c.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+        x.font = '11px ' + N.css('--m'); x.textBaseline = 'alphabetic';
+        kayit.bul = v.ciz(x, w, h, ctx, kayit.kam, t || 0) || (() => null);
+      };
+      let sur = null;
+      const yer = (e) => { const r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+      c.addEventListener('pointerdown', (e) => { sur = { x: e.clientX, y: e.clientY, yaw: kayit.kam.yaw, pitch: kayit.kam.pitch, m: 0 }; if (v.uc) c.setPointerCapture(e.pointerId); });
+      c.addEventListener('pointermove', (e) => {
+        if (sur && v.uc) {
+          sur.m = Math.max(sur.m, Math.hypot(e.clientX - sur.x, e.clientY - sur.y));
+          if (sur.m > 3) { kayit.kam.yaw = sur.yaw + (e.clientX - sur.x) * 0.01; kayit.kam.pitch = Math.max(0.12, Math.min(1.5, sur.pitch + (e.clientY - sur.y) * 0.008)); kayit.ciz(performance.now() - kayit.t0); }
+          return;
+        }
+        const k = kayit.bul(...yer(e));
+        ayak.textContent = k ? (typeof k === 'string' ? ctx.etiket(k) : k.etiket) : (v.ipucu || (v.uc ? 'sürükle: döndür · tıkla: seç' : 'tıkla: seç'));
+        c.style.cursor = k ? 'pointer' : v.uc ? 'grab' : 'default';
+      });
+      const birak = (e) => {
+        const tik = !sur || sur.m <= 3; sur = null;
+        if (!tik || e.type !== 'pointerup') return;
+        const k = kayit.bul(...yer(e)); const anahtar = k && (typeof k === 'string' ? k : k.k);
+        if (anahtar) ctx.degis(anahtar);
+      };
+      c.addEventListener('pointerup', birak); c.addEventListener('pointercancel', birak);
+      c.addEventListener('pointerleave', () => { ayak.textContent = v.ipucu || (v.uc ? 'sürükle: döndür · tıkla: seç' : 'tıkla: seç'); });
+    }
+    kayit.kiyasta = !!kiyasta;
+    kartlar.push(kayit);
+    return kart;
+  }
+
+  // Kıyas: sınıfın "şu anki" kartı ile seçilen varyant yan yana, ikisi de canlı ve aynı seçime bağlı.
+  let kiyasKap = null, kiyasOnceki = null;
+  function kiyasKapat() {
+    if (!kiyasKap) return;
+    for (let i = kartlar.length - 1; i >= 0; i--) if (kartlar[i].kiyasta) kartlar.splice(i, 1);
+    kiyasKap.remove(); kiyasKap = null; document.removeEventListener('keydown', kiyasTus);
+    if (kiyasOnceki) kiyasOnceki.focus();
+  }
+  function kiyasTus(e) { if (e.key === 'Escape') kiyasKapat(); }
+  function kiyasAc(v) {
+    kiyasKapat(); kiyasOnceki = document.activeElement;
+    const on = (q) => q.id.split('-')[0];
+    const simdi = K.varyantlar.find((q) => q.id === v.kiyas) || K.varyantlar.find((q) => q.simdiki && on(q) === on(v)) || K.varyantlar.find((q) => q.simdiki && q.sinif === v.sinif);
+    const kapat = N.el('button', { type: 'button', text: 'Kapat (Esc)', onclick: kiyasKapat });
+    kiyasKap = N.el('div', { class: 'kiyas', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Kıyas: ' + v.ad },
+      N.el('div', { class: 'kiyas-ic' },
+        N.el('div', { class: 'kiyas-bas' }, N.el('h2', { text: 'Şu anki Neşter ile ' + v.ad }), N.el('span', { text: 'İkisi de canlı; birinde seçtiğin head öbüründe de seçilir.' }), kapat),
+        N.el('div', { class: 'kiyas-iki' }, kartKur(simdi, 0, true), kartKur(v, 0, true))));
+    kiyasKap.addEventListener('click', (e) => { if (e.target === kiyasKap) kiyasKapat(); });
+    document.body.append(kiyasKap); document.addEventListener('keydown', kiyasTus);
+    requestAnimationFrame(() => { for (const k of kartlar) if (k.kiyasta) { k.gorunur = true; k.ciz(performance.now() - k.t0); k.kirli = false; } });
+    kapat.focus();
+  }
+  K.kiyasAc = kiyasAc;
+
+  function hepsi() {
+    ortakCiz();
+    for (const k of kartlar) { k.kirli = true; if (k.gorunur) { k.ciz(performance.now() - k.t0); k.kirli = false; } }
+  }
+
+  function kur() {
+    const nav = document.getElementById('sinif-nav'), main = document.getElementById('sinifler');
+    for (const s of K.SINIFLAR) {
+      const vs = K.varyantlar.filter((v) => v.sinif === s.id).sort((a, b) => (b.simdiki ? 1 : 0) - (a.simdiki ? 1 : 0));
+      nav.append(N.el('a', { href: '#' + s.id, 'data-id': s.id }, s.ad, N.el('b', { text: String(vs.length) })));
+      const iz = N.el('div', { class: 'izgara' + (s.genis ? ' genis' : '') });
+      let no = 0; vs.forEach((v) => iz.append(kartKur(v, v.simdiki ? 0 : ++no)));
+      main.append(N.el('section', { class: 'sinif', id: s.id, 'data-varyant': 'sınıf · ' + s.ad },
+        N.el('div', { class: 'sinif-bas' }, N.el('h2', { text: s.ad }), N.el('p', { text: s.tarif })), iz));
+    }
+    const io = new IntersectionObserver((girdi) => {
+      for (const g of girdi) {
+        const k = kartlar.find((q) => q.kart === g.target); if (!k) continue;
+        k.gorunur = g.isIntersecting;
+        if (k.gorunur && k.kirli) { k.ciz(performance.now() - k.t0); k.kirli = false; }
+      }
+    }, { rootMargin: '200px' });
+    kartlar.forEach((k) => io.observe(k.kart));
+    const sio = new IntersectionObserver((g) => {
+      for (const x of g) if (x.isIntersecting) nav.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.id === x.target.id));
+    }, { rootMargin: '-40% 0px -55% 0px' });
+    document.querySelectorAll('section.sinif').forEach((s) => sio.observe(s));
+    // Canlandırılan varyantlar (ör. parçacık akışı) yalnız görünürken döner.
+    const animli = kartlar.filter((k) => k.v.anim);
+    const dongu = (t) => {
+      if (!N.azalt() && !document.hidden) for (const k of animli) if (k.gorunur) k.ciz(t - k.t0);
+      requestAnimationFrame(dongu);
+    };
+    if (animli.length) requestAnimationFrame(dongu);
+    addEventListener('resize', () => { clearTimeout(kur.t); kur.t = setTimeout(hepsi, 120); });
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', hepsi);
+    new MutationObserver(hepsi).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    d.secili = new Set([d.S.sicak[0].k, d.S.sicak[1].k]);
+    hepsi();
+  }
+  K.kur = kur;
+})();
+</script>
+<script src="k-isi.js"></script>
+<script src="k-uc.js"></script>
+<script src="k-iskelet.js"></script>
+<script src="k-olcum.js"></script>
+<script src="k-simdiki.js"></script>
+<script src="k-ek.js"></script>
+<script src="k-secim.js"></script>
+<script>Katalog.kur();</script>
+<script src="isaret.js"></script>

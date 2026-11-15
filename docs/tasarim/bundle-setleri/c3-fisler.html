@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Fişler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Archivo+Narrow:wght@500;700&display=swap">
+<style>
+  /* Düzen: masada bir fiş destesi. Her fiş bir sıcak head; ortada tek fiş, kaydırarak ya da oklarla geçilir. Tıklanan fiş alttaki dosyaya girer. */
+  :root {
+    --masa: #d9dde3; --murekkep: #22252b; --soluk: #5d6470;
+    --kart: #fffdf6; --kart-murekkep: #24262b; --kart-soluk: #6b6a63; --satir: #b9d0e8; --kirmizi: #d24b45; --dosya: #e9c46a; --dosya-koyu: #7a5b12;
+    --f: "Courier Prime", "Courier New", monospace; --e: "Archivo Narrow", "Arial Narrow", sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --masa: #1c2027; --murekkep: #e3e6ec; --soluk: #959cab; --dosya: #b8913a; --dosya-koyu: #221a05; color-scheme: dark; } }
+  :root[data-theme="dark"] { --masa: #1c2027; --murekkep: #e3e6ec; --soluk: #959cab; --dosya: #b8913a; --dosya-koyu: #221a05; color-scheme: dark; }
+  :root { --n-zemin: var(--masa); --n-yuzey: var(--kart); --n-murekkep: var(--kart-murekkep); --n-soluk: var(--kart-soluk); --n-cizgi: var(--satir); --n-vurgu: var(--kirmizi); --n-ikinci: #3f6fa3; --n-f: var(--e); --n-m: var(--f); }
+  * { box-sizing: border-box; }
+  .sistemler { justify-self: stretch; background: var(--kart); color: var(--kart-murekkep); border-radius: 4px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.18); display: grid; gap: 8px; min-width: 0; }
+  .sistemler h2 { margin: 0; font: 700 13px var(--e); letter-spacing: 0.12em; text-transform: uppercase; color: var(--kirmizi); }
+  html, body { min-height: 100%; }
+  body { margin: 0; background: var(--masa); color: var(--murekkep); font: 400 15px/1.5 var(--e); overflow-x: hidden;
+    padding-block: 22px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .sayfa { max-width: 56rem; margin: 0 auto; display: grid; gap: 22px; justify-items: center; }
+  .bas { justify-self: stretch; display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; }
+  .bas a { color: var(--soluk); text-decoration: none; font-size: 13px; }
+  .bas a:hover, .bas a:focus-visible { color: var(--kirmizi); }
+  .bas h1 { margin: 0; font: 700 28px/1 var(--e); letter-spacing: 0.04em; text-transform: uppercase; }
+  .bas p { margin: 0; color: var(--soluk); flex-basis: 100%; max-width: 64ch; }
+  .bas .istem { font: 400 13px var(--f); color: var(--soluk); display: flex; gap: 14px; flex-wrap: wrap; }
+  .bas .istem span { cursor: pointer; } .bas .istem span.on { color: var(--murekkep); text-decoration: underline; }
+  .bas .istem span:focus-visible { outline: 1px solid var(--kirmizi); }
+  .deste { position: relative; width: min(34rem, 100%); aspect-ratio: 5 / 3.2; max-width: 100%; touch-action: pan-y; }
+  .fis { position: absolute; inset: 0; background: var(--kart); color: var(--kart-murekkep); border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.18), 0 8px 24px rgba(0,0,0,0.12);
+    background-image: linear-gradient(var(--kirmizi), var(--kirmizi)), repeating-linear-gradient(to bottom, transparent 0, transparent 25px, var(--satir) 25px, var(--satir) 26px);
+    background-size: 100% 2px, 100% 100%; background-position: 0 3.4rem, 0 calc(3.4rem + 2px); background-repeat: no-repeat, no-repeat;
+    padding: 0.8rem 1.2rem 1rem; font: 400 15px/26px var(--f); display: grid; grid-template-rows: 2.6rem 1fr; overflow: hidden; }
+  .fis.arka1 { transform: rotate(-2.2deg) translate(-6px, 6px); }
+  .fis.arka2 { transform: rotate(1.8deg) translate(8px, 10px); }
+  .fis.on { cursor: pointer; transition: transform 0.25s ease, opacity 0.25s ease; }
+  .fis.on:focus-visible { outline: 3px solid var(--kirmizi); outline-offset: 4px; }
+  .fis.on.dosyada::after { content: "DOSYADA"; position: absolute; right: 1rem; top: 0.9rem; font: 700 13px var(--e); letter-spacing: 0.12em; color: var(--kirmizi); border: 2px solid var(--kirmizi); padding: 0 6px; transform: rotate(-6deg); }
+  .fis header { display: flex; align-items: baseline; gap: 14px; }
+  .fis header b { font: 700 28px/1 var(--f); }
+  .fis header span { color: var(--kart-soluk); font-size: 13px; }
+  .fis .ic { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 18px; padding-top: 4px; min-height: 0; }
+  .fis dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0 12px; align-content: start; min-width: 0; }
+  .fis dt { color: var(--kart-soluk); }
+  .fis dd { margin: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fis canvas { width: 104px; height: 104px; margin-top: 6px; }
+  .yol { display: flex; align-items: center; gap: 16px; font: 500 13px var(--e); color: var(--soluk); }
+  .yol span[tabindex] { cursor: pointer; font-size: 20px; line-height: 1; padding: 4px 8px; }
+  .yol span[tabindex]:hover, .yol span[tabindex]:focus-visible { color: var(--murekkep); outline: none; }
+  .dosya { justify-self: stretch; background: var(--dosya); color: var(--dosya-koyu); border-radius: 6px 6px 4px 4px; padding: 0 16px 14px; position: relative; margin-top: 18px; display: grid; gap: 10px; }
+  .dosya::before { content: "DOSYA"; position: absolute; top: -20px; left: 0; background: var(--dosya); padding: 2px 16px 0; border-radius: 6px 6px 0 0; font: 700 12px/18px var(--e); letter-spacing: 0.14em; }
+  .sekmeler { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 14px; }
+  .sekmeler span { font: 700 13px var(--f); background: var(--kart); color: var(--kart-murekkep); padding: 2px 8px; border-radius: 3px 3px 0 0; cursor: pointer; border-bottom: 2px solid var(--kirmizi); }
+  .sekmeler span:hover, .sekmeler span:focus-visible { text-decoration: line-through; outline: none; }
+  .ozet { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline; font: 400 15px var(--f); }
+  .ozet b { font: 700 30px/1 var(--f); font-variant-numeric: tabular-nums; }
+  .ozet .bos { font-family: var(--e); }
+  @media (max-width: 520px) { .fis { font-size: 13px; line-height: 22px; } .fis header b { font-size: 22px; } .fis canvas { width: 72px; height: 72px; } .fis .ic dl dt:nth-of-type(n+5), .fis .ic dl dd:nth-of-type(n+5) { display: none; } }
+  @media (prefers-reduced-motion: reduce) { .fis.on { transition: none; } }
+</style>
+</head>
+<body>
+<div class="sayfa">
+  <div class="bas">
+    <a href="index.html">← Setler</a>
+    <h1>Fişler</h1>
+    <p>En sıcak on head birer fiş. Sağa sola kaydır ya da ok tuşlarını kullan. Fişe tıklarsan (ya da boşluğa basarsan) dosyaya girer; dosyadaki head'ler birlikte kapatılmış sayılır.</p>
+    <div class="istem" id="istemler"></div>
+  </div>
+  <div class="deste" id="deste" aria-live="polite"></div>
+  <div class="yol"><span tabindex="0" id="geri" aria-label="Önceki fiş">←</span><span id="sira"></span><span tabindex="0" id="ileri" aria-label="Sonraki fiş">→</span></div>
+  <section class="dosya" aria-label="Dosya"><div class="sekmeler" id="sekmeler"></div><div class="ozet" id="ozet"></div></section>
+  <section class="sistemler"><h2>Neşter sistemleri · dosyadaki head'ler seçili sayılır</h2><div id="sistem"></div></section>
+</div>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id), el = N.el;
+  const d = { metin: "Türkiye'nin başkenti", i: 0, dosya: new Set() };
+  let S, dock = null;
+
+  function yukle() {
+    S = N.oturum('qwen05', d.metin); d.i = 0; d.dosya.clear();
+    $('istemler').replaceChildren(...N.HAZIR.map((h) => el('span', { tabindex: '0', class: h.metin === d.metin ? 'on' : '', text: '“' + h.metin + '”',
+      onclick: () => { d.metin = h.metin; yukle(); }, onkeydown: (e) => { if (e.key === 'Enter') { d.metin = h.metin; yukle(); } } })));
+    ciz();
+  }
+  function fis(s, sinif) {
+    const tek = S.olc([s.k]), at = S.dikkat(s.l, s.h), lensDus = S.lens([s.k]), tam = S.lens([]);
+    let enDus = 0, enK = 0;
+    tam.forEach((row, l) => { const a = (row.find((x) => x.tok === S.istem.hedef) || { p: 0 }).p, b = (lensDus[l].find((x) => x.tok === S.istem.hedef) || { p: 0 }).p; if (a - b > enDus) { enDus = a - b; enK = l; } });
+    const c = el('canvas', { width: '208', height: '208', 'aria-label': 'Dikkat deseni: ' + at.tur });
+    const x = c.getContext('2d'), T = S.T, w = 208 / T;
+    for (let i = 0; i < T; i++) for (let j = 0; j <= i; j++) { x.fillStyle = 'rgba(36,38,43,' + (0.08 + 0.92 * at.m[i][j]).toFixed(3) + ')'; x.fillRect(j * w + 1, i * w + 1, w - 2, w - 2); }
+    const sira = S.sicak.indexOf(s) + 1;
+    return el('article', { class: 'fis ' + sinif + (d.dosya.has(s.k) ? ' dosyada' : '') },
+      el('header', null, el('b', { text: N.ad(s.l, s.h) }), el('span', { text: 'sıcaklık ' + sira + '/' + S.sicak.length })),
+      el('div', { class: 'ic' },
+        el('dl', null,
+          el('dt', { text: 'güç' }), el('dd', { text: N.sayi(s.v) }),
+          el('dt', { text: 'desen' }), el('dd', { text: at.tur }),
+          el('dt', { text: 'kapatınca' }), el('dd', { text: N.yuzde(tek.once) + ' → ' + N.yuzde(tek.sonra) }),
+          el('dt', { text: 'KL' }), el('dd', { text: N.sayi(tek.kl, 3) }),
+          el('dt', { text: 'en çok' }), el('dd', { text: 'K' + enK + '’de düşürüyor' }),
+          el('dt', { text: 'istem' }), el('dd', { text: '“' + S.istem.metin + '”' })),
+        c));
+  }
+  function ciz() {
+    const n = S.sicak.length, s = S.sicak[d.i];
+    const on = fis(s, 'on');
+    on.tabIndex = 0; on.setAttribute('role', 'button'); on.setAttribute('aria-label', N.ad(s.l, s.h) + (d.dosya.has(s.k) ? ', dosyada; çıkarmak için seç' : ', dosyaya koymak için seç'));
+    $('deste').replaceChildren(fis(S.sicak[(d.i + 2) % n], 'arka2'), fis(S.sicak[(d.i + 1) % n], 'arka1'), on);
+    $('sira').textContent = (d.i + 1) + ' / ' + n;
+    surukleBagla(on);
+    dock && dock.yenile();
+    $('sekmeler').replaceChildren(...[...d.dosya].map((k) => el('span', { tabindex: '0', title: 'Dosyadan çıkar', text: N.adK(k), onclick: () => { d.dosya.delete(k); ciz(); }, onkeydown: (e) => { if (e.key === 'Enter') { d.dosya.delete(k); ciz(); } } })));
+    if (!d.dosya.size) { $('ozet').replaceChildren(el('span', { class: 'bos', text: 'Dosya boş. Bir fişe tıkla, buraya girsin.' })); return; }
+    const r = S.olc([...d.dosya]);
+    $('ozet').replaceChildren(el('span', { text: d.dosya.size + ' head birlikte kapalıyken “' + S.istem.hedef.trim() + '”' }), el('b', { text: N.yuzde(r.once) + ' → ' + N.yuzde(r.sonra) }),
+      el('span', { text: 'KL ' + N.sayi(r.kl, 3) + (r.degisti ? ' · tahmin ' + N.tok(r.tahmin) + ' oldu' : ' · tahmin yerinde') }));
+  }
+  function git(adim) { d.i = (d.i + adim + S.sicak.length) % S.sicak.length; ciz(); }
+  function dosyala() { const k = S.sicak[d.i].k; d.dosya.has(k) ? d.dosya.delete(k) : d.dosya.add(k); ciz(); $('deste').lastElementChild.focus(); }
+  function surukleBagla(f) {
+    let bas = null;
+    f.addEventListener('pointerdown', (e) => { bas = { x: e.clientX, y: e.clientY, dx: 0 }; f.setPointerCapture(e.pointerId); f.style.transition = 'none'; });
+    f.addEventListener('pointermove', (e) => { if (!bas) return; bas.dx = e.clientX - bas.x; f.style.transform = 'translateX(' + bas.dx + 'px) rotate(' + (bas.dx / 30) + 'deg)'; });
+    const birak = (e) => {
+      if (!bas) return; const dx = bas.dx; bas = null; f.style.transition = ''; f.style.transform = '';
+      if (Math.abs(dx) > 70) git(dx < 0 ? 1 : -1);
+      else if (Math.abs(dx) < 6 && e.type === 'pointerup') dosyala();
+    };
+    f.addEventListener('pointerup', birak); f.addEventListener('pointercancel', birak);
+    f.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); dosyala(); } });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest && e.target.closest('.ns')) return;
+    if (e.key === 'ArrowRight') git(1); else if (e.key === 'ArrowLeft') git(-1);
+    else if (e.key === ' ' && !e.target.matches('[tabindex]:not(.fis)') && !e.target.closest('.ns, input')) { e.preventDefault(); dosyala(); }
+  });
+  for (const [id, a] of [['geri', -1], ['ileri', 1]]) { $(id).addEventListener('click', () => git(a)); $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') git(a); }); }
+
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => d.dosya, degis: (k) => { d.dosya.has(k) ? d.dosya.delete(k) : d.dosya.add(k); ciz(); }, sekme: '2b' });
+  yukle();
+  d.dosya.add(S.sicak[0].k); d.dosya.add(S.sicak[1].k); d.i = 1; ciz();
+})();
+</script>
+</body>
+</html>

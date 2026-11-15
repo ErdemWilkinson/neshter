@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Neşter · Nehir</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;800&family=Spline+Sans+Mono:wght@400;600&display=swap">
+<style>
+  /* Düzen: bağ grafiği soldan sağa akan bir nehir. Kollar bağlar, kalınlık taşınan etki. Bir kola tıklayınca kesilir, nehir daralır. */
+  :root {
+    --zemin: #eef2ef; --yatak: #f8faf8; --murekkep: #13221d; --soluk: #5b6e66; --cizgi: #d4ddd7;
+    --su: #2a7f8f; --kiyi: #9cc3b8; --kes: #c2410c;
+    --f: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif; --m: "Spline Sans Mono", ui-monospace, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --zemin: #0f1715; --yatak: #13201c; --murekkep: #e3eee9; --soluk: #8ea59c; --cizgi: #22332d;
+    --su: #55c2d2; --kiyi: #2f5a52; --kes: #ff8a4c; color-scheme: dark; } }
+  :root[data-theme="dark"] {
+    --zemin: #0f1715; --yatak: #13201c; --murekkep: #e3eee9; --soluk: #8ea59c; --cizgi: #22332d;
+    --su: #55c2d2; --kiyi: #2f5a52; --kes: #ff8a4c; color-scheme: dark; }
+  :root { --n-zemin: var(--zemin); --n-yuzey: var(--yatak); --n-murekkep: var(--murekkep); --n-soluk: var(--soluk); --n-cizgi: var(--cizgi); --n-vurgu: var(--kes); --n-ikinci: var(--su); --n-f: var(--f); --n-m: var(--m); }
+  * { box-sizing: border-box; }
+  .sistemler { display: grid; gap: 10px; border-top: 1px solid var(--cizgi); padding-top: 18px; }
+  .sistemler h2 { margin: 0; font: 600 12px var(--f); letter-spacing: 0.1em; text-transform: uppercase; color: var(--soluk); }
+  body { margin: 0; background: var(--zemin); color: var(--murekkep); font: 400 15px/1.55 var(--f);
+    padding-block: 24px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .sayfa { max-width: 78rem; margin: 0 auto; display: grid; gap: 20px; }
+  .bas { display: grid; gap: 8px; max-width: 64ch; }
+  .bas a { color: var(--soluk); text-decoration: none; font-size: 13px; }
+  .bas a:hover, .bas a:focus-visible { color: var(--kes); }
+  .bas h1 { margin: 0; font: 800 clamp(30px, 5vw, 52px)/0.95 var(--f); letter-spacing: -0.035em; }
+  .bas p { margin: 0; color: var(--soluk); }
+  .istem { display: flex; flex-wrap: wrap; gap: 6px 14px; font: 400 13px var(--m); color: var(--soluk); }
+  .istem span { cursor: pointer; }
+  .istem span.on { color: var(--murekkep); text-decoration: underline; text-decoration-color: var(--su); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+  .istem span:focus-visible { outline: 2px solid var(--su); outline-offset: 2px; }
+  .yatak { background: var(--yatak); border: 1px solid var(--cizgi); border-radius: 10px; overflow-x: auto; }
+  .yatak svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  .kol { fill: none; stroke: var(--su); stroke-opacity: 0.5; cursor: pointer; transition: stroke-opacity 0.15s; }
+  .kol:hover, .kol:focus-visible { stroke-opacity: 0.85; outline: none; }
+  .kol.kesik { stroke: var(--kes); stroke-opacity: 0.85; stroke-dasharray: 4 6; }
+  .dugum rect { fill: var(--murekkep); }
+  .dugum.girdi rect { fill: var(--soluk); }
+  .dugum.cikti rect { fill: var(--su); }
+  .dugum text { fill: var(--murekkep); font: 600 12px var(--f); }
+  .dugum text.alt { fill: var(--soluk); font: 400 10.5px var(--m); }
+  .sutun { fill: var(--soluk); font: 400 11px var(--m); letter-spacing: 0.06em; text-transform: uppercase; }
+  .alt-izgara { display: grid; grid-template-columns: minmax(0, 18rem) minmax(0, 1fr) minmax(0, 18rem); gap: 28px; align-items: start; }
+  .alt-izgara h2 { margin: 0 0 8px; font: 600 12px var(--f); letter-spacing: 0.1em; text-transform: uppercase; color: var(--soluk); }
+  .cikis b { display: block; font: 800 64px/0.9 var(--f); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+  .cikis p { margin: 6px 0 0; color: var(--soluk); }
+  .cikis .degisti { color: var(--kes); font-weight: 600; }
+  .lens { display: grid; gap: 4px; }
+  .lens svg { width: 100%; height: 90px; display: block; }
+  .lens p { margin: 0; color: var(--soluk); font-size: 13px; }
+  .kesikler { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .kesikler li { display: flex; justify-content: space-between; gap: 10px; font: 400 12.5px var(--m); cursor: pointer; padding: 3px 0; border-bottom: 1px dashed var(--cizgi); }
+  .kesikler li:hover span:last-child, .kesikler li:focus-visible span:last-child { color: var(--kes); }
+  .kesikler li:focus-visible { outline: none; }
+  .kesikler li span:last-child { color: var(--soluk); }
+  .bos { color: var(--soluk); font-size: 13px; margin: 0; }
+  @media (max-width: 860px) { .alt-izgara { grid-template-columns: minmax(0, 1fr); } }
+  @media (prefers-reduced-motion: reduce) { .kol { transition: none; } }
+</style>
+</head>
+<body>
+<div class="sayfa">
+  <div class="bas">
+    <a href="index.html">← Setler</a>
+    <h1>Nehir</h1>
+    <p>Bağ grafiği bir nehir gibi akıyor: soldan belirteçler girer, ortada özellikler birleşir, sağda modelin tahmini çıkar. Kolun kalınlığı taşıdığı etki. Bir kola tıkla, kesilir; aşağı akış daralır.</p>
+    <div class="istem" id="istemler"></div>
+  </div>
+  <div class="yatak"><svg id="nehir" viewBox="0 0 1100 520" role="group" aria-label="Bağ grafiği"></svg></div>
+  <div class="alt-izgara">
+    <section class="cikis"><h2>Ağızdaki akış</h2><b id="akis"></b><p id="akis-alt"></p></section>
+    <section class="lens"><h2>Logit lens · hedef katman katman</h2><svg id="lens" viewBox="0 0 600 90" preserveAspectRatio="none" aria-hidden="true"></svg><p id="lens-alt"></p></section>
+    <section><h2>Kesilen kollar</h2><ul class="kesikler" id="kesikler"></ul></section>
+  </div>
+  <section class="sistemler"><h2>Neşter sistemleri · head seçimi ve bütün görünümler</h2><div id="sistem"></div></section>
+</div>
+<script src="neshter.js"></script>
+<script src="sistem.js"></script>
+<script>
+(function () {
+  const N = window.Nester, $ = (id) => document.getElementById(id), el = N.el;
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (t, a, ...c) => { const e = document.createElementNS(NS, t); for (const [k, v] of Object.entries(a || {})) e.setAttribute(k, v); for (const x of c) e.append(x); return e; };
+  const d = { metin: "Türkiye'nin başkenti", kesik: new Set(), secili: new Set() };
+  let S, dock = null;
+
+  function yukle() {
+    S = N.oturum('qwen05', d.metin); d.kesik.clear(); d.secili.clear();
+    $('istemler').replaceChildren(...N.HAZIR.map((h) => el('span', { tabindex: '0', class: h.metin === d.metin ? 'on' : '', text: '“' + h.metin + '”',
+      onclick: () => { d.metin = h.metin; yukle(); }, onkeydown: (e) => { if (e.key === 'Enter') { d.metin = h.metin; yukle(); } } })));
+    ciz();
+  }
+  function sutunlar() {
+    const G = S.graf, s = [G.dugumler.filter((x) => x.tur === 'girdi')];
+    for (let b = 0; b < G.bantlar.length; b++) s.push(G.dugumler.filter((x) => x.bant === b));
+    s.push(G.dugumler.filter((x) => x.tur === 'cikti'));
+    return s;
+  }
+  function ciz() {
+    const a = S.akis(d.kesik), G = S.graf, svg = $('nehir'), W = 1100, H = 520, ust = 54, alt = 24;
+    const sut = sutunlar(), xs = sut.map((_, i) => 70 + i * ((W - 200) / (sut.length - 1))), konum = new Map();
+    sut.forEach((col, i) => {
+      const yuk = col.map((n) => n.tur === 'girdi' ? 26 : 18 + 54 * (a.oran.get(n.id) || 0));
+      const top = yuk.reduce((p, q) => p + q, 0), bosluk = Math.max(14, (H - ust - alt - top) / (col.length + 1));
+      let y = ust + bosluk;
+      col.forEach((n, j) => { konum.set(n.id, { x: xs[i], y, h: yuk[j] }); y += yuk[j] + bosluk; });
+    });
+    const kollar = G.baglar.map((b) => {
+      const A = konum.get(b.k), B = konum.get(b.h), kes = d.kesik.has(b.id);
+      const g = kes ? 2 : Math.max(1.5, 22 * b.w * (a.oran.get(b.k) || 0));
+      const x1 = A.x + 10, y1 = A.y + A.h / 2, x2 = B.x, y2 = B.y + B.h / 2, dx = (x2 - x1) / 2;
+      const ad = (id) => G.dugumler.find((x) => x.id === id).etiket;
+      const p = sv('path', { class: 'kol' + (kes ? ' kesik' : ''), d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`, 'stroke-width': g.toFixed(1), tabindex: '0', role: 'button',
+        'aria-label': ad(b.k) + ' → ' + ad(b.h) + (kes ? ', kesik; geri bağlamak için seç' : ', kesmek için seç') });
+      p.append(sv('title', {}, (kes ? 'Kesik: ' : '') + ad(b.k) + ' → ' + ad(b.h) + ' · ağırlık ' + N.sayi(b.w)));
+      const tik = () => { kes ? d.kesik.delete(b.id) : d.kesik.add(b.id); ciz(); };
+      p.addEventListener('click', tik); p.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tik(); } });
+      return { p, g };
+    }).sort((x, y) => y.g - x.g).map((x) => x.p);
+    const dugum = G.dugumler.map((n) => {
+      const k = konum.get(n.id), o = a.oran.get(n.id) || 0;
+      const grup = sv('g', { class: 'dugum ' + n.tur });
+      grup.append(sv('rect', { x: k.x, y: k.y, width: 10, height: k.h, rx: 2 }));
+      const solda = n.tur === 'girdi';
+      grup.append(sv('text', { x: solda ? k.x - 8 : k.x + 16, y: k.y + k.h / 2 + 4, 'text-anchor': solda ? 'end' : 'start' }, n.tur === 'girdi' ? N.tok(S.istem.tokenlar[n.konum]) : n.etiket));
+      if (n.tur === 'ozellik') grup.append(sv('text', { class: 'alt', x: k.x + 16, y: k.y + k.h / 2 + 18 }, 'K' + n.katman + ' · ' + N.yuzde(o)));
+      return grup;
+    });
+    const basliklar = sut.map((_, i) => sv('text', { class: 'sutun', x: xs[i] + 5, y: 26, 'text-anchor': 'middle' },
+      i === 0 ? 'belirteçler' : i === sut.length - 1 ? 'tahmin' : 'K' + G.bantlar[i - 1]));
+    svg.replaceChildren(...basliklar, ...kollar, ...dugum);
+
+    const r = S.olc([]);
+    $('akis').textContent = N.yuzde(a.cikti);
+    const p = a.tahminP, dus = p < r.rakipOnce + (r.once - p) * 0.55;
+    $('akis-alt').replaceChildren('Hedef “' + S.istem.hedef.trim() + '” olasılığı ≈ ' + N.yuzde(p) + ' (kesimsiz ' + N.yuzde(r.once) + '). ',
+      dus ? el('span', { class: 'degisti', text: 'Tahmin “' + S.istem.rakip.trim() + '” tarafına kaydı.' }) : '');
+    lens(a.cikti);
+    $('kesikler').replaceChildren(...(d.kesik.size ? [...d.kesik].map((id) => {
+      const b = G.baglar.find((x) => x.id === id), ad = (q) => G.dugumler.find((x) => x.id === q).etiket;
+      const tik = () => { d.kesik.delete(id); ciz(); };
+      return el('li', { tabindex: '0', onclick: tik, onkeydown: (e) => { if (e.key === 'Enter') tik(); } }, el('span', { text: ad(b.k) + ' → ' + ad(b.h) }), el('span', { text: 'geri bağla' }));
+    }) : [el('li', { class: 'bos', text: 'Henüz kesik yok. Kalın bir kolla başla.' })]));
+    dock && dock.yenile();
+  }
+  function lens(oran) {
+    const L = S.L, tam = S.lens([]), svg = $('lens');
+    const pts = (f) => tam.map((row, l) => { const p = (row.find((x) => x.tok === S.istem.hedef) || { p: 0 }).p * (l >= S.graf.bantlar[0] ? f : 1); return [l / (L - 1) * 600, 86 - p * 80]; });
+    const yol = (ps) => 'M' + ps.map((q) => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' L');
+    const once = pts(1), sonra = pts(oran);
+    svg.replaceChildren(
+      sv('path', { d: yol(once) + ' L600,90 L0,90 Z', fill: N.css('--kiyi'), 'fill-opacity': '0.45' }),
+      sv('path', { d: yol(once), fill: 'none', stroke: N.css('--soluk'), 'stroke-width': '1.5', 'stroke-dasharray': '3 3', 'vector-effect': 'non-scaling-stroke' }),
+      sv('path', { d: yol(sonra), fill: 'none', stroke: N.css('--su'), 'stroke-width': '2.5', 'vector-effect': 'non-scaling-stroke' }));
+    $('lens-alt').textContent = 'Kesikli çizgi kesimsiz hâl, dolu çizgi şimdiki. Katman 0 solda, ' + (L - 1) + ' sağda.';
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => ciz());
+  new MutationObserver(() => ciz()).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  dock = N.sistem($('sistem'), { S: () => S, secili: () => d.secili, degis: (k) => { d.secili.has(k) ? d.secili.delete(k) : d.secili.add(k); dock.yenile(); }, sekme: '2b' });
+  yukle();
+  // Örnek: en kalın kollardan biri kesik.
+  const enKalin = [...S.graf.baglar].filter((b) => b.h !== 'c').sort((x, y) => y.w - x.w)[0];
+  d.kesik.add(enKalin.id); d.secili.add(S.sicak[0].k); ciz();
+})();
+</script>
+</body>
+</html>
