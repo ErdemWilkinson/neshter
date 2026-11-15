@@ -389,6 +389,17 @@ class _Guard:
             await send({"type": "websocket.close", "code": 1008})
 
 
+class _WebFiles(StaticFiles):
+    """Derlenmiş arayüz. index.html her açılışta sunucuya sorulur (yeni derleme önbellekte takılmasın);
+    /assets/ altındaki adlar içerik özetli olduğundan bir yıl saklanabilir."""
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        immutable = scope["path"].startswith("/assets/")
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return response
+
+
 # --- Yardımcılar ----------------------------------------------------------------------------------
 
 
@@ -1150,7 +1161,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     # -- statik arayüz (yalnızca derlenmişse; API rotaları önceliklidir) --
 
     if WEB_DIST.is_dir():
-        app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+        app.mount("/", _WebFiles(directory=WEB_DIST, html=True), name="web")
     else:
 
         @app.get("/", response_class=HTMLResponse)

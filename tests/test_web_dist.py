@@ -34,6 +34,18 @@ def test_serves_built_index_with_csp(tmp_path, monkeypatch):
     assert r.headers["content-security-policy"] == SECURITY_HEADERS["Content-Security-Policy"]
 
 
+def test_index_revalidates_and_hashed_assets_cache(tmp_path, monkeypatch):
+    """Yeni derleme bir sonraki açılışta görünsün: index.html her seferinde sorulur, içerik özetli /assets/ uzun süre saklanır."""
+    (tmp_path / "index.html").write_text("<!doctype html><title>Neşter</title>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "index-Ab12Cd34.js").write_text("export {};", encoding="utf-8")
+    monkeypatch.setattr(app_module, "WEB_DIST", tmp_path)
+    client = TestClient(create_app("t", 47998, roots={}), base_url="http://127.0.0.1:47998")
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert client.get("/index.html").headers["cache-control"] == "no-cache"
+    assert client.get("/assets/index-Ab12Cd34.js").headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git yok")
 def test_built_ui_path_not_gitignored():
     assert subprocess.run(["git", "check-ignore", "-q", "neshter/web/dist/index.html"], cwd=ROOT).returncode == 1
