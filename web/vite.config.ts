@@ -4,15 +4,11 @@ import { searchForWorkspaceRoot } from 'vite';
 import { defineConfig } from 'vitest/config';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const fontFiles = (pkg: string) => fileURLToPath(new URL(`./node_modules/@fontsource-variable/${pkg}/files`, import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@fonts/inter': fontFiles('inter'),
-      '@fonts/space-grotesk': fontFiles('space-grotesk'),
-      '@fonts/jetbrains-mono': fontFiles('jetbrains-mono'),
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },

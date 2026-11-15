@@ -64,7 +64,7 @@ test('every request stays on 127.0.0.1, no CSP violation, nothing in localStorag
   expect(pageErrors).toEqual([]);
   const fontsOk = await page.evaluate(async () => {
     await document.fonts.ready;
-    return document.fonts.check('16px "Inter Variable"', 'ĞğİıŞş');
+    return document.fonts.check('16px "Instrument Sans Variable"', 'ĞğİıŞş');
   });
   expect(fontsOk).toBe(true);
 });
