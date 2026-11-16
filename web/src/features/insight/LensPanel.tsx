@@ -54,8 +54,18 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
                   <tr key={row.layer} className={i === firstHit ? 'lens-hit' : undefined}>
                     <th scope="row">{layerPoint(i)}</th>
                     <td className="lens-top">
+                      {/* the ladder: the three guesses side by side, each as wide as its share; the final answer in teal */}
+                      <span className="lens-stack" aria-hidden="true">
+                        {row.top.slice(0, 3).map((tok, j) => (
+                          <i
+                            key={tok.token_id}
+                            className={tok.token_id === data.final.token_id ? 'is-final' : j === 0 ? 'is-top' : undefined}
+                            style={{ width: `${Math.max(0, tok.p * 100)}%` }}
+                          />
+                        ))}
+                      </span>
                       {row.top.slice(0, 3).map((tok) => (
-                        <span key={tok.token_id} className="lens-token">
+                        <span key={tok.token_id} className={tok.token_id === data.final.token_id ? 'lens-token is-final' : 'lens-token'}>
                           <code>{shownToken(tok.text)}</code> <span className="num">%{pct(tok.p)}</span>
                         </span>
                       ))}

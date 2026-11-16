@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createApi } from '@/api/client';
 import { setApi } from '@/api/currentApi';
@@ -11,6 +11,7 @@ import { setLang } from '@/i18n';
 import { forgetKeptGraph, GraphPanel } from '../GraphPanel';
 import { project, VIEWS } from '../camera';
 import { hitTest } from '../drawFlow';
+import { dotKinds } from '../HundredDots';
 import { extent, incomingShare, liveWeights, placeNodes, trunkWidths, visibleEdges } from '../layout';
 
 // jsdom has no canvas: the scene is replaced by buttons that pick what the real scene would.
@@ -210,6 +211,22 @@ test('draws the graph, cuts a river and shows the real effect', async () => {
   expect(screen.getByRole('button', { name: 'Kesildi' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'sahne e0 kesik' })).toBeInTheDocument();
   expect(screen.getByText('Yol kesimi yalnızca keşif içindir: model dosyası değişmez ve bu kesim kaydedilemez.')).toBeInTheDocument();
+  // hundred dots: 41 → 20 is 20 kept, 21 taken by the cut, 59 never there; the new top guess changed
+  const report = document.querySelector('.graph-report') as HTMLElement;
+  expect(report.querySelectorAll('.hundred-grid .hundred-dot')).toHaveLength(100);
+  expect(within(report).getByText('kalan: 20')).toBeInTheDocument();
+  expect(within(report).getByText('kesimle giden: 21')).toBeInTheDocument();
+  expect(within(report).getByText('zaten yoktu: 59')).toBeInTheDocument();
+  expect(within(report).getByText('· değişti')).toBeInTheDocument();
+});
+
+test('hundred dots: kept, lost and gained always add up to a hundred', () => {
+  expect(dotKinds(0.41, 0.2).filter((k) => k === 'lost')).toHaveLength(21);
+  const up = dotKinds(0.1, 0.35);
+  expect(up.filter((k) => k === 'kept')).toHaveLength(10);
+  expect(up.filter((k) => k === 'gained')).toHaveLength(25);
+  expect(dotKinds(2, -1).filter((k) => k === 'lost')).toHaveLength(100);
+  expect(dotKinds(Number.NaN, 0.5)).toHaveLength(100);
 });
 
 test('undoing the last cut clears the report without another request', async () => {

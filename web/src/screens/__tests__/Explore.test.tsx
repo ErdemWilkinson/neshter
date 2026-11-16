@@ -225,6 +225,11 @@ test('the layer-by-layer prediction opens on demand for the chosen token', async
   await user.click(within(panel).getByRole('button', { name: 'Göster' }));
   expect(lens).toHaveBeenCalledWith({ prompt: 'merhaba dün', position: 1 });
   expect(await within(panel).findByText(/İlk kez K0 sonrası en olası tahmin oluyor/)).toBeInTheDocument();
+  // the ladder: one bar segment per guess, as wide as its probability; the final answer's segment is marked
+  const finals = panel.querySelectorAll<HTMLElement>('.lens-stack i.is-final');
+  expect(finals).toHaveLength(2);
+  expect(finals[0]?.style.width).toBe('30%');
+  expect(panel.querySelector('.lens-stack i:not(.is-final)')?.getAttribute('style')).toContain('10%');
 });
 
 test('the attention pattern starts from the focused head and shows where the token looks', async () => {
@@ -240,6 +245,11 @@ test('the attention pattern starts from the focused head and shows where the tok
   expect(attention).toHaveBeenCalledWith({ prompt: 'merhaba dün', layer: 1 });
   expect(await within(panel).findByText(/K1·H1, " dün" token'ında en çok şunlara bakıyor/)).toBeInTheDocument();
   expect(within(panel).getByText('%80')).toBeInTheDocument();
+  // a triangle: the first token cannot read the second, so that cell is empty and has no value
+  const empty = panel.querySelectorAll('.attn-grid td.attn-none');
+  expect(empty).toHaveLength(1);
+  expect(empty[0]?.getAttribute('title')).toBeNull();
+  expect(panel.querySelectorAll('.attn-grid td[title]')).toHaveLength(3);
 });
 
 test('the view switch toggles between the heatmap and the Liste table', async () => {

@@ -12,6 +12,7 @@ import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
 import { formatFixed } from '@/features/map/format';
 import { shownToken } from '@/features/insight/LensPanel';
+import { HundredDots } from './HundredDots';
 import { useT, type MessageKey } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ErrorCard } from '@/ui/ErrorCard';
@@ -475,15 +476,21 @@ export function GraphPanel({
                   {cutFailure !== null && <ErrorCard code={cutFailure.code} detail={cutFailure.detail} />}
                   {report !== null && cut.length > 0 && !measuring && (
                     <div className="graph-report">
-                      <p>
-                        <b>
-                          {t('graph.report.p', {
-                            answer: shownToken(graph.metric.text),
-                            before: Math.round(report.p_before * 100),
-                            after: Math.round(report.p_after * 100),
-                          })}
-                        </b>
-                      </p>
+                      <HundredDots
+                        before={report.p_before}
+                        after={report.p_after}
+                        sentence={t('graph.report.p', {
+                          answer: shownToken(graph.metric.text),
+                          before: Math.round(report.p_before * 100),
+                          after: Math.round(report.p_after * 100),
+                        })}
+                        cuts={cut.flatMap((id) => {
+                          const e = edgeById.get(id);
+                          return e === undefined ? [] : [`${name(graph, e.src)} → ${name(graph, e.dst)}`];
+                        })}
+                        guess={shownToken(report.top_after[0]?.text ?? '')}
+                        changed={report.top_after[0]?.token_id !== report.top_before[0]?.token_id}
+                      />
                       <p className="num">
                         {t('graph.report.delta', {
                           real: formatFixed(report.delta_metric, 3),

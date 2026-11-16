@@ -9,11 +9,15 @@
   --accent-decrease: #9fc3ff;
   --accent-basket: #ff7a45; /* basket only */
   --badge-explore: #ffd27a;
+  --danger: #ff5a4f; /* what a cut took away (hundred dots) */
   --focus-ring: #9fc3ff;
 
   --font-heading: 'Bricolage Grotesque Variable', system-ui, sans-serif;
   --font-text: 'Instrument Sans Variable', system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+
+  /* viridis: the heat ramp of the dotted map, the 3D floor and their legends (same stops as heatColor in colorScale.ts) */
+  --heat-ramp: linear-gradient(90deg, #440154, #3b528b, #21918c, #5ec962, #fde725);
 
   --glass-blur: 12px;
   --radius: 8px;

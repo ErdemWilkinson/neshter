@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { useStore } from 'zustand';
 import { headId, type NodeId } from '@/core/ids';
 import { selectionStore } from '@/core/stores/selection';
 import { useT } from '@/i18n';
 import { makeCellLayout, hitTest, type CellLayout } from './cellLayout';
-import { makeColorScale, readPalette } from './colorScale';
+import { heatColor } from './colorScale';
 import { drawHeatmap } from './drawHeatmap';
 import { focusCell, useHeatmapKeys, type Dims } from './useHeatmapKeys';
 
@@ -40,12 +40,7 @@ export function Heatmap({
   const focusId = keys.current === null ? null : headId(keys.current.layer, keys.current.head);
   const height = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dims.n_layers * ROW_PX));
 
-  const scale = useMemo(() => {
-    const palette = readPalette();
-    return makeColorScale(palette.low, palette.high);
-    // The look tokens do not change at run time; reading them per values change keeps the scale cheap.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [values]);
+  const scale = heatColor;
 
   useImperativeHandle(
     ref,
