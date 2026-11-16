@@ -112,13 +112,18 @@ export function AttentionPanel({
                   {pattern.map((cells, q) => (
                     <tr key={q} className={q === position ? 'attn-row-chosen' : undefined}>
                       <th scope="row">{tok(q)}</th>
-                      {cells.map((p, k) => (
-                        <td
-                          key={k}
-                          title={`${tok(q)} → ${tok(k)}: %${Math.round(p * 100)}`}
-                          style={{ '--w': p } as CSSProperties}
-                        />
-                      ))}
+                      {/* a token reads only itself and earlier tokens: the matrix is a triangle, later cells stay empty */}
+                      {cells.map((p, k) =>
+                        k > q ? (
+                          <td key={k} className="attn-none" />
+                        ) : (
+                          <td
+                            key={k}
+                            title={`${tok(q)} → ${tok(k)}: %${Math.round(p * 100)}`}
+                            style={{ '--w': Math.sqrt(Math.max(0, p)) } as CSSProperties}
+                          />
+                        ),
+                      )}
                     </tr>
                   ))}
                 </tbody>

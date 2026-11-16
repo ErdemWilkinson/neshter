@@ -1,5 +1,5 @@
 import type { GraphEdge } from '@/api/schemas';
-import { makeColorScale, parseHex, rgbCss, type Rgb } from '@/features/map/colorScale';
+import { heatColor, parseHex, rgbCss, type Rgb } from '@/features/map/colorScale';
 import { clamp01, easeOut, project, type Camera, type Viewport } from './camera';
 import { CURVE_STEPS, headX, layerZ, COL, ROW, type Grid, type PlacedNode, type Vec3 } from './layout';
 
@@ -20,8 +20,6 @@ export interface FlowPalette {
   cut: string;
   basket: string;
   focus: string;
-  heatLow: Rgb;
-  heatHigh: Rgb;
   mono: string;
 }
 
@@ -39,8 +37,6 @@ export function readFlowPalette(): FlowPalette {
     cut: v('--badge-explore', '#ffd27a'),
     basket: v('--accent-basket', '#ff7a45'),
     focus: v('--focus-ring', '#9fc3ff'),
-    heatLow: parseHex(v('--surface-1', '#121722')) ?? [18, 23, 34],
-    heatHigh: parseHex(v('--accent-increase', '#2ee6c5')) ?? [46, 230, 197],
     mono: v('--font-mono', 'ui-monospace, monospace'),
   };
 }
@@ -118,6 +114,11 @@ function lighten(color: string, amount: number): string {
 }
 
 /** Draws one frame and returns what can be hit at the positions just drawn. */
+/** Points on a floor dot's outline (it is projected point by point, so it foreshortens like the floor). */
+const DOT_STEPS = 28;
+/** The soft neon glow on rivers, their lights, head rings and the answer, in px of blur; kept low on purpose. */
+const GLOW = { river: 4, light: 5, ring: 3, answer: 6 } as const;
+
 export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: FrameState): Hits {
   const { grid, nodes } = scene;
   const { palette: pal, mix, t } = f;
@@ -127,7 +128,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
   const nodeA = easeOut((mix - 0.3) / 0.5);
   const ringA = easeOut((mix - 0.2) / 0.5);
   const hits: Hits = { cells: [], nodes: [], edges: [] };
-  const color = makeColorScale(pal.heatLow, pal.heatHigh);
+  const color = heatColor;
   const graphHeads = new Set(nodes.filter((n) => n.kind === 'head').map((n) => n.id));
   const px = P([0, 0, 0])[2] * Math.min(1.4, Math.max(0.55, (P([COL, 0, 0])[0] - P([0, 0, 0])[0]) / 60));
 
@@ -192,14 +193,27 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
         const p = P([x + (i * cw) / 2, 0, z + (j * cd) / 2]);
         return [p[0], p[1]];
       });
+      // the floor is the dotted map: a dot as large as the head is strong, drawn on the floor so it tilts with it
       const inBasket = f.basket.has(id);
+      const v = clamp01(scene.heat?.[l]?.[h] ?? 0);
+      const full = Math.min(cw, cd) / 2;
+      const dot = (radius: number) => {
+        ctx.beginPath();
+        for (let k = 0; k <= DOT_STEPS; k++) {
+          const a = (k / DOT_STEPS) * Math.PI * 2;
+          const p = P([x + Math.cos(a) * radius, 0, z + Math.sin(a) * radius]);
+          if (k === 0) ctx.moveTo(p[0], p[1]);
+          else ctx.lineTo(p[0], p[1]);
+        }
+        ctx.closePath();
+      };
       ctx.globalAlpha = alpha * (inBasket ? 0.45 : 1);
-      polyline(ctx, corners);
-      ctx.closePath();
-      ctx.fillStyle = rgbCss(color(scene.heat?.[l]?.[h] ?? 0));
+      dot(full * (0.28 + 0.72 * Math.sqrt(v)));
+      ctx.fillStyle = rgbCss(color(v));
       ctx.fill();
       ctx.globalAlpha = alpha;
       if (f.chosen.has(id) || f.focus.has(id)) {
+        dot(full);
         ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.focus;
         ctx.lineWidth = 2;
         ctx.stroke();
@@ -240,12 +254,15 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       ctx.globalAlpha = flowA * (0.35 + 0.65 * Math.min(1, live * 2.2));
       ctx.strokeStyle = col;
       ctx.lineWidth = w;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = GLOW.river;
       polyline(ctx, shown);
       ctx.stroke();
       // light travelling along the river; count and speed follow what still flows
       if (!f.reduced && grow >= 1 && live > 0.04) {
         ctx.globalAlpha = flowA;
         ctx.fillStyle = lighten(col, 0.7);
+        ctx.shadowBlur = GLOW.light;
         const n = Math.round(1 + live * 5);
         const seed = e.id.length * 0.37 + (e.id.charCodeAt(e.id.length - 1) % 10) * 0.11;
         for (let j = 0; j < n; j++) {
@@ -261,6 +278,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
           ctx.fill();
         }
       }
+      ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
     }
   }
@@ -281,10 +299,13 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
         ctx.fillStyle = pal.bg;
         ctx.strokeStyle = lit ? pal.text1 : f.chosen.has(n.id) ? pal.focus : pal.inc;
         ctx.lineWidth = lit ? 2.6 : 2.2;
+        ctx.shadowColor = lit ? pal.text1 : f.chosen.has(n.id) ? pal.focus : pal.inc;
+        ctx.shadowBlur = GLOW.ring;
         ctx.beginPath();
         ctx.arc(p[0], p[1], lit ? r + 1 : r, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+        ctx.shadowBlur = 0;
         ctx.fillStyle = rgbCss(color(scene.heat?.[n.layer]?.[n.index] ?? 0.5));
         ctx.beginPath();
         ctx.arc(p[0], p[1], r * 0.45, 0, Math.PI * 2);
@@ -308,10 +329,13 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       ctx.fillStyle = pal.bg;
       ctx.strokeStyle = pal.text1;
       ctx.lineWidth = 2.5;
+      ctx.shadowColor = pal.inc;
+      ctx.shadowBlur = GLOW.answer;
       ctx.beginPath();
       ctx.arc(p[0], p[1], 10 * k, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.shadowBlur = 0;
       ctx.fillStyle = pal.inc;
       ctx.beginPath();
       ctx.arc(p[0], p[1], 4.5 * k, 0, Math.PI * 2);

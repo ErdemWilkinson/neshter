@@ -690,7 +690,7 @@ select {
   display: inline-block;
   width: 6rem;
   height: 10px;
-  background: linear-gradient(to right, var(--surface-1), var(--accent-increase));
+  background: var(--heat-ramp);
   border: 1px solid var(--border-control);
   border-radius: 999px;
 }
@@ -1434,6 +1434,11 @@ select {
   width: 100%;
 }
 
+.attn-grid {
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
 .lens-table th,
 .lens-table td {
   padding: 3px 8px;
@@ -1451,10 +1456,43 @@ select {
   background: color-mix(in srgb, var(--accent-increase) 12%, transparent);
 }
 
-.lens-top {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
+/* The cells stay table cells (a flex td drops out of the table layout); their parts sit inline on one line. */
+.lens-top .lens-token {
+  margin-right: 12px;
+}
+
+/* Lens ladder: the top three guesses as one bar, each segment as wide as its probability. */
+.lens-stack {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 12px;
+  width: 9rem;
+  height: 10px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.lens-stack i {
+  display: block;
+  height: 100%;
+  background: var(--text-2);
+  opacity: 0.45;
+  box-shadow: inset -1px 0 0 var(--surface-0);
+}
+
+.lens-stack i.is-top {
+  opacity: 0.85;
+}
+
+.lens-stack i.is-final {
+  background: var(--accent-increase);
+  opacity: 1;
+}
+
+.lens-token.is-final code {
+  color: var(--accent-increase);
+  border-color: color-mix(in srgb, var(--accent-increase) 60%, transparent);
 }
 
 .lens-token code,
@@ -1466,13 +1504,9 @@ select {
   border-radius: 4px;
 }
 
-.lens-final {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .lens-bar {
+  vertical-align: middle;
+  margin-right: 8px;
   display: inline-block;
   width: 7rem;
   height: 8px;
@@ -1512,12 +1546,18 @@ select {
   overflow: hidden;
 }
 
+/* Attention matrix: square cells with a gap, ice-blue (navy = little attention, bright = a lot; --w is sqrt(p)). */
 .attn-grid td {
   width: 18px;
   height: 18px;
   padding: 0;
-  border: 1px solid var(--surface-0);
-  background: color-mix(in srgb, var(--accent-increase) calc(var(--w, 0) * 100%), var(--surface-1));
+  border-radius: 3px;
+  background: color-mix(in oklab, #c9f0ff calc(var(--w, 0) * 100%), #10264a);
+}
+
+.attn-grid td.attn-none,
+.attn-grid thead td {
+  background: transparent;
 }
 
 .attn-row-chosen th {
@@ -1622,7 +1662,7 @@ select {
 
 .sw-heat {
   width: 40px;
-  background: linear-gradient(90deg, var(--surface-1), var(--accent-increase));
+  background: var(--heat-ramp);
 }
 
 /* the heatmap / connection-graph scene (FlowScene) */
@@ -1750,6 +1790,108 @@ select {
 
 .graph-report p {
   margin: 0 0 4px;
+}
+
+/* Hundred dots: one per percent of the answer's probability; red rings are what the cut took. */
+.hundred {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.hundred-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 12px);
+  gap: 3px;
+  flex: none;
+}
+
+.hundred-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.hundred-dot.is-kept {
+  background: var(--accent-increase);
+}
+
+.hundred-dot.is-gained {
+  background: var(--accent-decrease);
+}
+
+.hundred-dot.is-lost {
+  border: 1.6px solid var(--danger);
+}
+
+.hundred-dot.is-none {
+  background: var(--border);
+}
+
+.hundred-side {
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.hundred-head {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--font-heading);
+}
+
+.hundred-head s {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-2);
+  text-decoration-color: var(--danger);
+  text-decoration-thickness: 2px;
+}
+
+.hundred-head b {
+  font-size: 2.4rem;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.hundred-sentence {
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.hundred-key {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 0.875rem;
+}
+
+.hundred-key li.is-lost {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.hundred-label {
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
+.hundred-cuts {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.hundred-changed {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .sweep-field {

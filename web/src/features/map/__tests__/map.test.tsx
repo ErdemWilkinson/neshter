@@ -5,8 +5,8 @@ import { selectionStore } from '@/core/stores/selection';
 import { setLang } from '@/i18n';
 import { LiveRegion } from '@/ui/LiveRegion';
 import { makeCellLayout, hitTest } from '../cellLayout';
-import { makeColorScale } from '../colorScale';
-import { drawHeatmap } from '../drawHeatmap';
+import { heatColor, makeColorScale } from '../colorScale';
+import { dotRadius, drawHeatmap } from '../drawHeatmap';
 import { Heatmap } from '../Heatmap';
 import { HeatmapTable } from '../HeatmapTable';
 import { TokenStrip } from '../TokenStrip';
@@ -17,19 +17,23 @@ const zeros = (l: number, h: number) => Array.from({ length: l }, () => Array<nu
 const gray = (v: number): [number, number, number] => [v * 255, v * 255, v * 255];
 const scale = makeColorScale([0, 0, 0], [255, 255, 255]);
 
-/** A recording stand-in for a 2d context: jsdom has no canvas. */
+/** A recording stand-in for a 2d context: jsdom has no canvas. A dot is an `arc` then `fill`; a ring `arc` then `stroke`. */
 function fakeCtx() {
-  const fills: unknown[][] = [];
-  const strokes: { style: string; args: number[] }[] = [];
+  const dots: { x: number; y: number; r: number; style: string }[] = [];
+  const strokes: { style: string; kind: 'ring' | 'rect'; args: number[] }[] = [];
+  let lastArc: number[] = [];
   const ctx = {
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    fillRect: (...args: unknown[]) => void fills.push(args),
-    strokeRect: (...args: number[]) => void strokes.push({ style: ctx.strokeStyle, args }),
+    beginPath: () => undefined,
+    arc: (...args: number[]) => void (lastArc = args),
+    fill: () => void dots.push({ x: lastArc[0] ?? 0, y: lastArc[1] ?? 0, r: lastArc[2] ?? 0, style: ctx.fillStyle }),
+    stroke: () => void strokes.push({ style: ctx.strokeStyle, kind: 'ring', args: lastArc }),
+    strokeRect: (...args: number[]) => void strokes.push({ style: ctx.strokeStyle, kind: 'rect', args }),
     setTransform: () => undefined,
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, strokes };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, dots, strokes };
 }
 
 beforeEach(() => {
@@ -74,22 +78,39 @@ test('colour scale clamps and treats NaN as zero', () => {
   expect(scale(Number.NaN)).toEqual([0, 0, 0]);
 });
 
-test('drawHeatmap fills one rect per cell and outlines selected and basket cells', () => {
+test('drawHeatmap draws one dot per cell centre and rings selected and basket cells', () => {
   const values = zeros(3, 5);
   const layout = makeCellLayout({ n_layers: 3, n_heads: 5 }, rect(0, 0, 500, 300), values, scale);
-  const { ctx, fills, strokes } = fakeCtx();
+  const { ctx, dots, strokes } = fakeCtx();
   drawHeatmap(ctx, layout, values, {
     selected: new Set([headId(0, 1)]),
     basket: new Set([headId(2, 4)]),
     focus: null,
   });
-  expect(fills).toHaveLength(15);
-  expect(strokes.map((s) => s.style)).toEqual(['#9fc3ff', '#ff7a45']); // --focus-ring, --accent-basket
-  expect(strokes[0]?.args[0]).toBeGreaterThanOrEqual(100); // inside cell (0,1)
-  expect(strokes[1]?.args[0]).toBeGreaterThanOrEqual(400); // inside cell (2,4)
+  expect(dots).toHaveLength(15);
+  expect(dots[0]).toMatchObject({ x: 50, y: 50 }); // centre of cell (0,0)
+  expect(strokes.map((s) => [s.kind, s.style])).toEqual([
+    ['ring', '#9fc3ff'], // --focus-ring
+    ['ring', '#ff7a45'], // --accent-basket
+  ]);
+  expect(strokes[0]?.args.slice(0, 2)).toEqual([150, 50]); // around cell (0,1)
+  expect(strokes[1]?.args.slice(0, 2)).toEqual([450, 250]); // around cell (2,4)
 });
 
-test('a cell that is selected and in the basket gets both outlines, the keyboard focus one more', () => {
+test('a dot grows with the head strength and stays visible at zero', () => {
+  const values = [[0, 0.25, 1]];
+  const layout = makeCellLayout({ n_layers: 1, n_heads: 3 }, rect(0, 0, 300, 100), values, scale);
+  const { ctx, dots } = fakeCtx();
+  drawHeatmap(ctx, layout, values, { selected: new Set(), basket: new Set(), focus: null });
+  const [zero, quarter, full] = dots.map((d) => d.r);
+  expect(zero).toBeGreaterThan(0);
+  expect(quarter).toBeGreaterThan(zero ?? 0);
+  expect(full).toBeGreaterThan(quarter ?? 0);
+  expect(full).toBeLessThan(50); // never wider than its cell
+  expect(dotRadius({ x: 0, y: 0, w: 100, h: 100 }, Number.NaN)).toBe(dotRadius({ x: 0, y: 0, w: 100, h: 100 }, 0));
+});
+
+test('a cell that is selected and in the basket gets both rings, the keyboard focus a square', () => {
   const values = zeros(1, 2);
   const layout = makeCellLayout({ n_layers: 1, n_heads: 2 }, rect(0, 0, 100, 50), values, scale);
   const { ctx, strokes } = fakeCtx();
@@ -98,7 +119,16 @@ test('a cell that is selected and in the basket gets both outlines, the keyboard
     basket: new Set([headId(0, 0)]),
     focus: headId(0, 0),
   });
-  expect(strokes).toHaveLength(3);
+  expect(strokes.map((s) => s.kind)).toEqual(['ring', 'ring', 'rect']);
+  expect(strokes[1]?.args[2]).toBeGreaterThan(strokes[0]?.args[2] ?? Infinity); // basket ring outside the selection ring
+});
+
+test('the heat colour runs along viridis, clamped', () => {
+  expect(heatColor(0)).toEqual([68, 1, 84]);
+  expect(heatColor(1)).toEqual([253, 231, 37]);
+  expect(heatColor(0.5)).toEqual([33, 145, 140]);
+  expect(heatColor(-3)).toEqual(heatColor(0));
+  expect(heatColor(Number.NaN)).toEqual(heatColor(0));
 });
 
 test('keyboard navigation clamps at edges for 1x1 and 3x5', () => {
@@ -122,7 +152,10 @@ function renderHeatmap(values: number[][], basket: ReadonlySet<NodeId> = new Set
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    fillRect: () => void fills.push(1),
+    beginPath: () => undefined,
+    arc: () => undefined,
+    fill: () => void fills.push(1),
+    stroke: () => undefined,
     strokeRect: () => undefined,
     setTransform: () => void (fills.length = 0), // each draw starts with a transform: count the last draw only
   };

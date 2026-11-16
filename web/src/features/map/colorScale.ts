@@ -45,3 +45,28 @@ export function makeColorScale(low: Rgb, high: Rgb): (value: number) => Rgb {
 }
 
 export const rgbCss = ([r, g, b]: Rgb): string => `rgb(${r}, ${g}, ${b})`;
+
+/** Viridis, five stops: perceptually even, and readable as dots on the dark panel. */
+export const VIRIDIS: readonly Rgb[] = [
+  [68, 1, 84],
+  [59, 82, 139],
+  [33, 145, 140],
+  [94, 201, 98],
+  [253, 231, 37],
+];
+
+/** A 0..1 value (clamped; NaN is 0) -> a colour along several stops, linear between neighbours. */
+export function makeRampScale(stops: readonly Rgb[]): (value: number) => Rgb {
+  return (value) => {
+    const v = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+    const x = v * (stops.length - 1);
+    const i = Math.min(stops.length - 2, Math.floor(x));
+    const f = x - i;
+    const a = stops[i] ?? [0, 0, 0];
+    const b = stops[i + 1] ?? a;
+    return [Math.round(a[0] + (b[0] - a[0]) * f), Math.round(a[1] + (b[1] - a[1]) * f), Math.round(a[2] + (b[2] - a[2]) * f)];
+  };
+}
+
+/** The heat colour used everywhere a head's strength is drawn (2D dots, the 3D floor, the head rings). */
+export const heatColor = makeRampScale(VIRIDIS);
