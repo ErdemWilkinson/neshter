@@ -52,7 +52,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 8px 12px;
   padding: 8px 12px;
   /* a solid band above and beside the floating bar, so scrolled text does not show through the gutter */
   box-shadow: 0 -12px 0 12px var(--surface-0), 0 8px 24px rgb(0 0 0 / 0.35);
@@ -72,7 +72,7 @@ html {
 
 .model-chip {
   display: inline-block;
-  max-width: 22rem;
+  max-width: 16rem;
   padding: 3px 10px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -165,8 +165,15 @@ html {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-left: auto;
+  font-size: 0.8125rem;
+}
+
+.header-controls .btn,
+.header-controls select {
+  padding: 3px 8px;
+  font-size: 0.8125rem;
 }
 
 .control {
@@ -187,12 +194,14 @@ select {
 }
 
 .btn {
-  padding: 6px 14px;
+  padding: 5px 12px;
+  font-size: 0.9375rem;
+  line-height: 1.25;
   color: var(--text-1);
   background: var(--surface-1);
   border: 1px solid var(--border-control);
   border-radius: var(--radius);
-  font: inherit;
+  font-family: inherit;
   cursor: pointer;
   transition: background var(--motion);
 }
@@ -252,7 +261,8 @@ select {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px 4px 6px;
+  padding: 3px 10px 3px 5px;
+  font-size: 0.9375rem;
   counter-increment: step;
   color: var(--text-2);
   border-radius: var(--radius);
@@ -388,7 +398,8 @@ select {
 
 .segmented-option {
   position: relative;
-  padding: 4px 12px;
+  padding: 3px 10px;
+  font-size: 0.9375rem;
   cursor: pointer;
 }
 
@@ -598,7 +609,9 @@ select {
 
 .explore-prompt {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* a text field as wide as a sentence, the run button right next to it (not across the page) */
+  grid-template-columns: minmax(0, 40rem) auto;
+  justify-content: start;
   gap: 4px 12px;
   align-items: end;
 }
@@ -695,9 +708,11 @@ select {
   border-radius: 999px;
 }
 
+
 .heatmap-frame {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
+  justify-content: start;
   column-gap: 4px;
 }
 
@@ -748,8 +763,22 @@ select {
   border-radius: var(--radius);
 }
 
+.heatmap-table-scroll {
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 .heatmap-table {
   border-collapse: collapse;
+  min-width: 28rem;
+}
+
+.heatmap-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
 }
 
 .heatmap-table th,
@@ -858,6 +887,12 @@ select {
   border-color: var(--accent-increase);
 }
 
+.basket-line {
+  font-family: var(--font-text);
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
 .basket-line,
 .selection-panel p,
 .control-card p {
@@ -944,8 +979,8 @@ select {
 
 .cut-button {
   display: inline-flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: baseline;
+  gap: 8px;
   align-self: flex-start;
 }
 
@@ -965,6 +1000,9 @@ select {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-width: 80rem;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .concept-lead {
@@ -1109,6 +1147,9 @@ select {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  max-width: 64rem;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .pair-view,
@@ -1271,6 +1312,17 @@ select {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.save-screen {
+  max-width: 48rem;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* in these column layouts a button keeps its own width instead of stretching into a page-wide bar */
+:is(.compare-screen, .concept-screen, .save-screen) .btn {
+  align-self: flex-start;
 }
 
 .save-form .field {
@@ -1436,7 +1488,7 @@ select {
 
 .attn-grid {
   border-collapse: separate;
-  border-spacing: 2px;
+  border-spacing: 3px;
 }
 
 .lens-table th,
@@ -1466,8 +1518,8 @@ select {
   display: inline-flex;
   vertical-align: middle;
   margin-right: 12px;
-  width: 9rem;
-  height: 10px;
+  width: 14rem;
+  height: 16px;
   background: color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 3px;
   overflow: hidden;
@@ -1490,9 +1542,56 @@ select {
   opacity: 1;
 }
 
+.lens-stack i.is-rival,
+.lens-key i.is-rival {
+  background: var(--rival);
+  opacity: 1;
+}
+
+.lens-token.is-rival code {
+  color: var(--rival);
+  border-color: color-mix(in srgb, var(--rival) 60%, transparent);
+}
+
+.lens-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  color: var(--text-2);
+}
+
+.lens-key i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: -1px;
+  background: var(--text-2);
+  opacity: 0.6;
+}
+
+.lens-key i.is-final {
+  background: var(--accent-increase);
+  opacity: 1;
+}
+
 .lens-token.is-final code {
   color: var(--accent-increase);
   border-color: color-mix(in srgb, var(--accent-increase) 60%, transparent);
+}
+
+.lens-token code {
+  display: inline-block;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  vertical-align: bottom;
 }
 
 .lens-token code,
@@ -1508,8 +1607,8 @@ select {
   vertical-align: middle;
   margin-right: 8px;
   display: inline-block;
-  width: 7rem;
-  height: 8px;
+  width: 9rem;
+  height: 12px;
   background: var(--border);
   border-radius: 4px;
   overflow: hidden;
@@ -1548,11 +1647,12 @@ select {
 
 /* Attention matrix: square cells with a gap, ice-blue (navy = little attention, bright = a lot; --w is sqrt(p)). */
 .attn-grid td {
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 0;
-  border-radius: 3px;
-  background: color-mix(in oklab, #c9f0ff calc(var(--w, 0) * 100%), #10264a);
+  border-radius: 5px;
+  background: color-mix(in oklab, #a9d8ff calc(var(--w, 0) * 100%), #142a66);
 }
 
 .attn-grid td.attn-none,
@@ -1644,16 +1744,13 @@ select {
   border-radius: 2px;
 }
 
+/* the 3D scene's own neon colours (drawFlow.ts NEON) */
 .sw-inc {
-  background: var(--accent-increase);
-}
-
-.sw-dec {
-  background: var(--accent-decrease);
+  background: #2ee6c5;
 }
 
 .sw-cut {
-  background: repeating-linear-gradient(90deg, var(--badge-explore) 0 4px, transparent 4px 7px);
+  background: repeating-linear-gradient(90deg, #ff7a45 0 4px, transparent 4px 7px);
 }
 
 .sw-basket {
@@ -1993,7 +2090,7 @@ select {
   grid-template-columns: 1.6rem 5.5rem minmax(4rem, 1fr) 3rem auto;
   gap: 12px;
   align-items: center;
-  padding: 8px 12px;
+  padding: 3px 10px;
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2152,4 +2249,191 @@ select {
     opacity: 0;
     transform: translateY(8px);
   }
+}
+
+/* page titles: less air above them, the work starts higher on the screen */
+.screen h1 {
+  margin: 4px 0 8px;
+}
+
+/* Primary actions sit in the middle of their column, not against its left edge. */
+.concept-screen > .btn,
+.pair-view > .btn,
+.suite-runner > .btn,
+.save-form > .btn {
+  align-self: center;
+}
+
+.basket-actions,
+.measure {
+  justify-content: center;
+}
+
+.cut {
+  align-items: center;
+  text-align: center;
+}
+
+.refusal-card > .btn {
+  display: block;
+  margin-inline: auto;
+}
+
+/* --- Phone: adding a GGUF, the chat ---------------------------------------------------------------------------- */
+
+.phone-model-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.chat-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 48rem;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.chat-lead,
+.chat-hint {
+  color: var(--text-2);
+  margin: 0;
+}
+
+.chat-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 20px;
+}
+
+.chat-option,
+.chat-style label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-style {
+  display: flex;
+  gap: 12px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.chat-style legend {
+  float: left;
+  margin-right: 8px;
+  color: var(--text-2);
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 12rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.chat-empty {
+  margin: auto;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 85%;
+}
+
+.chat-user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-assistant {
+  align-self: flex-start;
+}
+
+.chat-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.chat-text {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-user .chat-text {
+  border-color: var(--select-ring);
+}
+
+.chat-cut-badge {
+  color: var(--accent-decrease);
+  border-color: currentColor;
+}
+
+.chat-stopped {
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.chat-caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: chat-blink 1s steps(2) infinite;
+}
+
+@keyframes chat-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-caret {
+    animation: none;
+  }
+}
+
+.chat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-form textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+
+.chat-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
 }

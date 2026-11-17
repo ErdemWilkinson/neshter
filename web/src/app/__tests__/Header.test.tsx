@@ -12,7 +12,7 @@ import { uiStore } from '@/core/stores/ui';
 import { setLang } from '@/i18n';
 import { ProgressCard } from '@/ui/ProgressCard';
 import { BasketToast } from '../BasketToast';
-import { Header } from '../Header';
+import { Header, shortGpu } from '../Header';
 import { BusyBanner } from '../BusyBanner';
 import { DeviceBanner } from '../DeviceBanner';
 import { StaleScreen } from '../StaleScreen';
@@ -100,7 +100,7 @@ test('the language select switches the whole header to English', async () => {
   render(<Header onClose={() => undefined} />);
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Dil' }), 'en');
   expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
-  expect(screen.getByRole('button', { name: 'Quit Neşter' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Quit Neshter' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'Reduce motion' })).toBeInTheDocument();
 });
 
@@ -210,4 +210,10 @@ test('a basket restored from a draft or the server does not toast', () => {
   expect(screen.getByText('Sepete 1 kesim eklendi')).toBeInTheDocument();
   expect(screen.getByText('· sepette toplam 3')).toBeInTheDocument();
   vi.useRealTimers();
+});
+
+test('the GPU chip drops the vendor words, the full name stays on hover', () => {
+  expect(shortGpu('NVIDIA GeForce RTX 4050 Laptop GPU')).toBe('RTX 4050 Laptop');
+  expect(shortGpu('AMD Radeon RX 7900')).toBe('AMD Radeon RX 7900');
+  expect(shortGpu('GPU')).toBe('GPU');
 });

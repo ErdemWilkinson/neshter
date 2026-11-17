@@ -10,6 +10,7 @@ import { fromEffectResult } from '@/core/measurement';
 import type { HeadOp } from '@/core/ops';
 import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { measureStore } from '@/core/stores/measure';
+import { exploreStore } from '@/features/map/exploreStore';
 import { sessionStore } from '@/core/stores/session';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -65,9 +66,15 @@ export function MeasureButton({ ops }: { ops: readonly HeadOp[] }) {
   const measure = async () => {
     setFailure(null);
     const fp = opsFingerprint(ops);
+    const probe = exploreStore.getState().result?.prompt;
     try {
       const final = await start(() =>
-        getApi().effect({ heads: ops.map((op): [number, number] => [op.layer, op.head]), n_max: nMax, seed: 0 }),
+        getApi().effect({
+          heads: ops.map((op): [number, number] => [op.layer, op.head]),
+          n_max: nMax,
+          seed: 0,
+          ...(probe ? { probe } : {}),
+        }),
       );
       if (final.state === 'error') {
         setFailure({ code: final.error_code ?? 'internal', detail: final.error });

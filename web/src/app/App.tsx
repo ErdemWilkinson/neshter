@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useStore } from 'zustand';
-import { createApi } from '@/api/client';
+import { createApi, type Api } from '@/api/client';
+import { createBridge, isDeviceApp } from '@/api/device/bridge';
+import { createDeviceApi } from '@/api/device/deviceApi';
 import { getApi, setApi } from '@/api/currentApi';
 import { ApiError, type ErrorCode } from '@/api/errors';
 import { startHeartbeat } from '@/api/heartbeat';
@@ -70,17 +72,24 @@ export function App() {
       }
       if (cancelled) return;
       setLang(resolveLang(null, navigator.language)); // until the prefs say otherwise
-      const token = bootstrapToken(window.location, getSessionStorage(), window.history, import.meta.env.DEV);
-      if (token === null) {
-        setBoot({ kind: 'no-token' });
-        return;
-      }
       const session = sessionStore.getState();
-      const api = createApi({
-        token,
-        onStale: () => session.setStale('restarted'),
-        onBusy: () => session.setBusy(true),
-      });
+      let api: Api;
+      if (isDeviceApp() && window.NeshterNative !== undefined) {
+        // The phone app: the model runs on the device, no server and no token.
+        document.documentElement.dataset['device'] = 'phone';
+        api = createDeviceApi(createBridge(window.NeshterNative));
+      } else {
+        const token = bootstrapToken(window.location, getSessionStorage(), window.history, import.meta.env.DEV);
+        if (token === null) {
+          setBoot({ kind: 'no-token' });
+          return;
+        }
+        api = createApi({
+          token,
+          onStale: () => session.setStale('restarted'),
+          onBusy: () => session.setBusy(true),
+        });
+      }
       setApi(api);
 
       const prefs = await loadPrefs(api);

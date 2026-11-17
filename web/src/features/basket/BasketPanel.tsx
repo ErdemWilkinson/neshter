@@ -1,4 +1,5 @@
 import { useStore } from 'zustand';
+import { isDeviceApp } from '@/api/device/bridge';
 import { navigate } from '@/app/router';
 import { countExploreOnly, countSavable, sendableOps, unsavedCount } from '@/core/basket';
 import { isSavable } from '@/core/ops';
@@ -43,9 +44,11 @@ export function BasketPanel() {
         <Button disabled={sendableOps(items).length === 0} onClick={() => navigate('compare')}>
           {t('basket.compare')}
         </Button>
-        <Button variant="primary" disabled={savable === 0} onClick={() => navigate('save')}>
-          {plural('basket.save', savable)}
-        </Button>
+        {!isDeviceApp() && ( // the phone app does not write model files
+          <Button variant="primary" disabled={savable === 0} onClick={() => navigate('save')}>
+            {plural('basket.save', savable)}
+          </Button>
+        )}
       </div>
     </section>
   );

@@ -35,10 +35,14 @@ export interface EffectRequest {
   /** 19..999; the server caps it at 199 on CPU (422 `invalid_input`). */
   n_max?: number;
   seed?: number;
+  /** Also answer this text with and without the heads (the "hundred dots" on the measurement card). */
+  probe?: string;
 }
 export interface HuntRequest {
   concept_id?: string;
   concept?: { id: string; name_tr: string; name_en: string; positive: string[]; negative: string[]; [key: string]: unknown };
+  /** A preset's example language: `en` uses its English-only lists. */
+  lang?: 'tr' | 'en';
   method?: Exclude<Method, 'auto'> | null;
   seed?: number;
   /** >1 with `direction`: sweep the model for leaked directions after removing the found ones. */

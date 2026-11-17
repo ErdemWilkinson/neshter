@@ -32,6 +32,9 @@ export function HeatmapTable({ values, basket }: { values: number[][]; basket: R
   }, [values, sort]);
 
   return (
+    // a model has hundreds of heads: the list scrolls in its own box (header row stays) instead of a page metres long
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable region must be focusable
+    <div className="table-scroll heatmap-table-scroll" role="region" tabIndex={0} aria-label={t('map.table.caption')}>
     <table className="heatmap-table">
       <caption className="sr-only">{t('map.table.caption')}</caption>
       <thead>
@@ -67,5 +70,6 @@ export function HeatmapTable({ values, basket }: { values: number[][]; basket: R
         ))}
       </tbody>
     </table>
+    </div>
   );
 }

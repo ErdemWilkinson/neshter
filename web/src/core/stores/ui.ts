@@ -1,7 +1,7 @@
 import { createStore } from 'zustand/vanilla';
 import { subscribeWithSelector } from 'zustand/middleware';
 
-export type Route = 'home' | 'models' | 'explore' | 'concept' | 'compare' | 'save';
+export type Route = 'home' | 'models' | 'explore' | 'concept' | 'compare' | 'save' | 'chat';
 export type View = 'hot' | '2d' | 'list' | '3d';
 export type Lang = 'tr' | 'en';
 export type ReducedMotion = 'system' | 'on' | 'off';

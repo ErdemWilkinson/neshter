@@ -8,6 +8,7 @@ import { Concept } from '@/screens/Concept';
 import { Explore } from '@/screens/Explore';
 import { Home } from '@/screens/Home';
 import { Models } from '@/screens/Models';
+import { Chat } from '@/screens/Chat';
 import { Save } from '@/screens/Save';
 import { useT } from '@/i18n';
 import { LiveRegion, announce } from '@/ui/LiveRegion';
@@ -29,6 +30,7 @@ export const SCREENS: Record<Route, ComponentType> = {
   concept: Concept,
   compare: Compare,
   save: Save,
+  chat: Chat,
 };
 
 export function Shell({ onClose }: { onClose: () => void }) {

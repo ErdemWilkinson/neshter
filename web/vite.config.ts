@@ -5,7 +5,10 @@ import { defineConfig } from 'vitest/config';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-export default defineConfig({
+// `vite build --mode mobile`: the phone app's copy of the UI. Relative URLs (it is served from the APK's assets, not
+// from the server's root) and its own folder, which the Android build packs (mobile/android, neshter.webDir).
+export default defineConfig(({ mode }) => ({
+  ...(mode === 'mobile' ? { base: './' } : {}),
   plugins: [react()],
   resolve: {
     alias: {
@@ -13,7 +16,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../neshter/web/dist',
+    outDir: mode === 'mobile' ? '../mobile/web-dist' : '../neshter/web/dist',
     emptyOutDir: true,
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
@@ -41,4 +44,4 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'scripts/__tests__/*.test.ts'],
   },
-});
+}));

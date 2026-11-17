@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import type { GraphEdge } from '@/api/schemas';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
-import { approach, easeOut, PITCH_MAX, PITCH_MIN, VIEWS, ZOOM_MAX, ZOOM_MIN, type Camera } from './camera';
+import { approach, easeOut, tiltMix, PITCH_MAX, PITCH_MIN, VIEWS, ZOOM_MAX, ZOOM_MIN, type Camera } from './camera';
 import { drawFlow, hitTest, readFlowPalette, type Hits, type Hover, type Pick, type SceneData, type SceneEdge } from './drawFlow';
 import { COL, edgeCurve, extent, type Grid, type PlacedNode } from './layout';
 
@@ -196,7 +196,7 @@ export default function FlowScene(props: FlowSceneProps) {
         ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
         a.hits = drawFlow(ctx, latestScene.current, {
           t: now(),
-          mix: a.mix,
+          mix: a.mix * tiltMix(a.cam.pitch),
           cam: a.cam,
           vp: {
             w: size.w,

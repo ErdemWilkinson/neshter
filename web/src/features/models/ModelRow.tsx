@@ -5,7 +5,16 @@ import { Button } from '@/ui/Button';
 import { badgeLabel, formatArch, formatBytes, reasonLabel } from './format';
 
 /** One model of the list. Everything from the server (name, source, license) is rendered as text. */
-export function ModelRow({ row, onOpen }: { row: ModelEntry; onOpen: (row: ModelEntry) => void }) {
+export function ModelRow({
+  row,
+  onOpen,
+  onDelete,
+}: {
+  row: ModelEntry;
+  onOpen: (row: ModelEntry) => void;
+  /** Phone only: models the user brought in can be removed again. */
+  onDelete?: ((row: ModelEntry) => void) | undefined;
+}) {
   const t = useT();
   const nameId = useId();
   const reason = row.supported ? null : reasonLabel(row.unsupported_reason);
@@ -29,6 +38,11 @@ export function ModelRow({ row, onOpen }: { row: ModelEntry; onOpen: (row: Model
       <Button variant="primary" disabled={!row.supported} aria-describedby={nameId} onClick={() => onOpen(row)}>
         {t('models.open')}
       </Button>
+      {onDelete !== undefined && (
+        <Button aria-describedby={nameId} onClick={() => onDelete(row)}>
+          {t('models.delete')}
+        </Button>
+      )}
     </li>
   );
 }

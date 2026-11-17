@@ -48,3 +48,10 @@ test('navigate sets the hash and the route at once, and never writes a token', (
   expect(uiStore.getState().route).toBe('explore');
   expect(window.location.hash).not.toContain('token');
 });
+
+test('the phone app has no behaviour search and no save screen', () => {
+  expect(parseHash('#/save', true)).toBe('home');
+  expect(parseHash('#/concept', true)).toBe('home');
+  expect(parseHash('#/compare', true)).toBe('compare');
+  expect(parseHash('#/save', false)).toBe('save');
+});

@@ -8,7 +8,9 @@ import { ErrorCard } from '@/ui/ErrorCard';
 import { useInsight } from './useInsight';
 
 const pct = (p: number): string => `${Math.round(p * 100)}`;
-export const shownToken = (text: string): string => (text.trim() === '' ? '␣' : text);
+/** A token as one line of text: blank -> ␣, line breaks -> ↵ (a raw newline would stretch the row), tabs -> ⇥. */
+export const shownToken = (text: string): string =>
+  text.trim() === '' ? '␣' : text.replace(/\r?\n/g, '↵').replace(/\t/g, '⇥');
 
 /**
  * Logit lens: after every layer the residual stream is read out through the final norm and the unembedding, so
@@ -21,6 +23,10 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
   const state = useInsight<LensResponse>(open, `${prompt}\u0000${position}`, () => getApi().lens({ prompt, position }));
   const data = state.status === 'ready' ? state.data : null;
   const firstHit = data === null ? -1 : data.layers.findIndex((row) => row.rank_final === 0);
+  // the rival: the strongest guess after the last layer that is not the answer (orange next to the answer's green)
+  const rival = data === null ? undefined : data.layers.at(-1)?.top.find((tok) => tok.token_id !== data.final.token_id);
+  const kind = (id: number, j: number): string =>
+    data !== null && id === data.final.token_id ? 'is-final' : id === rival?.token_id ? 'is-rival' : j === 0 ? 'is-top' : '';
 
   return (
     <section className="insight-panel" aria-labelledby={titleId}>
@@ -54,18 +60,18 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
                   <tr key={row.layer} className={i === firstHit ? 'lens-hit' : undefined}>
                     <th scope="row">{layerPoint(i)}</th>
                     <td className="lens-top">
-                      {/* the ladder: the three guesses side by side, each as wide as its share; the final answer in teal */}
+                      {/* the ladder: the three guesses side by side, each as wide as its share; the final answer green, its rival orange */}
                       <span className="lens-stack" aria-hidden="true">
                         {row.top.slice(0, 3).map((tok, j) => (
                           <i
                             key={tok.token_id}
-                            className={tok.token_id === data.final.token_id ? 'is-final' : j === 0 ? 'is-top' : undefined}
+                            className={kind(tok.token_id, j) || undefined}
                             style={{ width: `${Math.max(0, tok.p * 100)}%` }}
                           />
                         ))}
                       </span>
-                      {row.top.slice(0, 3).map((tok) => (
-                        <span key={tok.token_id} className={tok.token_id === data.final.token_id ? 'lens-token is-final' : 'lens-token'}>
+                      {row.top.slice(0, 3).map((tok, j) => (
+                        <span key={tok.token_id} className={`lens-token ${kind(tok.token_id, j)}`.trim()}>
                           <code>{shownToken(tok.text)}</code> <span className="num">%{pct(tok.p)}</span>
                         </span>
                       ))}
@@ -81,6 +87,19 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
               </tbody>
             </table>
           </div>
+          <ul className="lens-key">
+            <li>
+              <i className="is-final" aria-hidden="true" /> {t('lens.key.final', { answer: shownToken(data.final.text) })}
+            </li>
+            {rival !== undefined && (
+              <li>
+                <i className="is-rival" aria-hidden="true" /> {t('lens.key.rival', { token: shownToken(rival.text) })}
+              </li>
+            )}
+            <li>
+              <i aria-hidden="true" /> {t('lens.key.other')}
+            </li>
+          </ul>
         </>
       )}
     </section>

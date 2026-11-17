@@ -351,8 +351,7 @@ export function GraphPanel({
                 </>
               ) : (
                 <>
-                  <span className="sw sw-inc" /> {t('graph.legend.inc')} <span className="sw sw-dec" /> {t('graph.legend.dec')}{' '}
-                  <span className="sw sw-cut" /> {t('graph.legend.cut')} <span className="sw sw-basket" /> {t('graph.legend.basket')} ·{' '}
+                  <span className="sw sw-inc" /> {t('graph.legend.inc')} <span className="sw sw-cut" /> {t('graph.legend.cut')} <span className="sw sw-basket" /> {t('graph.legend.basket')} ·{' '}
                   {t('graph.legend.trunk')}
                 </>
               )}

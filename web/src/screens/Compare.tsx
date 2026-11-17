@@ -14,6 +14,7 @@ import { PairView } from '@/features/compare/PairView';
 import { RefreshedBanner } from '@/features/compare/RefreshedBanner';
 import { StatCards } from '@/features/compare/StatCards';
 import { SuiteRunner } from '@/features/compare/SuiteRunner';
+import { isDeviceApp } from '@/api/device/bridge';
 import { SuiteTable } from '@/features/compare/SuiteTable';
 import { SummaryBanner } from '@/features/compare/SummaryBanner';
 import { SaveFlowDialogs } from '@/features/saveflow/SaveFlowDialogs';
@@ -73,7 +74,7 @@ export function Compare() {
         </div>
       )}
       <PairView ops={ops as JsonOp[]} conceptId={conceptId} disabled={empty || locked} />
-      <SuiteRunner ops={ops} target={suiteTarget} disabled={empty || locked} />
+      {!isDeviceApp() && <SuiteRunner ops={ops} target={suiteTarget} disabled={empty || locked} />}
       {stale && (
         <p className="stale-banner" role="status">
           {t('compare.stale')}

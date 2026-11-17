@@ -9,6 +9,7 @@ import { useJob } from '@/api/useJob';
 import { loadPrefs, savePrefs } from '@/app/prefs';
 import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { sessionStore } from '@/core/stores/session';
+import { uiStore } from '@/core/stores/ui';
 import { BasketPanel } from '@/features/basket/BasketPanel';
 import { ExampleEditor, MIN_EXAMPLES, parseLines } from '@/features/concept/ExampleEditor';
 import { FoundDirection } from '@/features/concept/FoundDirection';
@@ -16,7 +17,7 @@ import { FoundHeads } from '@/features/concept/FoundHeads';
 import { LayerChart, ValidationLine } from '@/features/concept/LayerChart';
 import { MethodPicker, type HuntMethod } from '@/features/concept/MethodPicker';
 import { SweepField } from '@/features/concept/SweepField';
-import { CUSTOM, PresetChips } from '@/features/concept/PresetChips';
+import { CUSTOM, PresetChips, conceptExamples } from '@/features/concept/PresetChips';
 import { RefusalCard } from '@/features/concept/RefusalCard';
 import { slugify } from '@/features/concept/slug';
 import { useT } from '@/i18n';
@@ -50,6 +51,7 @@ export function Concept() {
   const t = useT();
   const model = useStore(sessionStore, (s) => s.model);
   const locked = useStore(jobsStore, isLocked);
+  const lang = useStore(uiStore, (s) => s.lang);
   const { job, start, cancel, reset } = useJob<HuntResult>();
 
   const [concepts, setConcepts] = useState<ConceptInfo[] | null>(null);
@@ -81,8 +83,9 @@ export function Concept() {
   const selected = picked ?? concepts?.find((concept) => concept.id === 'code')?.id ?? concepts?.[0]?.id ?? CUSTOM;
   const preset = concepts?.find((concept) => concept.id === selected) ?? null;
   const isCustom = preset === null;
-  const positive = isCustom ? customPositive : (preset?.positive ?? []).join('\n');
-  const negative = isCustom ? customNegative : (preset?.negative ?? []).join('\n');
+  const examples = preset === null ? null : conceptExamples(preset, lang);
+  const positive = examples === null ? customPositive : examples.positive.join('\n');
+  const negative = examples === null ? customNegative : examples.negative.join('\n');
   const enough = parseLines(positive).length >= MIN_EXAMPLES && parseLines(negative).length >= MIN_EXAMPLES;
   const running = job !== null && !isTerminal(job);
   const showRefusalCard = preset?.safety_ablation === true && cardSeen === false;
@@ -98,7 +101,8 @@ export function Concept() {
   const buildRequest = (): { body: HuntRequest; conceptId: string } => {
     if (preset !== null) {
       const extra = method === 'direction' && sweeps > 1 ? { sweeps } : {};
-      return { body: { concept_id: preset.id, method, ...extra }, conceptId: preset.safety_ablation ? 'refusal' : preset.id };
+      const language = examples?.lang === 'en' ? { lang: 'en' as const } : {};
+      return { body: { concept_id: preset.id, method, ...language, ...extra }, conceptId: preset.safety_ablation ? 'refusal' : preset.id };
     }
     const id = customId(name, concepts ?? []);
     const label = name.trim() === '' ? id : name.trim();

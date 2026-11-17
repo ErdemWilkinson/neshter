@@ -3,6 +3,7 @@ import { useStore } from 'zustand';
 import type { Route } from '@/core/stores/ui';
 import { uiStore } from '@/core/stores/ui';
 import { useT, type MessageKey } from '@/i18n';
+import { isDeviceApp } from '@/api/device/bridge';
 
 export const STEP_LABELS: Record<Route, MessageKey> = {
   home: 'app.step.home',
@@ -11,10 +12,14 @@ export const STEP_LABELS: Record<Route, MessageKey> = {
   explore: 'app.step.explore',
   compare: 'app.step.compare',
   save: 'app.step.save',
+  chat: 'app.step.chat',
 };
 
 // Model -> (Davranışı bul | Ağ haritası) -> Karşılaştır -> Kaydet: the middle step has two entrances.
 const STEPS: readonly (readonly Route[])[] = [['models'], ['concept', 'explore'], ['compare'], ['save']];
+
+// The phone keeps the steps that run on the device: no behaviour search (gradients), no saved model files.
+const PHONE_STEPS: readonly (readonly Route[])[] = [['models'], ['chat', 'explore'], ['compare']];
 
 export function Stepper() {
   const t = useT();
@@ -23,7 +28,7 @@ export function Stepper() {
   return (
     <nav className="stepper" aria-label={t('app.stepper.label')}>
       <ol>
-        {STEPS.map((entrances) => (
+        {(isDeviceApp() ? PHONE_STEPS : STEPS).map((entrances) => (
           <li key={entrances.join('|')} className={entrances.includes(route) ? 'is-current' : undefined}>
             {entrances.map((entrance, i) => (
               <Fragment key={entrance}>

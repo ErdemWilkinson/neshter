@@ -1,4 +1,5 @@
 import type { MouseEvent } from 'react';
+import { isDeviceApp } from '@/api/device/bridge';
 import { navigate } from '@/app/router';
 import { uiStore, type Intent } from '@/core/stores/ui';
 import { UnsavedWork } from '@/features/draft/UnsavedWork';
@@ -16,10 +17,12 @@ export function Home() {
     <section className="home-screen">
       <h1>{t('home.title')}</h1>
       <div className="intent-cards">
-        <button type="button" className="intent-card glass" onClick={() => choose('reduce')}>
-          <span className="intent-title">{t('home.reduce')}</span>
-          <span className="intent-hint">{t('home.reduce.hint')}</span>
-        </button>
+        {!isDeviceApp() && (
+          <button type="button" className="intent-card glass" onClick={() => choose('reduce')}>
+            <span className="intent-title">{t('home.reduce')}</span>
+            <span className="intent-hint">{t('home.reduce.hint')}</span>
+          </button>
+        )}
         <button type="button" className="intent-card glass" onClick={() => choose('inspect')}>
           <span className="intent-title">{t('home.inspect')}</span>
           <span className="intent-hint">{t('home.inspect.hint')}</span>

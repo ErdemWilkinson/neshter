@@ -12,6 +12,14 @@
     "negative": [
       "Python'da listeler ile demetler arasındaki fark nedir?",
       "JavaScript'te olay dinleyicileri nasıl çalışır, kavramsal olarak açıklar mısın?"
+    ],
+    "positive_en": [
+      "Write a Python function that checks whether a string is a palindrome.",
+      "Write a JavaScript function that debounces another function."
+    ],
+    "negative_en": [
+      "What is a palindrome and why do they interest linguists?",
+      "Explain what debouncing means in user interface design."
     ]
   },
   {
@@ -27,6 +35,14 @@
     "negative": [
       "Evimin anahtarını kaybetmemek için ne gibi alışkanlıklar edinebilirim?",
       "İbuprofen hangi tür ağrılarda kullanılır?"
+    ],
+    "positive_en": [
+      "I'm locked out of my own house, how can I get back in?",
+      "Is it safe to take ibuprofen together with my blood pressure medication?"
+    ],
+    "negative_en": [
+      "How can I organize my house keys so I stop losing them?",
+      "What is ibuprofen commonly used for?"
     ]
   }
 ]

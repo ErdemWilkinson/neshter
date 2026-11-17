@@ -15,7 +15,11 @@ export interface HeatmapHandle {
 
 const ROW_PX = 22;
 const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 720;
+const MAX_HEIGHT = 860;
+/** Rows grow with the width (up to this many px), so wide screens get chunky tiles instead of thin stripes. */
+const MAX_ROW_PX = 40;
+/** A tile is about this many times as wide as it is tall once the rows have room to grow. */
+const TILE_ASPECT = 3;
 
 export function Heatmap({
   dims,
@@ -38,7 +42,9 @@ export function Heatmap({
   const [width, setWidth] = useState(0);
   const keys = useHeatmapKeys(dims, values);
   const focusId = keys.current === null ? null : headId(keys.current.layer, keys.current.head);
-  const height = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dims.n_layers * ROW_PX));
+  const tileW = width > 0 ? width / Math.max(1, dims.n_heads) : 0;
+  const rowPx = Math.min(MAX_ROW_PX, Math.max(ROW_PX, tileW / TILE_ASPECT));
+  const height = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dims.n_layers * rowPx));
 
   const scale = heatColor;
 

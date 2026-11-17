@@ -1,5 +1,5 @@
 import type { GraphEdge } from '@/api/schemas';
-import { heatColor, parseHex, rgbCss, type Rgb } from '@/features/map/colorScale';
+import { heatColor, rgbCss } from '@/features/map/colorScale';
 import { clamp01, easeOut, project, type Camera, type Viewport } from './camera';
 import { CURVE_STEPS, headX, layerZ, COL, ROW, type Grid, type PlacedNode, type Vec3 } from './layout';
 
@@ -20,23 +20,32 @@ export interface FlowPalette {
   cut: string;
   basket: string;
   focus: string;
+  /** The bright dots of light travelling along the rivers. */
+  light: string;
+  /** Rings around selected heads (red, as on the dotted map). */
+  select: string;
   mono: string;
 }
+
+const NEON = { river: '#2ee6c5', light: '#c8fff5', cut: '#ff7a45' } as const;
 
 /** The app's look tokens; fallbacks are the dark values in tokens.css (jsdom has no stylesheet). */
 export function readFlowPalette(): FlowPalette {
   const style = typeof document === 'undefined' ? null : getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) => style?.getPropertyValue(name).trim() || fallback;
   return {
-    bg: v('--surface-0', '#0b0e13'),
-    line: v('--border', '#222a38'),
+    bg: v('--surface-0', '#0b0a14'),
+    line: v('--border', '#272545'),
     text1: v('--text-1', '#e6eaf2'),
     text2: v('--text-2', '#a7b0c0'),
-    inc: v('--accent-increase', '#2ee6c5'),
-    dec: v('--accent-decrease', '#9fc3ff'),
-    cut: v('--badge-explore', '#ffd27a'),
+    // the scene keeps its own neon look (the one picked in the design catalog): teal rivers, pale lights, orange cuts
+    inc: NEON.river,
+    dec: v('--accent-decrease', '#a38cff'),
+    cut: NEON.cut,
     basket: v('--accent-basket', '#ff7a45'),
-    focus: v('--focus-ring', '#9fc3ff'),
+    focus: v('--focus-ring', '#fde725'),
+    light: NEON.light,
+    select: v('--select-ring', '#ff3b30'),
     mono: v('--font-mono', 'ui-monospace, monospace'),
   };
 }
@@ -106,19 +115,10 @@ function cross(ctx: CanvasRenderingContext2D, x: number, y: number, d: number, c
   ctx.stroke();
 }
 
-/** Mixes a `#rrggbb` toward white; other colour strings pass through. */
-function lighten(color: string, amount: number): string {
-  const rgb = parseHex(color);
-  if (rgb === null) return color;
-  return rgbCss(rgb.map((c) => Math.round(c + (255 - c) * amount)) as Rgb);
-}
-
-/** Draws one frame and returns what can be hit at the positions just drawn. */
-/** Points on a floor dot's outline (it is projected point by point, so it foreshortens like the floor). */
-const DOT_STEPS = 28;
 /** The soft neon glow on rivers, their lights, head rings and the answer, in px of blur; kept low on purpose. */
 const GLOW = { river: 4, light: 5, ring: 3, answer: 6 } as const;
 
+/** Draws one frame and returns what can be hit at the positions just drawn. */
 export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: FrameState): Hits {
   const { grid, nodes } = scene;
   const { palette: pal, mix, t } = f;
@@ -129,7 +129,6 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
   const ringA = easeOut((mix - 0.2) / 0.5);
   const hits: Hits = { cells: [], nodes: [], edges: [] };
   const color = heatColor;
-  const graphHeads = new Set(nodes.filter((n) => n.kind === 'head').map((n) => n.id));
   const px = P([0, 0, 0])[2] * Math.min(1.4, Math.max(0.55, (P([COL, 0, 0])[0] - P([0, 0, 0])[0]) / 60));
 
   ctx.fillStyle = pal.bg;
@@ -146,10 +145,11 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     const a = P([-half, 0, z]);
     const b = P([half, 0, z]);
     if (flowA > 0) {
-      const w = scene.trunk[Math.min(l + 1, scene.trunk.length - 1)] ?? 0;
-      ctx.globalAlpha = flowA * (0.35 + 0.65 * w);
-      ctx.strokeStyle = w > 0.05 ? pal.inc : pal.line;
-      ctx.lineWidth = w > 0.05 ? 0.6 + w : 1;
+      // fine floor lines, brighter toward the answer
+      const depth = (l + 1) / Math.max(1, grid.nLayers);
+      ctx.globalAlpha = flowA * (0.12 + 0.3 * depth);
+      ctx.strokeStyle = depth > 0.3 ? pal.inc : pal.line;
+      ctx.lineWidth = 0.5 + depth * 0.6;
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]);
       ctx.lineTo(b[0], b[1]);
@@ -176,55 +176,52 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     ctx.globalAlpha = 1;
   }
 
-  // heatmap cells: heads that are in the graph shrink into their ring, the others sink into the floor
+  // the floor is the dotted map: one small dot per head, larger and brighter the stronger it is. A head in the
+  // graph pulls its dot into its ring as the scene tilts; the others stay on the floor under the rivers.
+  const graphHeads = new Set(nodes.filter((n) => n.kind === 'head').map((n) => n.id));
+  const o = P([0, 0, 0]);
+  const unit = P([COL, 0, 0]);
+  const rmax = 0.46 * Math.hypot(unit[0] - o[0], unit[1] - o[1]) * Math.min(1, ROW / COL);
+  const squash = Math.max(0.35, Math.sin(f.cam.pitch));
   for (let l = 0; l < grid.nLayers; l++) {
     for (let h = 0; h < grid.nHeads; h++) {
       const id = `h:${l}:${h}`;
-      const inGraph = graphHeads.has(id);
-      const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.4 * easeOut(mix);
-      // the heads off the graph stay on the floor, faint, so the heatmap still reads under the rivers
-      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : Math.max(heatA, 0.22);
-      if (alpha <= 0) continue;
       const x = headX(h, grid.nHeads);
       const z = layerZ(l, grid.nLayers);
-      const cw = COL * 0.88 * shrink;
-      const cd = ROW * 0.84 * shrink;
       const corners = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([i, j]): [number, number] => {
-        const p = P([x + (i * cw) / 2, 0, z + (j * cd) / 2]);
+        const p = P([x + (i * COL * 0.88) / 2, 0, z + (j * ROW * 0.84) / 2]);
         return [p[0], p[1]];
       });
-      // the floor is the dotted map: a dot as large as the head is strong, drawn on the floor so it tilts with it
+      if (mix < 0.5) hits.cells.push({ id, corners });
+      const inGraph = graphHeads.has(id);
+      const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.3 * easeOut(mix);
+      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : Math.max(heatA, 0.7);
+      if (alpha <= 0) continue;
       const inBasket = f.basket.has(id);
       const v = clamp01(scene.heat?.[l]?.[h] ?? 0);
-      const full = Math.min(cw, cd) / 2;
-      const dot = (radius: number) => {
-        ctx.beginPath();
-        for (let k = 0; k <= DOT_STEPS; k++) {
-          const a = (k / DOT_STEPS) * Math.PI * 2;
-          const p = P([x + Math.cos(a) * radius, 0, z + Math.sin(a) * radius]);
-          if (k === 0) ctx.moveTo(p[0], p[1]);
-          else ctx.lineTo(p[0], p[1]);
-        }
-        ctx.closePath();
-      };
-      ctx.globalAlpha = alpha * (inBasket ? 0.45 : 1);
-      dot(full * (0.28 + 0.72 * Math.sqrt(v)));
-      ctx.fillStyle = rgbCss(color(v));
+      const c = P([x, 0, z]);
+      const rx = Math.max(1, rmax * (0.3 + 0.7 * Math.sqrt(v)) * shrink);
+      ctx.globalAlpha = alpha * (0.65 + 0.35 * v) * (inBasket ? 0.45 : 1);
+      ctx.fillStyle = rgbCss(color(0.18 + 0.82 * v)); // the darkest violet would vanish on the dark floor
+      ctx.beginPath();
+      ctx.ellipse(c[0], c[1], rx, rx * squash, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = alpha;
       if (f.chosen.has(id) || f.focus.has(id)) {
-        dot(full);
-        ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.focus;
+        ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.select;
         ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(c[0], c[1], rmax + 1.5, (rmax + 1.5) * squash, 0, 0, Math.PI * 2);
         ctx.stroke();
       }
+      const cw = COL * 0.88;
+      const cd = ROW * 0.84;
       if (inBasket) {
         const c = P([x, 0, z]);
         const k = f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35);
         cross(ctx, c[0], c[1], Math.min(cw, cd) * 0.22 * fitPx(f) * k, pal.basket, 2);
       }
       ctx.globalAlpha = 1;
-      if (mix < 0.5) hits.cells.push({ id, corners });
     }
   }
 
@@ -235,7 +232,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       if (grow <= 0) continue;
       const ps = e.pts.map(P);
       const k = ((ps[0]?.[2] ?? 1) + (ps[CURVE_STEPS]?.[2] ?? 1)) / 2;
-      const col = e.weight >= 0 ? pal.inc : pal.dec;
+      const col = pal.inc;
       const live = (f.widths.get(e.id) ?? Math.abs(e.weight)) / scene.maxWeight;
       const w = (1.1 + 7 * live) * k * px;
       if (mix >= 0.95) hits.edges.push({ id: e.id, pts: ps.map((p) => [p[0], p[1]]), w });
@@ -251,7 +248,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
         polyline(ctx, shown);
         ctx.stroke();
       }
-      ctx.globalAlpha = flowA * (0.35 + 0.65 * Math.min(1, live * 2.2));
+      ctx.globalAlpha = flowA * (0.3 + 0.55 * Math.min(1, live * 2.2));
       ctx.strokeStyle = col;
       ctx.lineWidth = w;
       ctx.shadowColor = col;
@@ -261,7 +258,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       // light travelling along the river; count and speed follow what still flows
       if (!f.reduced && grow >= 1 && live > 0.04) {
         ctx.globalAlpha = flowA;
-        ctx.fillStyle = lighten(col, 0.7);
+        ctx.fillStyle = pal.light;
         ctx.shadowBlur = GLOW.light;
         const n = Math.round(1 + live * 5);
         const seed = e.id.length * 0.37 + (e.id.charCodeAt(e.id.length - 1) % 10) * 0.11;
@@ -297,9 +294,9 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       else {
         const lit = f.focus.has(n.id);
         ctx.fillStyle = pal.bg;
-        ctx.strokeStyle = lit ? pal.text1 : f.chosen.has(n.id) ? pal.focus : pal.inc;
+        ctx.strokeStyle = lit ? pal.text1 : f.chosen.has(n.id) ? pal.select : pal.inc;
         ctx.lineWidth = lit ? 2.6 : 2.2;
-        ctx.shadowColor = lit ? pal.text1 : f.chosen.has(n.id) ? pal.focus : pal.inc;
+        ctx.shadowColor = lit ? pal.text1 : f.chosen.has(n.id) ? pal.select : pal.inc;
         ctx.shadowBlur = GLOW.ring;
         ctx.beginPath();
         ctx.arc(p[0], p[1], lit ? r + 1 : r, 0, Math.PI * 2);
@@ -318,7 +315,8 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     if (mix >= 0.95 && n.kind !== 'token') hits.nodes.push({ id: n.id, x: p[0], y: p[1], r: Math.max(9, 8 * k) });
     ctx.globalAlpha = nodeA;
     if (n.kind === 'neuron') {
-      const d = 4.5 * k;
+      const d = 3.5 * k;
+      ctx.globalAlpha = nodeA * 0.7;
       ctx.fillStyle = pal.bg;
       ctx.strokeStyle = f.focus.has(n.id) ? pal.text1 : pal.text2;
       ctx.lineWidth = 2;

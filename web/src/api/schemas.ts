@@ -68,6 +68,9 @@ export const concept = z.looseObject({
   suite_target: z.string().nullable(),
   positive: z.array(z.string()),
   negative: z.array(z.string()),
+  /** English-only examples for the English interface (presets only; older servers leave them out). */
+  positive_en: z.array(z.string()).nullish(),
+  negative_en: z.array(z.string()).nullish(),
 });
 export const concepts = z.array(concept);
 
@@ -216,6 +219,16 @@ export const effectResult = z.looseObject({
   layer_matched: z.boolean(),
   seed: z.number(),
   session_measure_index: z.number(),
+  /** Only when the request carried `probe`: the model's answer to that text with and without the heads. */
+  probe: z
+    .looseObject({
+      answer: z.looseObject({ token_id: z.number(), text: z.string() }),
+      p_before: z.number(),
+      p_after: z.number(),
+      top_before: z.array(lensToken),
+      top_after: z.array(lensToken),
+    })
+    .optional(),
 });
 
 export const huntResult = z.looseObject({

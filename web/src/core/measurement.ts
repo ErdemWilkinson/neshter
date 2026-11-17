@@ -15,6 +15,14 @@ export interface ControlStats {
   percentile: number | null;
 }
 
+export interface Probe {
+  answer: { token_id: number; text: string };
+  p_before: number;
+  p_after: number;
+  top_before: { token_id: number; text: string; p: number }[];
+  top_after: { token_id: number; text: string; p: number }[];
+}
+
 export interface Measurement {
   kind: 'set_effect' | 'edge' | 'steer';
   value: number;
@@ -28,6 +36,8 @@ export interface Measurement {
   session_index: number;
   ops_fp: string;
   measured_at: string;
+  /** The Explore text answered with and without the heads; absent on older measurements. */
+  probe?: Probe | null;
 }
 
 export type Verdict = 'significant' | 'not_significant' | 'futility' | 'no_control';
@@ -63,6 +73,16 @@ export function fromEffectResult(res: EffectResult, opsFp: string, now: string):
     session_index: r.session_measure_index,
     ops_fp: opsFp,
     measured_at: now,
+    probe:
+      r.probe === undefined
+        ? null
+        : {
+            answer: { token_id: r.probe.answer.token_id, text: r.probe.answer.text },
+            p_before: r.probe.p_before,
+            p_after: r.probe.p_after,
+            top_before: r.probe.top_before.map(({ token_id, text, p }) => ({ token_id, text, p })),
+            top_after: r.probe.top_after.map(({ token_id, text, p }) => ({ token_id, text, p })),
+          },
   };
 }
 

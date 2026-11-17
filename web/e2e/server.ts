@@ -51,7 +51,7 @@ export async function startServer(opts: { workdir: string; port?: number; token?
   const token = opts.token ?? randomBytes(18).toString('base64url');
   const python = process.env['NESHTER_PYTHON'] ?? 'D:/neshter/venv/Scripts/python.exe';
   const child = spawn(python, [resolve(here, 'serve_e2e.py'), '--port', String(port), '--workdir', opts.workdir, `--token=${token}`], {
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8', CUDA_VISIBLE_DEVICES: '' },
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', CUDA_VISIBLE_DEVICES: '-1' }, // '-1', not '': an empty value does not hide the GPU here, and the e2e flows expect the CPU defaults
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
