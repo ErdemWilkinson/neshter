@@ -213,7 +213,7 @@ test('the layer-by-layer prediction opens on demand for the chosen token', async
     layers: [
       { layer: -1, top: [{ token_id: 3, text: ' x', p: 0.1 }], p_final: 0.01, rank_final: 40 },
       { layer: 0, top: [{ token_id: 5, text: ' dünya', p: 0.3 }], p_final: 0.3, rank_final: 0 },
-      { layer: 1, top: [{ token_id: 5, text: ' dünya', p: 0.6 }], p_final: 0.6, rank_final: 0 },
+      { layer: 1, top: [{ token_id: 5, text: ' dünya', p: 0.6 }, { token_id: 9, text: ' ev', p: 0.2 }], p_final: 0.6, rank_final: 0 },
     ],
   }));
   setApi({ ...api, lens } as unknown as Api);
@@ -230,6 +230,9 @@ test('the layer-by-layer prediction opens on demand for the chosen token', async
   expect(finals).toHaveLength(2);
   expect(finals[0]?.style.width).toBe('30%');
   expect(panel.querySelector('.lens-stack i:not(.is-final)')?.getAttribute('style')).toContain('10%');
+  // the rival: the strongest other guess after the last layer, orange, named in the key
+  expect(panel.querySelectorAll('.lens-stack i.is-rival')).toHaveLength(1);
+  expect(within(panel).getByText(/" ev" \(rakip/)).toBeInTheDocument();
 });
 
 test('the attention pattern starts from the focused head and shows where the token looks', async () => {

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build && node scripts/write-build-info.mjs && node scripts/check-dist.mjs",
+    "build:mobile": "tsc --noEmit -p tsconfig.json && vite build --mode mobile",
     "test": "vitest run",
     "lint": "eslint . && node scripts/check-i18n.mjs",
     "e2e": "playwright test"

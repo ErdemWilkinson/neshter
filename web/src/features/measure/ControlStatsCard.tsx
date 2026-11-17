@@ -1,5 +1,7 @@
 import type { Measurement } from '@/core/measurement';
 import { verdict } from '@/core/measurement';
+import { HundredDots } from '@/features/graph/HundredDots';
+import { shownToken } from '@/features/insight/LensPanel';
 import { useT } from '@/i18n';
 import { TechDetail } from '@/ui/TechDetail';
 import { formatStat } from './format';
@@ -8,7 +10,7 @@ import { formatStat } from './format';
  * Spec §3: a plain-language verdict first (from the same random-control data), then the KL of the cut next to what
  * random head sets from the same layers do (never a bare number) as smaller, secondary detail.
  */
-export function ControlStatsCard({ m }: { m: Measurement }) {
+export function ControlStatsCard({ m, cuts = [] }: { m: Measurement; cuts?: readonly string[] }) {
   const t = useT();
   const c = m.control;
   const kind = verdict(m);
@@ -24,6 +26,20 @@ export function ControlStatsCard({ m }: { m: Measurement }) {
         <h3>{t('measure.title')}</h3>
         <span className="badge badge-measured">{t('measure.badge')}</span>
       </div>
+      {m.probe != null && (
+        <HundredDots
+          before={m.probe.p_before}
+          after={m.probe.p_after}
+          sentence={t('measure.probe', {
+            answer: shownToken(m.probe.answer.text),
+            before: Math.round(m.probe.p_before * 100),
+            after: Math.round(m.probe.p_after * 100),
+          })}
+          cuts={cuts}
+          guess={shownToken(m.probe.top_after[0]?.text ?? '')}
+          changed={(m.probe.top_after[0]?.token_id ?? m.probe.answer.token_id) !== m.probe.answer.token_id}
+        />
+      )}
       <p className={`control-summary control-summary-${kind === 'significant' ? 'yes' : 'no'}`}>{summary}</p>
       <div className="control-detail">
         <p className="num">

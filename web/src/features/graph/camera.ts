@@ -48,6 +48,11 @@ export function project(cam: Camera, vp: Viewport, [x, y, z]: Vec3): [number, nu
 
 export const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 export const easeOut = (x: number): number => 1 - (1 - clamp01(x)) ** 3;
+/**
+ * How far the camera is tilted away from straight above, 0..1: 0 at the top view (the dotted map), 1 from a tilt of
+ * about 55° on. The connection graph fades up with it, so dragging back to the top always shows the map again.
+ */
+export const tiltMix = (pitch: number): number => clamp01((1.45 - pitch) / 0.5);
 
 /** One frame of the critically-damped-ish approach used for every animated number in the scene. */
 export const approach = (from: number, to: number, rate: number): number => {

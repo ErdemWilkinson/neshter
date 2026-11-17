@@ -12,6 +12,7 @@ import { measureStore } from '@/core/stores/measure';
 import { selectionStore } from '@/core/stores/selection';
 import { sessionStore } from '@/core/stores/session';
 import { headId } from '@/core/ids';
+import { exploreStore } from '@/features/map/exploreStore';
 import { futilityEffect, notSignificantEffect, significantEffect } from '@/core/__tests__/fixtures/futilityEffect';
 import { Header } from '@/app/Header';
 import { CutButton } from '@/features/basket/CutButton';
@@ -65,6 +66,7 @@ afterEach(() => {
   selectionStore.setState({ selected: new Set(), focus: null });
   sessionStore.setState({ model: null, busy: false });
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });
+  exploreStore.getState().reset();
 });
 
 test('exact cut copy', () => {
@@ -227,4 +229,32 @@ test('the same head is not added twice', async () => {
   await user.click(screen.getByRole('button', { name: /Kes \(geçici\)/ }));
   await user.click(screen.getByRole('button', { name: /Kes \(geçici\)/ }));
   expect(basketStore.getState().items).toHaveLength(1);
+});
+
+test('measure also asks about the Explore text, and the card shows the hundred dots for it', async () => {
+  const user = userEvent.setup();
+  const probe = {
+    answer: { token_id: 5, text: ' dünya' },
+    p_before: 0.41,
+    p_after: 0.2,
+    top_before: [{ token_id: 5, text: ' dünya', p: 0.41 }],
+    top_after: [{ token_id: 7, text: ' ev', p: 0.3 }],
+  };
+  const api = fakeApi({ ...notSignificantEffect, probe });
+  act(() => exploreStore.getState().setResult({ prompt: 'merhaba dün', tokens: ['merhaba', ' dün'], powerRaw: [] }));
+  render(<SelectionPanel values={null} />);
+  select([3, 5]);
+  await user.click(screen.getByRole('button', { name: 'Gerçek etkiyi ölç' }));
+  await waitFor(() => expect(api.effect).toHaveBeenCalledWith(expect.objectContaining({ probe: 'merhaba dün' })));
+  const card = (await screen.findByText('ölçülen')).closest('.control-card') as HTMLElement;
+  expect(card.querySelectorAll('.hundred-grid .hundred-dot')).toHaveLength(100);
+  expect(card.querySelectorAll('.hundred-grid .is-lost')).toHaveLength(21);
+  expect(within(card).getByText(/" dünya" olasılığı, bu head'ler kapalıyken: %41 → %20/)).toBeInTheDocument();
+  expect(within(card).getByText('K3·H5')).toBeInTheDocument();
+  expect(within(card).getByText('· değişti')).toBeInTheDocument();
+});
+
+test('a measurement without a probe shows no hundred dots', () => {
+  const { container } = render(<ControlStatsCard m={measurementFor(significantEffect)} />);
+  expect(container.querySelector('.hundred')).toBeNull();
 });

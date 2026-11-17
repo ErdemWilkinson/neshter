@@ -48,3 +48,15 @@ test('fromEffectResult refuses a payload that is not an effect result (job resul
   expect(() => fromEffectResult({ kl: 'x' } as never, 'fp', NOW)).toThrow();
   expect(() => fromEffectResult({ ...futilityEffect, p_kind: 'exact' } as never, 'fp', NOW)).toThrow();
 });
+
+test('fromEffectResult keeps the probe answer, and an effect without one has none', () => {
+  const probe = {
+    answer: { token_id: 5, text: ' dünya' },
+    p_before: 0.41,
+    p_after: 0.2,
+    top_before: [{ token_id: 5, text: ' dünya', p: 0.41 }],
+    top_after: [{ token_id: 7, text: ' ev', p: 0.3 }],
+  };
+  expect(fromEffectResult({ ...notSignificantEffect, probe }, 'fp', NOW).probe).toEqual(probe);
+  expect(fromEffectResult(notSignificantEffect, 'fp', NOW).probe).toBeNull();
+});

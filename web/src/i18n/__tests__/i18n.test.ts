@@ -10,7 +10,7 @@ test('t interpolates and formats numbers per language', () => {
   expect(t('header.model', { name: 'qwen {x}', dtype: 'float32', device: 'cpu' })).toBe('qwen {x} · float32 · cpu');
   setLang('en');
   expect(t('header.vram', { gb: 0.025 })).toBe('VRAM 0.025 GB');
-  expect(t('header.close')).toBe('Quit Neşter');
+  expect(t('header.close')).toBe('Quit Neshter');
 });
 
 test('a placeholder without a parameter stays visible instead of vanishing', () => {

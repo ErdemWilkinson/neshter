@@ -54,7 +54,7 @@ export function SelectionPanel({ values }: { values: number[][] | null }) {
       <p>{t('measure.zero')}</p>
       <TechDetail>{t('measure.zero.tech')}</TechDetail>
       <MeasureButton ops={ops} />
-      {measurement !== undefined && <ControlStatsCard m={measurement} />}
+      {measurement !== undefined && <ControlStatsCard m={measurement} cuts={ops.map((op) => `K${op.layer}·H${op.head}`)} />}
       <CutButton selection={ops} />
     </section>
   );

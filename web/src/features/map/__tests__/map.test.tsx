@@ -6,7 +6,7 @@ import { setLang } from '@/i18n';
 import { LiveRegion } from '@/ui/LiveRegion';
 import { makeCellLayout, hitTest } from '../cellLayout';
 import { heatColor, makeColorScale } from '../colorScale';
-import { dotRadius, drawHeatmap } from '../drawHeatmap';
+import { drawHeatmap, TILE_GAP } from '../drawHeatmap';
 import { Heatmap } from '../Heatmap';
 import { HeatmapTable } from '../HeatmapTable';
 import { TokenStrip } from '../TokenStrip';
@@ -17,23 +17,19 @@ const zeros = (l: number, h: number) => Array.from({ length: l }, () => Array<nu
 const gray = (v: number): [number, number, number] => [v * 255, v * 255, v * 255];
 const scale = makeColorScale([0, 0, 0], [255, 255, 255]);
 
-/** A recording stand-in for a 2d context: jsdom has no canvas. A dot is an `arc` then `fill`; a ring `arc` then `stroke`. */
+/** A recording stand-in for a 2d context: jsdom has no canvas. Tiles are `fillRect`, outlines `strokeRect`. */
 function fakeCtx() {
-  const dots: { x: number; y: number; r: number; style: string }[] = [];
-  const strokes: { style: string; kind: 'ring' | 'rect'; args: number[] }[] = [];
-  let lastArc: number[] = [];
+  const tiles: { args: number[]; style: string }[] = [];
+  const strokes: { style: string; args: number[] }[] = [];
   const ctx = {
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    beginPath: () => undefined,
-    arc: (...args: number[]) => void (lastArc = args),
-    fill: () => void dots.push({ x: lastArc[0] ?? 0, y: lastArc[1] ?? 0, r: lastArc[2] ?? 0, style: ctx.fillStyle }),
-    stroke: () => void strokes.push({ style: ctx.strokeStyle, kind: 'ring', args: lastArc }),
-    strokeRect: (...args: number[]) => void strokes.push({ style: ctx.strokeStyle, kind: 'rect', args }),
+    fillRect: (...args: number[]) => void tiles.push({ args, style: ctx.fillStyle }),
+    strokeRect: (...args: number[]) => void strokes.push({ style: ctx.strokeStyle, args }),
     setTransform: () => undefined,
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, dots, strokes };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, tiles, strokes };
 }
 
 beforeEach(() => {
@@ -78,39 +74,27 @@ test('colour scale clamps and treats NaN as zero', () => {
   expect(scale(Number.NaN)).toEqual([0, 0, 0]);
 });
 
-test('drawHeatmap draws one dot per cell centre and rings selected and basket cells', () => {
+test('drawHeatmap draws one tile per cell and outlines selected and basket cells', () => {
   const values = zeros(3, 5);
   const layout = makeCellLayout({ n_layers: 3, n_heads: 5 }, rect(0, 0, 500, 300), values, scale);
-  const { ctx, dots, strokes } = fakeCtx();
+  const { ctx, tiles, strokes } = fakeCtx();
   drawHeatmap(ctx, layout, values, {
     selected: new Set([headId(0, 1)]),
     basket: new Set([headId(2, 4)]),
     focus: null,
   });
-  expect(dots).toHaveLength(15);
-  expect(dots[0]).toMatchObject({ x: 50, y: 50 }); // centre of cell (0,0)
-  expect(strokes.map((s) => [s.kind, s.style])).toEqual([
-    ['ring', '#9fc3ff'], // --focus-ring
-    ['ring', '#ff7a45'], // --accent-basket
+  expect(tiles).toHaveLength(15);
+  const g = TILE_GAP / 2;
+  expect(tiles[0]?.args).toEqual([g, g, 100 - TILE_GAP, 100 - TILE_GAP]); // cell (0,0), a hair smaller than its cell
+  expect(strokes.map((s) => s.style)).toEqual([
+    '#ff3b30', // --select-ring
+    '#ff7a45', // --accent-basket
   ]);
-  expect(strokes[0]?.args.slice(0, 2)).toEqual([150, 50]); // around cell (0,1)
-  expect(strokes[1]?.args.slice(0, 2)).toEqual([450, 250]); // around cell (2,4)
+  expect(strokes[0]?.args.slice(0, 2)).toEqual([101.5, 1.5]); // inside cell (0,1)
+  expect(strokes[1]?.args.slice(0, 2)).toEqual([401.5, 201.5]); // inside cell (2,4)
 });
 
-test('a dot grows with the head strength and stays visible at zero', () => {
-  const values = [[0, 0.25, 1]];
-  const layout = makeCellLayout({ n_layers: 1, n_heads: 3 }, rect(0, 0, 300, 100), values, scale);
-  const { ctx, dots } = fakeCtx();
-  drawHeatmap(ctx, layout, values, { selected: new Set(), basket: new Set(), focus: null });
-  const [zero, quarter, full] = dots.map((d) => d.r);
-  expect(zero).toBeGreaterThan(0);
-  expect(quarter).toBeGreaterThan(zero ?? 0);
-  expect(full).toBeGreaterThan(quarter ?? 0);
-  expect(full).toBeLessThan(50); // never wider than its cell
-  expect(dotRadius({ x: 0, y: 0, w: 100, h: 100 }, Number.NaN)).toBe(dotRadius({ x: 0, y: 0, w: 100, h: 100 }, 0));
-});
-
-test('a cell that is selected and in the basket gets both rings, the keyboard focus a square', () => {
+test('a cell that is selected and in the basket gets both outlines, the keyboard focus its edge', () => {
   const values = zeros(1, 2);
   const layout = makeCellLayout({ n_layers: 1, n_heads: 2 }, rect(0, 0, 100, 50), values, scale);
   const { ctx, strokes } = fakeCtx();
@@ -119,8 +103,9 @@ test('a cell that is selected and in the basket gets both rings, the keyboard fo
     basket: new Set([headId(0, 0)]),
     focus: headId(0, 0),
   });
-  expect(strokes.map((s) => s.kind)).toEqual(['ring', 'ring', 'rect']);
-  expect(strokes[1]?.args[2]).toBeGreaterThan(strokes[0]?.args[2] ?? Infinity); // basket ring outside the selection ring
+  expect(strokes).toHaveLength(3);
+  expect(strokes[1]?.args[0]).toBeGreaterThan(strokes[0]?.args[0] ?? Infinity); // basket outline inside the selection
+  expect(strokes[2]?.args.slice(0, 2)).toEqual([0, 0]); // the keyboard focus on the cell's edge
 });
 
 test('the heat colour runs along viridis, clamped', () => {
@@ -152,10 +137,7 @@ function renderHeatmap(values: number[][], basket: ReadonlySet<NodeId> = new Set
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    beginPath: () => undefined,
-    arc: () => undefined,
-    fill: () => void fills.push(1),
-    stroke: () => undefined,
+    fillRect: () => void fills.push(1),
     strokeRect: () => undefined,
     setTransform: () => void (fills.length = 0), // each draw starts with a transform: count the last draw only
   };
@@ -287,4 +269,4 @@ test('works for a 32x32 model', () => {
   cleanup();
   render(<HeatmapTable values={values} basket={new Set()} />);
   expect(document.querySelectorAll('tbody tr')).toHaveLength(1024);
-});
+}, 20_000); // 1024 table rows in jsdom: slow on a busy machine, not a hang

@@ -24,6 +24,7 @@ import { ScaleToggle } from '@/features/map/ScaleToggle';
 import { TokenStrip } from '@/features/map/TokenStrip';
 import { ViewSwitch, effectiveView } from '@/features/map/ViewSwitch';
 import { GraphPanel } from '@/features/graph/GraphPanel';
+import { isDeviceApp } from '@/api/device/bridge';
 import { AttentionPanel } from '@/features/insight/AttentionPanel';
 import { LensPanel, shownToken } from '@/features/insight/LensPanel';
 import { useT } from '@/i18n';
@@ -119,7 +120,7 @@ export function Explore() {
 
   const unitOptions: { value: Unit; label: string }[] = [
     { value: 'head', label: t('map.unit.head') },
-    { value: 'mlp', label: t('map.unit.mlp') },
+    ...(isDeviceApp() ? [] : [{ value: 'mlp' as const, label: t('map.unit.mlp') }]),
   ];
 
   return (
@@ -159,15 +160,17 @@ export function Explore() {
           <div className="explore-controls">
             <ViewSwitch />
             {(view === '2d' || view === 'list') && <ScaleToggle />}
-            <div className="control">
-              <span aria-hidden="true">{t('map.unit')}</span>
-              <Segmented
-                label={t('map.unit')}
-                options={unitOptions}
-                value={unit}
-                onChange={(next) => exploreStore.getState().setUnit(next)}
-              />
-            </div>
+            {unitOptions.length > 1 && ( // the phone has heads only: no choice to offer
+              <div className="control">
+                <span aria-hidden="true">{t('map.unit')}</span>
+                <Segmented
+                  label={t('map.unit')}
+                  options={unitOptions}
+                  value={unit}
+                  onChange={(next) => exploreStore.getState().setUnit(next)}
+                />
+              </div>
+            )}
           </div>
           <TokenStrip
             tokens={tokens}

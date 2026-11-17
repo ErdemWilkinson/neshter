@@ -1,16 +1,19 @@
 :root {
-  --surface-0: #0b0e13;
-  --surface-1: #121722;
-  --border: #222a38; /* decorative only */
-  --border-control: #5f6b7f; /* inputs/buttons, >= 3:1 on --surface-0 */
+  /* the theme is taken from the dots' viridis ramp: deep violet-navy ground, green/violet/yellow accents */
+  --surface-0: #0b0a14;
+  --surface-1: #14132a;
+  --border: #272545; /* decorative only */
+  --border-control: #66638a; /* inputs/buttons, >= 3:1 on --surface-0 */
   --text-1: #e6eaf2;
-  --text-2: #a7b0c0;
-  --accent-increase: #2ee6c5;
-  --accent-decrease: #9fc3ff;
+  --text-2: #aeabc6;
+  --accent-increase: #5ec962; /* viridis green */
+  --accent-decrease: #a38cff; /* the violet end of viridis, lifted for contrast */
   --accent-basket: #ff7a45; /* basket only */
-  --badge-explore: #ffd27a;
+  --badge-explore: #fde725; /* viridis yellow */
+  --rival: #ff8a4c; /* the answer's strongest rival (lens ladder) */
   --danger: #ff5a4f; /* what a cut took away (hundred dots) */
-  --focus-ring: #9fc3ff;
+  --focus-ring: #fde725;
+  --select-ring: #ff3b30; /* selected heads, on the map and in 3D */
 
   --font-heading: 'Bricolage Grotesque Variable', system-ui, sans-serif;
   --font-text: 'Instrument Sans Variable', system-ui, sans-serif;

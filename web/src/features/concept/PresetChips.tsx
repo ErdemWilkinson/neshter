@@ -8,6 +8,14 @@ export const CUSTOM = '+custom';
 
 export const conceptName = (concept: Concept, lang: Lang): string => (lang === 'en' ? concept.name_en : concept.name_tr);
 
+/** The examples to show: English-only ones in the English interface when the preset has them, else the mixed lists. */
+export function conceptExamples(concept: Concept, lang: Lang): { positive: string[]; negative: string[]; lang: Lang } {
+  if (lang === 'en' && concept.positive_en && concept.negative_en) {
+    return { positive: concept.positive_en, negative: concept.negative_en, lang: 'en' };
+  }
+  return { positive: concept.positive, negative: concept.negative, lang: 'tr' };
+}
+
 /**
  * The presets in the order the API gives them, then `+ Kendi kavramın`, as cards: the name, one of its example
  * sentences (what the concept looks like in text) and a mark on the safety one. Native radios underneath, so the
@@ -29,7 +37,7 @@ export function PresetChips({
     ...concepts.map((concept) => ({
       value: concept.id,
       label: conceptName(concept, lang),
-      example: concept.positive[0] ?? null,
+      example: conceptExamples(concept, lang).positive[0] ?? null,
       safety: concept.safety_ablation,
     })),
     { value: CUSTOM, label: t('concept.custom'), example: null, safety: false },

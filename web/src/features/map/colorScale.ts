@@ -27,9 +27,9 @@ function token(style: CSSStyleDeclaration | null, name: string, fallback: string
 export function readPalette(): Palette {
   const style = typeof document === 'undefined' ? null : getComputedStyle(document.documentElement);
   return {
-    low: parseHex(token(style, '--surface-1', '#121722')) ?? [18, 23, 34],
-    high: parseHex(token(style, '--accent-increase', '#2ee6c5')) ?? [46, 230, 197],
-    focusRing: token(style, '--focus-ring', '#9fc3ff'),
+    low: parseHex(token(style, '--surface-1', '#14132a')) ?? [20, 19, 42],
+    high: parseHex(token(style, '--accent-increase', '#5ec962')) ?? [94, 201, 98],
+    focusRing: token(style, '--select-ring', '#ff3b30'),
     basket: token(style, '--accent-basket', '#ff7a45'),
     focusMark: token(style, '--text-1', '#e6eaf2'),
   };

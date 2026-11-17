@@ -9,7 +9,7 @@ import { jobsStore } from '@/core/stores/jobs';
 import { selectionStore } from '@/core/stores/selection';
 import { setLang } from '@/i18n';
 import { forgetKeptGraph, GraphPanel } from '../GraphPanel';
-import { project, VIEWS } from '../camera';
+import { PITCH_MAX, project, tiltMix, VIEWS } from '../camera';
 import { hitTest } from '../drawFlow';
 import { dotKinds } from '../HundredDots';
 import { extent, incomingShare, liveWeights, placeNodes, trunkWidths, visibleEdges } from '../layout';
@@ -302,4 +302,13 @@ test('leaving the 3D view and coming back keeps the drawn graph and its cuts', a
   expect(screen.getByRole('button', { name: 'sahne e0 kesik' })).toBeInTheDocument();
   expect(screen.getByText(/%41 → %20/)).toBeInTheDocument();
   expect(server.calls.filter((c) => c.key === 'POST /api/graph')).toHaveLength(1);
+});
+
+test('the graph fades up with the tilt: straight above is the dotted map, a tilted view the full graph', () => {
+  expect(tiltMix(PITCH_MAX)).toBe(0);
+  expect(tiltMix(VIEWS.heat.pitch)).toBe(0);
+  expect(tiltMix(VIEWS.tilt.pitch)).toBe(1);
+  expect(tiltMix(VIEWS.low.pitch)).toBe(1);
+  expect(tiltMix(1.2)).toBeGreaterThan(0);
+  expect(tiltMix(1.2)).toBeLessThan(1);
 });
