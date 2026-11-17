@@ -25,6 +25,9 @@ object LlamaNative {
         handle: Long, prompt: IntArray, maxNew: Int, keep: FloatArray?, temperature: Float, seed: Int, sink: TextSink?,
     ): ByteArray
 
+    /** [n_tokens, position, final, k, then per row: k ids, k probs, p_final, rank]; empty when the model has no lens. */
+    external fun lens(handle: Long, tokens: IntArray, position: Int, k: Int): FloatArray
+
     /** [power, attn, logprobs]: power [L][H][T], attn [L][H][T][T], logprobs [rows][vocab]; null when not asked for. */
     external fun analyze(
         handle: Long, tokens: IntArray, keep: FloatArray?, power: Boolean, attn: Boolean, logprobRows: Int,

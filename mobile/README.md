@@ -13,7 +13,7 @@ The app runs two kinds of model:
 | --- | --- | --- |
 | Chat (multi-turn, the model's own chat template, streamed) | single turn | yes |
 | 2D heatmap, hot spots, list | yes | yes |
-| Prediction layer by layer (logit lens) | yes | not yet |
+| Prediction layer by layer (logit lens) | yes | yes |
 | Attention pattern | yes | yes |
 | Measure the real effect (random controls, sequential permutation, the hundred dots) | yes | yes |
 | Compare, and chat with the basket's head cuts | yes | yes |
@@ -46,7 +46,10 @@ It checks the following:
 - keeping every head changes nothing;
 - attention rows are causal distributions;
 - bigger cuts change the next token more;
-- greedy generation repeats exactly.
+- greedy generation repeats exactly;
+- the lens's last row gives the model's own prediction, with the same probability.
+
+The lens reads each layer's output (`l_out-N`) and runs it through the model's final norm and output matrix. The first row (the embedding) is read straight from the token embedding table.
 
 Prompts in the views are limited to 128 tokens on the phone. The attention tensor is [24][14][T][T] per pass.
 
@@ -137,6 +140,7 @@ The table above is for the bundled Qwen2.5-0.5B (ONNX). The table below is for S
 | Open the model | 0.25 s |
 | Short chat answer (8 tokens) | first word 0.3 s, done 0.6 s |
 | Heatmap | 0.13 s |
+| Lens (30 layers) | 1.1 s |
 | One KL pass over 8 prompts | 1.5–2 s |
 
 A real phone's ARM backend is faster than the emulator's x86 one. The numbers above were not measured on a real phone.

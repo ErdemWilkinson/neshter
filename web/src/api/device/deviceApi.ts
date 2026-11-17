@@ -308,7 +308,7 @@ export function createDeviceApi(bridge: Bridge): Api & PhoneApi {
     async lens(body) {
       requireLoaded();
       if (!(await getInfo()).lens_supported) {
-        throw new ApiError(422, 'unsupported', 'Katman katman tahmin GGUF modellerde henüz yok; ısı haritası ve dikkat görünümü var.');
+        throw new ApiError(422, 'unsupported', 'Bu modelin mimarisinde katman çıktıları okunamıyor; katman katman tahmin yok, ısı haritası ve dikkat görünümü var.');
       }
       return call('lens', { text: body.prompt, position: body.position ?? -1 });
     },

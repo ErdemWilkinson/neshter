@@ -2437,3 +2437,30 @@ select {
   justify-content: center;
   gap: 12px;
 }
+
+/* Narrow screens (the phone): the lens row keeps its bar and only the top guess in words; the other two are still
+   segments of the bar. Without this the row is wider than the screen and scrolls sideways. */
+@media (max-width: 40rem) {
+  .lens-stack {
+    width: 5rem;
+    margin-right: 6px;
+  }
+
+  .lens-bar {
+    width: 3rem;
+    margin-right: 4px;
+  }
+
+  .lens-top .lens-token + .lens-token {
+    display: none;
+  }
+
+  .lens-table th,
+  .lens-table td {
+    padding: 3px 4px;
+  }
+
+  .lens-table thead th {
+    white-space: normal;
+  }
+}

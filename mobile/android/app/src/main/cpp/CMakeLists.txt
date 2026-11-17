@@ -37,6 +37,8 @@ add_subdirectory(${LLAMA_SRC} llama-build)
 
 add_library(neshter_engine STATIC neshter_llama.cpp)
 target_include_directories(neshter_engine PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+# llama-model.h (internal): the lens reads the model's final norm and output matrix.
+target_include_directories(neshter_engine PRIVATE ${LLAMA_SRC}/src)
 target_link_libraries(neshter_engine PUBLIC llama ggml)
 
 if(ANDROID)

@@ -101,6 +101,25 @@ int main(int argc, char ** argv) {
             cut_sum += cut_power.power[(static_cast<size_t>(in.n_layer / 2) * in.n_head + h) * T + j];
     check(cut_sum == 0.0, "a cut head shows zero power");
 
+    // Lens: the last row is the model's own output, so it must agree with the real prediction.
+    for (const int at : {-1, static_cast<int>(toks.size()) / 2}) {
+        const nl::Lens ln = e->lens(toks, at, 3);
+        const int R = in.n_layer + 1;
+        const bool shaped = ln.n_tokens == static_cast<int>(toks.size()) && static_cast<int>(ln.p_final.size()) == R;
+        check(shaped, "lens has one row per layer plus the embedding");
+        if (!shaped) continue;
+        const nl::Analysis real = e->analyze(std::vector<int32_t>(toks.begin(), toks.begin() + ln.position + 1), {}, false, false, 1);
+        const double p_real = std::exp(static_cast<double>(real.logprobs[static_cast<size_t>(ln.final_token)]));
+        const int last = R - 1;
+        std::printf("lens at %d: final '%s' p=%.4f (model %.4f); rank by row:", ln.position, e->piece(ln.final_token).c_str(),
+                    ln.p_final[last], p_real);
+        for (int r = 0; r < R; r += std::max(1, R / 8)) std::printf(" %d", ln.rank_final[r]);
+        std::printf("\n");
+        check(ln.top_ids[static_cast<size_t>(last) * ln.top_k] == ln.final_token && ln.rank_final[last] == 0,
+              "the lens' last row predicts what the model predicts");
+        check(std::fabs(ln.p_final[last] - p_real) < 2e-3, "the lens' last row has the model's probability");
+    }
+
     std::string streamed;
     nl::Generation g = e->generate(toks, 48, {}, 0.0f, 0, [&](const std::string & s) {
         streamed += s;

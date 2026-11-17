@@ -10,6 +10,9 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "llama.h"
+// The lens applies the model's own final norm and output matrix; they are only reachable through llama.cpp's
+// internal model struct. Built against one pinned llama.cpp release, so the layout is the one compiled here.
+#include "llama-model.h"
 
 namespace nl {
 namespace {
@@ -121,6 +124,7 @@ std::unique_ptr<Engine> Engine::load(const std::string & path, int n_threads, in
         if (!one.empty()) {
             e->analyze(one, {}, true, false, 0);
             in.heads_supported = e->seen_kqv_ == in.n_layer && in.head_dim > 0;
+            in.lens_supported = e->lens(one, -1, 1).n_tokens > 0;
         }
     }
     return e;
@@ -335,8 +339,133 @@ Analysis Engine::analyze(const std::vector<int32_t> & tokens, const std::vector<
     return a;
 }
 
+Lens Engine::lens(const std::vector<int32_t> & tokens, int position, int top_k) {
+    Lens out;
+    std::vector<int32_t> t = tokens;
+    if (static_cast<int>(t.size()) > n_batch_) t.resize(static_cast<size_t>(n_batch_));
+    const int T = static_cast<int>(t.size());
+    if (T == 0) return out;
+    const int pos = position < 0 ? T + position : position;
+    if (pos < 0 || pos >= T) return out;
+    const int L = info_.n_layer, D = info_.n_embd, V = info_.n_vocab;
+    const int R = L + 1;
+
+    const llama_model & m = *model_;
+    ggml_tensor * out_w = m.output != nullptr ? m.output : m.tok_embd;
+    if (out_w == nullptr || out_w->ne[0] != D) return out;
+
+    std::vector<float> rows(static_cast<size_t>(R) * D, 0.0f);
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    lens_rows_ = &rows;
+    lens_seen_.assign(static_cast<size_t>(R), false);
+    lens_pos_ = pos;
+    lens_outputs_ = T - pos;  // outputs for pos..T-1: the last layer keeps exactly those rows, pos first
+    lens_scaled_ = false;
+    const bool ok = decode(t, 0, T - pos);
+    lens_rows_ = nullptr;
+    // Row 0: the token's own embedding row (llama.cpp gives the token lookup no name); "inp_scaled" (Gemma's
+    // sqrt(d) scaling) took its place already when the model has one.
+    if (ok && !lens_seen_[0]) {
+        ggml_tensor * te = m.tok_embd;
+        const auto * traits = te != nullptr ? ggml_get_type_traits(te->type) : nullptr;
+        if (te != nullptr && te->ne[0] == D && te->buffer != nullptr && ggml_backend_buffer_is_host(te->buffer) &&
+            traits != nullptr && (te->type == GGML_TYPE_F32 || traits->to_float != nullptr)) {
+            const char * src = static_cast<const char *>(te->data) + static_cast<size_t>(t[static_cast<size_t>(pos)]) * te->nb[1];
+            if (te->type == GGML_TYPE_F32) std::copy(reinterpret_cast<const float *>(src), reinterpret_cast<const float *>(src) + D, rows.data());
+            else traits->to_float(src, rows.data(), D);
+            lens_seen_[0] = true;
+        }
+    }
+    if (!ok || std::find(lens_seen_.begin(), lens_seen_.end(), false) != lens_seen_.end()) return out;
+
+    const float * real = llama_get_logits_ith(ctx_, pos);
+    const int32_t y = static_cast<int32_t>(std::max_element(real, real + V) - real);
+
+    // norm(h) * w (+ b), then the output matrix, for all rows at once on the CPU backend.
+    static ggml_backend_t cpu = nullptr;
+    if (cpu == nullptr) cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (cpu == nullptr) return out;
+    ggml_init_params ip = {ggml_tensor_overhead() * 16 + ggml_graph_overhead(), nullptr, true};
+    ggml_context * gctx = ggml_init(ip);
+    ggml_tensor * h = ggml_new_tensor_2d(gctx, GGML_TYPE_F32, D, R);
+    ggml_tensor * x = m.output_norm_b != nullptr ? ggml_norm(gctx, h, m.hparams.f_norm_eps)
+                                                 : ggml_rms_norm(gctx, h, m.hparams.f_norm_rms_eps);
+    if (m.output_norm != nullptr) x = ggml_mul(gctx, x, m.output_norm);
+    if (m.output_norm_b != nullptr) x = ggml_add(gctx, x, m.output_norm_b);
+    ggml_tensor * logits = ggml_mul_mat(gctx, out_w, x);  // [V, R]
+    ggml_cgraph * gf = ggml_new_graph(gctx);
+    ggml_build_forward_expand(gf, logits);
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(gctx, cpu);
+    std::vector<float> lg;
+    if (buf != nullptr) {
+        ggml_backend_tensor_set(h, rows.data(), 0, rows.size() * sizeof(float));
+        if (ggml_backend_graph_compute(cpu, gf) == GGML_STATUS_SUCCESS) {
+            lg.resize(static_cast<size_t>(V) * R);
+            ggml_backend_tensor_get(logits, lg.data(), 0, lg.size() * sizeof(float));
+        }
+        ggml_backend_buffer_free(buf);
+    }
+    ggml_free(gctx);
+    if (lg.empty()) return out;
+
+    out.n_tokens = T;
+    out.position = pos;
+    out.final_token = y;
+    out.top_k = std::max(1, std::min(top_k, V));
+    const int K = out.top_k;
+    out.top_ids.resize(static_cast<size_t>(R) * K);
+    out.top_p.resize(static_cast<size_t>(R) * K);
+    out.p_final.resize(static_cast<size_t>(R));
+    out.rank_final.resize(static_cast<size_t>(R));
+    std::vector<int32_t> idx(static_cast<size_t>(V));
+    for (int r = 0; r < R; ++r) {
+        const float * z = lg.data() + static_cast<size_t>(r) * V;
+        const float mx = *std::max_element(z, z + V);
+        double sum = 0;
+        for (int i = 0; i < V; ++i) sum += std::exp(static_cast<double>(z[i] - mx));
+        auto prob = [&](int i) { return static_cast<float>(std::exp(static_cast<double>(z[i] - mx)) / sum); };
+        for (int i = 0; i < V; ++i) idx[i] = i;
+        std::partial_sort(idx.begin(), idx.begin() + K, idx.end(), [&](int32_t a, int32_t b) { return z[a] > z[b]; });
+        for (int j = 0; j < K; ++j) {
+            out.top_ids[static_cast<size_t>(r) * K + j] = idx[j];
+            out.top_p[static_cast<size_t>(r) * K + j] = prob(idx[j]);
+        }
+        out.p_final[r] = prob(y);
+        int rank = 0;
+        for (int i = 0; i < V; ++i) rank += z[i] > z[y] ? 1 : 0;
+        out.rank_final[r] = rank;
+    }
+    return out;
+}
+
 bool Engine::on_tensor(ggml_tensor * t, bool ask) {
     const char * name = t->name;
+    if (lens_rows_ != nullptr) {
+        const bool is_out = std::strncmp(name, "l_out-", 6) == 0;
+        const bool is_emb = std::strcmp(name, "inp_embd") == 0;
+        const bool is_scaled = std::strcmp(name, "inp_scaled") == 0;
+        if (ask) return is_out || is_emb || is_scaled;
+        if (!(is_out || is_emb || is_scaled)) return true;
+        if (t->type != GGML_TYPE_F32 || t->buffer == nullptr || !ggml_backend_buffer_is_host(t->buffer)) return true;
+        if (t->ne[0] != info_.n_embd) return true;
+        int row = 0;
+        if (is_out) {
+            row = layer_of(name, 6) + 1;
+            if (row < 1 || row > info_.n_layer) return true;
+        } else if (is_emb && lens_scaled_) {
+            return true;  // the scaled embedding already filled row 0
+        }
+        if (is_scaled) lens_scaled_ = true;
+        // Full rows: the token's own column. The last layer keeps only the output rows (pos first).
+        int64_t col = -1;
+        if (t->ne[1] > lens_pos_ && t->ne[1] != lens_outputs_) col = lens_pos_;
+        else if (t->ne[1] == lens_outputs_) col = 0;
+        if (col < 0) return true;
+        const float * src = reinterpret_cast<const float *>(static_cast<const char *>(t->data) + col * t->nb[1]);
+        std::copy(src, src + info_.n_embd, lens_rows_->data() + static_cast<size_t>(row) * info_.n_embd);
+        lens_seen_[static_cast<size_t>(row)] = true;
+        return true;
+    }
     const bool is_kqv = std::strncmp(name, "kqv_out-", 8) == 0;
     const bool is_sm = std::strncmp(name, "kq_soft_max-", 12) == 0;
     if (ask) return (is_kqv && (cut_any_ || want_power_)) || (is_sm && want_attn_);
