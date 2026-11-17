@@ -1,3 +1,4 @@
 *.bat text eol=crlf
 neshter/web/dist/** -text
 web/scripts/__tests__/__fixtures__/** -text
+*.sh text eol=lf

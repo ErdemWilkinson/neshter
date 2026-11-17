@@ -546,6 +546,38 @@ def sequential_real_effect(
     )
 
 
+def probe_answer(lm: LoadedModel, heads: list[HeadAblation], text: str, k: int = 3) -> dict:
+    """Bu istemin bir sonraki token'ı: modelin cevabı (head'ler açıkken en olası token) ve olasılığı, head'ler açıkken
+    ve kapalıyken; iki durumda da ilk k tahmin. Ölçüm kartının yüz noktası bunu gösterir (tek istem, tahmin değil)."""
+    enc = lm.tokenizer(text, return_tensors="pt").to(_device(lm))
+    if enc["input_ids"].shape[1] < 1:
+        raise ValueError("Boş istem: cevabı okunacak token yok.")
+
+    def dist(interventions: Sequence[Intervention]) -> torch.Tensor:
+        with apply(lm, interventions), torch.no_grad():
+            logits = lm.model(**enc, use_cache=False).logits[0, -1]
+        return torch.softmax(logits.float(), -1)
+
+    def piece(token_id: int) -> str:
+        tok = lm.tokenizer
+        return tok.convert_tokens_to_string([tok.convert_ids_to_tokens(token_id)])
+
+    def top(p: torch.Tensor) -> list[dict]:
+        t = torch.topk(p, k)
+        return [{"token_id": int(i), "text": piece(int(i)), "p": float(v)} for v, i in zip(t.values, t.indices)]
+
+    before = dist([])
+    after = dist(_dedupe(heads))
+    y = int(before.argmax())
+    return {
+        "answer": {"token_id": y, "text": piece(y)},
+        "p_before": float(before[y]),
+        "p_after": float(after[y]),
+        "top_before": top(before),
+        "top_after": top(after),
+    }
+
+
 def perplexity(
     lm: LoadedModel, texts: list[str], interventions: Sequence[Intervention] = ()
 ) -> float:

@@ -6,3 +6,6 @@ __pycache__/
 .superpowers/
 .claude/
 web/node_modules
+
+# phone build of the web UI (web: npm run build:mobile)
+mobile/web-dist/

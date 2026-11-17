@@ -20,21 +20,30 @@ class Concept(BaseModel, extra="forbid"):
     negative: list[str]
     suite_target: str | None = None  # test setindeki hedef kategori (ör. refusal → harmful_refusal)
     safety_ablation: bool = False
+    # Yalnız hazır kavramlarda: İngilizce arayüz için tamamen İngilizce örnekler.
+    positive_en: list[str] | None = None
+    negative_en: list[str] | None = None
 
-    @field_validator("positive", "negative")
+    @field_validator("positive", "negative", "positive_en", "negative_en")
     @classmethod
-    def _enough_examples(cls, v: list[str]) -> list[str]:
-        if len(v) < MIN_EXAMPLES:
+    def _enough_examples(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None and len(v) < MIN_EXAMPLES:
             raise ValueError(f"En az {MIN_EXAMPLES} örnek gerekli, {len(v)} verildi.")
         return v
 
 
-def load_preset(concept_id: str) -> Concept:
-    """Paketle gelen hazır kavramı (neshter/concepts/presets/<id>.yaml) yükler ve doğrular."""
+def load_preset(concept_id: str, lang: str = "tr") -> Concept:
+    """Paketle gelen hazır kavramı (neshter/concepts/presets/<id>.yaml) yükler ve doğrular.
+
+    lang="en": örnekler İngilizce listelerden gelir (varsa); "tr": Türkçe ve İngilizce karışık listeler.
+    """
     if concept_id not in PRESET_ORDER:
         raise KeyError(f"Bilinmeyen hazır kavram: {concept_id!r}")
     text = files("neshter.concepts").joinpath("presets", f"{concept_id}.yaml").read_text(encoding="utf-8")
-    return Concept.model_validate(yaml.safe_load(text))
+    c = Concept.model_validate(yaml.safe_load(text))
+    if lang == "en" and c.positive_en is not None and c.negative_en is not None:
+        c = c.model_copy(update={"positive": c.positive_en, "negative": c.negative_en})
+    return c
 
 
 def _split_list(items: list[str], val_frac: float, rng: random.Random) -> tuple[list[str], list[str]]:

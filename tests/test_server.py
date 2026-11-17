@@ -306,6 +306,15 @@ def test_effect_job(ready):
     assert res["layer_matched"] is True
 
 
+def test_effect_probe_reports_the_answer_of_the_explore_prompt(ready):
+    c, a = ready
+    body = {"heads": [[0, 1]], "prompts": ["merhaba dünya"], "probe": "merhaba dünya"}
+    res = wait_done(c, a, c.post("/api/effect", json=body, headers=a).json()["job_id"])["result"]
+    probe = res["probe"]
+    assert set(probe) == {"answer", "p_before", "p_after", "top_before", "top_after"}
+    assert 0.0 <= probe["p_after"] <= 1.0 and probe["answer"]["token_id"] == probe["top_before"][0]["token_id"]
+
+
 def test_effect_returns_sequential_fields(ready):
     c, a = ready
     body = {"heads": [[0, 1]], "prompts": ["merhaba dünya"]}
