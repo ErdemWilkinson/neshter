@@ -590,3 +590,19 @@ def test_sequential_progress_message(lm):
     msgs = [msg for _, msg in seen if msg.startswith("Rastgele kontrol")]
     assert msgs[0] == "Rastgele kontrol 1/19 (erken durabilir)" and len(msgs) == s.n_drawn
     assert [p for p, _ in seen] == sorted(p for p, _ in seen) and all(0 <= p <= 1 for p, _ in seen)
+
+
+def test_probe_answer_is_the_top_guess_and_moves_when_every_head_is_off(lm):
+    heads = [HeadAblation(layer, head) for layer in range(lm.arch.n_layers) for head in range(lm.arch.n_heads)]
+    r = m.probe_answer(lm, heads, "merhaba dünya")
+    assert set(r) == {"answer", "p_before", "p_after", "top_before", "top_after"}
+    assert r["answer"]["token_id"] == r["top_before"][0]["token_id"]
+    assert r["p_before"] == pytest.approx(r["top_before"][0]["p"])
+    assert 0.0 <= r["p_after"] <= 1.0 and len(r["top_after"]) == 3
+    assert r["p_after"] != pytest.approx(r["p_before"], abs=1e-6)
+
+
+def test_probe_answer_leaves_no_hook_behind(lm):
+    before = m.probe_answer(lm, [HeadAblation(0, 0)], "hello world")
+    again = m.probe_answer(lm, [HeadAblation(0, 0)], "hello world")
+    assert again["p_before"] == pytest.approx(before["p_before"])

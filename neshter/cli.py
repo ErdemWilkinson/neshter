@@ -97,7 +97,8 @@ def _serve(args: argparse.Namespace) -> int:
     app = create_app(token, port)
     url = f"http://{HOST}:{port}/#token={token}"
     print(f"Neşter çalışıyor: {url}")
-    print("Durdurmak için Ctrl+C. Adres yalnızca bu bilgisayardan erişilebilir.")
+    # flush: with --no-browser the address is the only way in, also when the output goes to a file or a pipe
+    print("Durdurmak için Ctrl+C. Adres yalnızca bu bilgisayardan erişilebilir.", flush=True)
     if not args.no_browser:
         threading.Thread(target=_open_when_ready, args=(url, port), daemon=True).start()
     _run_server(app, host=HOST, port=port)

@@ -72,6 +72,7 @@ from neshter.metrics import (
     kl_effect,
     load_neutral,
     perplexity,
+    probe_answer,
     recipe_effect,
     sequential_real_effect,
 )
@@ -164,11 +165,14 @@ class EffectReq(_Req):
     prompts: list[str] | None = Field(default=None, min_length=1)
     n_max: int = Field(DEFAULT_N_MAX, ge=MIN_N_MAX, le=999)  # sıralı testin en çok çekişi; CPU'da en çok CPU_N_MAX_CAP
     seed: int = Field(0, ge=0, le=2**32 - 1)  # sabit tohum: aynı istek aynı çekişleri verir
+    # Keşif ekranındaki istem: verilirse sonuç, bu istemde cevabın olasılığını head'ler açık/kapalı da taşır (yüz nokta).
+    probe: str | None = Field(default=None, min_length=1, max_length=8000)
 
 
 class HuntReq(_Req):
     concept_id: str | None = None
     concept: Concept | None = None
+    lang: Literal["tr", "en"] = "tr"  # hazır kavramın örnek dili (en: yalnız İngilizce örnekler)
     method: Literal["attribution", "activation_diff", "direction"] | None = None  # None: default_method(lm)
     seed: int = 0
     sweeps: int = Field(1, ge=1, le=8)  # >1: "direction" yönteminde model düzeyinde tekrarlı süpürme
@@ -660,6 +664,8 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                     "suite_target": c.suite_target,
                     "positive": c.positive,
                     "negative": c.negative,
+                    "positive_en": c.positive_en,
+                    "negative_en": c.negative_en,
                 }
             )
         return out
@@ -936,8 +942,9 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 )
                 if cancel.is_set():  # iptal edilen ölçüm sayılmaz
                     return None
+                probe = {"probe": probe_answer(lm, heads, body.probe)} if body.probe is not None else {}
                 session.measure_count += 1
-                return asdict(eff) | {"session_measure_index": session.measure_count}
+                return asdict(eff) | {"session_measure_index": session.measure_count} | probe
 
         return start(fn, "effect")
 
@@ -955,7 +962,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
                 )
         else:
             try:
-                concept = load_preset(body.concept_id)
+                concept = load_preset(body.concept_id, body.lang)
             except KeyError as e:
                 raise HTTPException(422, f"Bilinmeyen hazır kavram: {body.concept_id!r}.") from e
 
