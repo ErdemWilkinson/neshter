@@ -32,6 +32,7 @@ struct Info {
     uint64_t n_params = 0;
     bool has_template = false;
     bool heads_supported = false;  // the graph exposes "kqv_out-N" with n_head equal slices (not MLA, not recurrent)
+    bool lens_supported = false;   // every layer has "l_out-N" and the final norm/output matrix are known
 };
 
 struct ChatMessage {
@@ -46,6 +47,19 @@ struct Generation {
     bool stopped_by_eog = false;
     double prompt_ms = 0;
     double gen_ms = 0;
+};
+
+/// What the model would answer at one position if it stopped after each layer (logit lens): row 0 is the
+/// embedding, row l+1 the output of layer l, each through the model's own final norm and output matrix.
+struct Lens {
+    int n_tokens = 0;
+    int position = 0;
+    int32_t final_token = -1;          // the model's real next-token prediction at `position`
+    int top_k = 0;
+    std::vector<int32_t> top_ids;      // [n_layer + 1][top_k]
+    std::vector<float> top_p;          // [n_layer + 1][top_k]
+    std::vector<float> p_final;        // [n_layer + 1]: probability of final_token at that row
+    std::vector<int32_t> rank_final;   // [n_layer + 1]: its rank (0 = top)
 };
 
 struct Analysis {
@@ -85,6 +99,10 @@ public:
     int max_pass_tokens() const { return n_batch_; }
 
     /// Called by llama.cpp's scheduler for every graph node (see the .cpp).
+    /// position: 0..n_tokens-1, or negative from the end. Empty `n_tokens` means the architecture has no per-layer
+    /// output llama.cpp names "l_out-N", or no final norm/output matrix this code knows how to apply.
+    Lens lens(const std::vector<int32_t> & tokens, int position, int top_k);
+
     bool on_tensor(ggml_tensor * t, bool ask);
 
 private:
@@ -108,6 +126,12 @@ private:
     std::vector<float> * power_ = nullptr;
     std::vector<float> * attn_ = nullptr;
     int seen_kqv_ = 0;               // kqv_out tensors met in this pass (support check)
+    // Lens capture: the residual stream at one position, embedding first, then every layer.
+    std::vector<float> * lens_rows_ = nullptr;   // [(n_layer + 1) * n_embd]
+    std::vector<bool> lens_seen_;
+    int lens_pos_ = 0;
+    int lens_outputs_ = 0;           // rows the last layer keeps (it drops tokens that need no output)
+    bool lens_scaled_ = false;       // "inp_scaled" (Gemma) replaces "inp_embd" as row 0
 };
 
 /// Short system description for logs: SIMD features the CPU backend found.

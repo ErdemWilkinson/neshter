@@ -103,8 +103,37 @@ class LlamaEngine private constructor(
         }
     }
 
-    override fun lens(text: String, position: Int): String =
-        throw BridgeError("unsupported", "Katman katman tahmin GGUF modellerde henüz yok.")
+    override fun lens(text: String, position: Int): String {
+        if (!info.optBoolean("lens_supported")) {
+            throw BridgeError("unsupported", "Bu modelin mimarisinde katman çıktıları okunamıyor; katman katman tahmin yok.")
+        }
+        val ids = encode(text, MAX_VIEW_TOKENS)
+        val T = ids.size
+        if (position !in -T until T) throw BridgeError("invalid_input", "position $position aralık dışı (istem $T token).")
+        val f = LlamaNative.lens(handle, ids, position, 3)
+        if (f.isEmpty()) throw BridgeError("internal", "Katman katman tahmin hesaplanamadı.")
+        val pos = f[1].toInt()
+        val y = f[2].toInt()
+        val k = f[3].toInt()
+        val rows = L + 1
+        val stride = 2 * k + 2
+        return Json.build {
+            obj {
+                key("tokens").strings(pieces(ids))
+                key("position").num(pos.toLong())
+                key("final").obj { key("token_id").num(y.toLong()); key("text").str(piece(y)) }
+                key("layers").arr {
+                    for (r in 0 until rows) obj {
+                        val at = 4 + r * stride
+                        key("layer").num((r - 1).toLong())
+                        key("top").arr { for (j in 0 until k) tokenRow(f[at + j].toInt(), f[at + k + j]) }
+                        key("p_final").num(f[at + 2 * k])
+                        key("rank_final").num(f[at + 2 * k + 1].toLong())
+                    }
+                }
+            }
+        }
+    }
 
     override fun klBase(prompts: List<String>) {
         needHeads()

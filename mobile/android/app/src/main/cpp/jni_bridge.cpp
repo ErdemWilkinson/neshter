@@ -145,6 +145,7 @@ JNIEXPORT jbyteArray JNICALL Java_dev_neshter_mobile_LlamaNative_info(JNIEnv * e
     j += ",\"n_params\":" + std::to_string(in.n_params);
     j += std::string(",\"has_template\":") + (in.has_template ? "true" : "false");
     j += std::string(",\"heads_supported\":") + (in.heads_supported ? "true" : "false");
+    j += std::string(",\"lens_supported\":") + (in.lens_supported ? "true" : "false");
     j += "}";
     return to_bytes(env, j);
 }
@@ -229,6 +230,29 @@ JNIEXPORT jobjectArray JNICALL Java_dev_neshter_mobile_LlamaNative_analyze(JNIEn
     if (attn) env->SetObjectArrayElement(out, 1, from_floats(env, a.attn));
     if (logprob_rows > 0) env->SetObjectArrayElement(out, 2, from_floats(env, a.logprobs));
     return out;
+}
+
+/// [n_tokens, position, final_token, k, then per row (embedding, layer 0..L-1): k ids, k probs, p_final, rank_final].
+/// Empty when the model has no lens.
+JNIEXPORT jfloatArray JNICALL Java_dev_neshter_mobile_LlamaNative_lens(JNIEnv * env, jobject, jlong h, jintArray tokens,
+                                                                        jint position, jint k) {
+    const nl::Lens ln = handle(h)->engine->lens(to_tokens(env, tokens), position, k);
+    std::vector<float> out;
+    if (ln.n_tokens > 0) {
+        const size_t R = ln.p_final.size(), K = static_cast<size_t>(ln.top_k);
+        out.reserve(4 + R * (2 * K + 2));
+        out.push_back(static_cast<float>(ln.n_tokens));
+        out.push_back(static_cast<float>(ln.position));
+        out.push_back(static_cast<float>(ln.final_token));
+        out.push_back(static_cast<float>(K));
+        for (size_t r = 0; r < R; ++r) {
+            for (size_t j = 0; j < K; ++j) out.push_back(static_cast<float>(ln.top_ids[r * K + j]));
+            for (size_t j = 0; j < K; ++j) out.push_back(ln.top_p[r * K + j]);
+            out.push_back(ln.p_final[r]);
+            out.push_back(static_cast<float>(ln.rank_final[r]));
+        }
+    }
+    return from_floats(env, out);
 }
 
 }  // extern "C"

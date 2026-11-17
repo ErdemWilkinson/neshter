@@ -134,8 +134,12 @@ class NativeBridge(
         val id = activeId ?: throw BridgeError("no_model", "Önce bir model aç.")
         if (id == ModelLibrary.BUNDLED) return bundledInfo()
         // A GGUF carries no neutral prompts or license line of Neşter's: the bundled set is used for measuring.
+        // What the open engine found (heads, lens) wins over the note written when the file came in.
+        val live = engine?.info
         return library.ggufInfo(id)
-            .put("kind", "gguf").put("lens_supported", false).put("license", JSONObject.NULL)
+            .put("kind", "gguf").put("license", JSONObject.NULL)
+            .put("heads_supported", live?.optBoolean("heads_supported") ?: false)
+            .put("lens_supported", live?.optBoolean("lens_supported") ?: false)
             .put("neutral", meta.raw.getJSONArray("neutral"))
     }
 
