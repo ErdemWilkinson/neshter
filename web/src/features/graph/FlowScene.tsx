@@ -6,7 +6,12 @@ import { approach, easeOut, tiltMix, PITCH_MAX, PITCH_MIN, VIEWS, ZOOM_MAX, ZOOM
 import { drawFlow, hitTest, readFlowPalette, type Hits, type Hover, type Pick, type SceneData, type SceneEdge } from './drawFlow';
 import { COL, edgeCurve, extent, type Grid, type PlacedNode } from './layout';
 
-export type SceneMode = 'heat' | 'flow';
+/** `heat`: the heatmap from above; `towers`: the same heatmap tilted, each head a tower (no graph needed); `flow`: the graph. */
+export type SceneMode = 'heat' | 'towers' | 'flow';
+
+/** Where the camera goes for a mode; every mode but the flat heatmap can be turned and zoomed. */
+const viewFor = (mode: SceneMode): Camera => (mode === 'heat' ? VIEWS.heat : VIEWS.tilt);
+const turnable = (mode: SceneMode): boolean => mode !== 'heat';
 
 export interface FlowSceneProps {
   grid: Grid;
@@ -34,6 +39,8 @@ interface Anim {
   cam: Camera;
   target: Camera;
   mix: number;
+  /** 0 = flat … 1 = towers (see `FrameState.rise`). */
+  rise: number;
   widths: Map<string, number>;
   cutAt: Map<string, number>;
   basketAt: Map<string, number>;
@@ -112,9 +119,10 @@ export default function FlowScene(props: FlowSceneProps) {
   // Camera target follows the mode; animation clocks start when a cut or a basket head appears.
   useEffect(() => {
     const a = (anim.current ??= {
-      cam: { ...(mode === 'flow' ? VIEWS.tilt : VIEWS.heat) },
-      target: { ...(mode === 'flow' ? VIEWS.tilt : VIEWS.heat) },
+      cam: { ...viewFor(mode) },
+      target: { ...viewFor(mode) },
       mix: mode === 'flow' ? 1 : 0,
+      rise: mode === 'towers' ? 1 : 0,
       widths: new Map(),
       cutAt: new Map(),
       basketAt: new Map(),
@@ -126,7 +134,7 @@ export default function FlowScene(props: FlowSceneProps) {
       primed: false,
     });
     a.awakeUntil = now() + SETTLE;
-    a.target = { ...(mode === 'flow' ? VIEWS.tilt : VIEWS.heat) };
+    a.target = { ...viewFor(mode) };
   }, [mode]);
   useEffect(() => {
     const a = anim.current;
@@ -175,16 +183,18 @@ export default function FlowScene(props: FlowSceneProps) {
       // Off screen, or a still picture (heatmap, or reduced motion) that has settled: skip the frame.
       const still =
         a !== null &&
-        (p.mode === 'heat' || p.reducedMotion) &&
+        (p.mode !== 'flow' || p.reducedMotion) &&
         now() > a.awakeUntil &&
         settled(a.cam.yaw, a.target.yaw) &&
         settled(a.cam.pitch, a.target.pitch) &&
         settled(a.cam.zoom, a.target.zoom) &&
-        settled(a.mix, p.mode === 'flow' ? 1 : 0);
+        settled(a.mix, p.mode === 'flow' ? 1 : 0) &&
+        settled(a.rise, p.mode === 'towers' ? 1 : 0);
       if (a !== null && size.w > 0 && onScreen && !still) {
         const rate = p.reducedMotion ? 1 : 0.085;
         a.cam = { yaw: approach(a.cam.yaw, a.target.yaw, rate), pitch: approach(a.cam.pitch, a.target.pitch, rate), zoom: approach(a.cam.zoom, a.target.zoom, rate) };
         a.mix = approach(a.mix, p.mode === 'flow' ? 1 : 0, p.reducedMotion ? 1 : 0.05);
+        a.rise = approach(a.rise, p.mode === 'towers' ? 1 : 0, p.reducedMotion ? 1 : 0.06);
         for (const e of p.edges) {
           const target = Math.abs(p.live.get(e.id) ?? e.weight);
           a.widths.set(e.id, approach(a.widths.get(e.id) ?? Math.abs(e.weight), target, p.reducedMotion ? 1 : 0.05));
@@ -197,6 +207,7 @@ export default function FlowScene(props: FlowSceneProps) {
         a.hits = drawFlow(ctx, latestScene.current, {
           t: now(),
           mix: a.mix * tiltMix(a.cam.pitch),
+          rise: a.rise,
           cam: a.cam,
           vp: {
             w: size.w,
@@ -227,7 +238,7 @@ export default function FlowScene(props: FlowSceneProps) {
 
     const onWheel = (event: WheelEvent) => {
       const a = anim.current;
-      if (a === null || latest.current.mode !== 'flow' || event.deltaY === 0) return;
+      if (a === null || !turnable(latest.current.mode) || event.deltaY === 0) return;
       event.preventDefault();
       a.target = { ...a.target, zoom: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, a.target.zoom * (event.deltaY < 0 ? 1.1 : 0.91))) };
     };
@@ -256,7 +267,7 @@ export default function FlowScene(props: FlowSceneProps) {
     <>
       <canvas
         ref={canvasRef}
-        className={`flow-canvas${mode === 'flow' ? ' is-flow' : ''}`}
+        className={`flow-canvas${turnable(mode) ? ' is-flow' : ''}`}
         aria-hidden="true"
         onPointerDown={(event) => {
           const a = anim.current;
@@ -274,7 +285,7 @@ export default function FlowScene(props: FlowSceneProps) {
             if (a.drag.moved || Math.hypot(dx, dy) > 5) {
               a.drag = { x: event.clientX, y: event.clientY, moved: true };
               // The heatmap is seen flat from above: a drag there only stops being a click.
-              if (latest.current.mode === 'flow')
+              if (turnable(latest.current.mode))
                 a.target = { ...a.target, yaw: a.target.yaw + dx * 0.006, pitch: Math.min(PITCH_MAX, Math.max(PITCH_MIN, a.target.pitch + dy * 0.005)) };
               if (a.hover !== null) {
                 a.hover = null;
@@ -317,7 +328,7 @@ export default function FlowScene(props: FlowSceneProps) {
           }
         }}
       />
-      {mode === 'flow' && (
+      {turnable(mode) && (
         <div className="flow-hud">
           <Button onClick={() => setView(VIEWS.tilt)}>{t('graph.view.tilt')}</Button>
           <Button onClick={() => setView(VIEWS.low)}>{t('graph.view.low')}</Button>

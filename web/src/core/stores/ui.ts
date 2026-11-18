@@ -7,9 +7,9 @@ export type Lang = 'tr' | 'en';
 export type ReducedMotion = 'system' | 'on' | 'off';
 export type Quality = 'high' | 'balanced' | 'low';
 /** What the person came to do (set by Home); `null` until they choose. */
-export type Intent = 'reduce' | 'inspect' | 'expert' | null;
+export type Intent = 'reduce' | 'inspect' | 'chat' | 'expert' | null;
 
-export const intentRoute = (intent: Intent): Route => (intent === 'reduce' ? 'concept' : 'explore');
+export const intentRoute = (intent: Intent): Route => (intent === 'reduce' ? 'concept' : intent === 'chat' ? 'chat' : 'explore');
 
 export interface UiState {
   route: Route;

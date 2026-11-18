@@ -71,6 +71,8 @@ export interface FrameState {
   t: number;
   /** 0 = heatmap seen from above … 1 = connection graph. */
   mix: number;
+  /** 0 = flat heatmap … 1 = every head a tower as tall as its power (the 3D heatmap; needs no graph). */
+  rise: number;
   cam: Camera;
   vp: Viewport;
   /** Eased drawn |weight| per edge. */
@@ -183,46 +185,67 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
   const unit = P([COL, 0, 0]);
   const rmax = 0.46 * Math.hypot(unit[0] - o[0], unit[1] - o[1]) * Math.min(1, ROW / COL);
   const squash = Math.max(0.35, Math.sin(f.cam.pitch));
-  for (let l = 0; l < grid.nLayers; l++) {
-    for (let h = 0; h < grid.nHeads; h++) {
-      const id = `h:${l}:${h}`;
-      const x = headX(h, grid.nHeads);
-      const z = layerZ(l, grid.nLayers);
-      const corners = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([i, j]): [number, number] => {
-        const p = P([x + (i * COL * 0.88) / 2, 0, z + (j * ROW * 0.84) / 2]);
-        return [p[0], p[1]];
-      });
-      if (mix < 0.5) hits.cells.push({ id, corners });
-      const inGraph = graphHeads.has(id);
-      const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.3 * easeOut(mix);
-      const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : Math.max(heatA, 0.7);
-      if (alpha <= 0) continue;
-      const inBasket = f.basket.has(id);
-      const v = clamp01(scene.heat?.[l]?.[h] ?? 0);
-      const c = P([x, 0, z]);
-      const rx = Math.max(1, rmax * (0.3 + 0.7 * Math.sqrt(v)) * shrink);
-      ctx.globalAlpha = alpha * (0.65 + 0.35 * v) * (inBasket ? 0.45 : 1);
-      ctx.fillStyle = rgbCss(color(0.18 + 0.82 * v)); // the darkest violet would vanish on the dark floor
+  // Towers are drawn far to near so the nearer ones cover the ones behind them.
+  const towerH = f.rise * Math.max(4 * ROW, 0.26 * grid.nLayers * ROW);
+  const cells: [number, number][] = [];
+  for (let l = 0; l < grid.nLayers; l++) for (let h = 0; h < grid.nHeads; h++) cells.push([l, h]);
+  if (towerH > 0) {
+    const far = (l: number, h: number) => headX(h, grid.nHeads) * Math.sin(f.cam.yaw) + layerZ(l, grid.nLayers) * Math.cos(f.cam.yaw);
+    cells.sort((a, b) => far(b[0], b[1]) - far(a[0], a[1]));
+  }
+  for (const [l, h] of cells) {
+    const id = `h:${l}:${h}`;
+    const x = headX(h, grid.nHeads);
+    const z = layerZ(l, grid.nLayers);
+    const top = towerH * clamp01(scene.heat?.[l]?.[h] ?? 0); // a tower is picked by its lid
+    const corners = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([i, j]): [number, number] => {
+      const p = P([x + (i * COL * 0.88) / 2, top, z + (j * ROW * 0.84) / 2]);
+      return [p[0], p[1]];
+    });
+    if (mix < 0.5) hits.cells.push({ id, corners });
+    const inGraph = graphHeads.has(id);
+    const shrink = inGraph ? 1 - 0.88 * easeOut(mix * 1.3) : 1 - 0.3 * easeOut(mix);
+    const alpha = inGraph ? 1 - easeOut((mix - 0.25) / 0.5) : Math.max(heatA, 0.7);
+    if (alpha <= 0) continue;
+    const inBasket = f.basket.has(id);
+    const v = clamp01(scene.heat?.[l]?.[h] ?? 0);
+    const base = P([x, 0, z]);
+    const c = towerH > 0 && !inGraph ? P([x, towerH * v, z]) : base;
+    const rx = Math.max(1, rmax * (0.3 + 0.7 * Math.sqrt(v)) * shrink);
+    ctx.globalAlpha = alpha * (0.65 + 0.35 * v) * (inBasket ? 0.45 : 1);
+    if (c !== base) {
+      // the tower's side: a band from its foot to its top, darker than the top so the top reads as a lid
+      ctx.fillStyle = rgbCss(color(0.1 + 0.6 * v));
       ctx.beginPath();
-      ctx.ellipse(c[0], c[1], rx, rx * squash, 0, 0, Math.PI * 2);
+      ctx.moveTo(base[0] - rx, base[1]);
+      ctx.lineTo(c[0] - rx, c[1]);
+      ctx.lineTo(c[0] + rx, c[1]);
+      ctx.lineTo(base[0] + rx, base[1]);
+      ctx.closePath();
       ctx.fill();
-      ctx.globalAlpha = alpha;
-      if (f.chosen.has(id) || f.focus.has(id)) {
-        ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.select;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.ellipse(c[0], c[1], rmax + 1.5, (rmax + 1.5) * squash, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      const cw = COL * 0.88;
-      const cd = ROW * 0.84;
-      if (inBasket) {
-        const c = P([x, 0, z]);
-        const k = f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35);
-        cross(ctx, c[0], c[1], Math.min(cw, cd) * 0.22 * fitPx(f) * k, pal.basket, 2);
-      }
-      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.ellipse(base[0], base[1], rx, rx * squash, 0, 0, Math.PI);
+      ctx.fill();
     }
+    ctx.fillStyle = rgbCss(color(0.18 + 0.82 * v)); // the darkest violet would vanish on the dark floor
+    ctx.beginPath();
+    ctx.ellipse(c[0], c[1], rx, rx * squash, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = alpha;
+    if (f.chosen.has(id) || f.focus.has(id)) {
+      ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.select;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(c[0], c[1], rmax + 1.5, (rmax + 1.5) * squash, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    const cw = COL * 0.88;
+    const cd = ROW * 0.84;
+    if (inBasket) {
+      const k = f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35);
+      cross(ctx, c[0], c[1], Math.min(cw, cd) * 0.22 * fitPx(f) * k, pal.basket, 2);
+    }
+    ctx.globalAlpha = 1;
   }
 
   // rivers
@@ -472,7 +495,8 @@ function inPolygon(x: number, y: number, c: readonly [number, number][]): boolea
 
 /** What is under (x, y): a heatmap cell while the heatmap shows, else a node, else the nearest river within 8 px. */
 export function hitTest(hits: Hits, x: number, y: number): Pick | null {
-  const cell = hits.cells.find((c) => inPolygon(x, y, c.corners));
+  // the last drawn cell is on top (towers are drawn far to near)
+  const cell = hits.cells.findLast((c) => inPolygon(x, y, c.corners));
   if (cell !== undefined) return { kind: 'cell', id: cell.id };
   for (const n of hits.nodes) if (Math.hypot(x - n.x, y - n.y) <= n.r) return { kind: 'node', id: n.id };
   let best: Pick | null = null;

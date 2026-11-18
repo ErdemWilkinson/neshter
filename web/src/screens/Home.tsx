@@ -23,6 +23,12 @@ export function Home() {
             <span className="intent-hint">{t('home.reduce.hint')}</span>
           </button>
         )}
+        {isDeviceApp() && (
+          <button type="button" className="intent-card glass" onClick={() => choose('chat')}>
+            <span className="intent-title">{t('home.chat')}</span>
+            <span className="intent-hint">{t('home.chat.hint')}</span>
+          </button>
+        )}
         <button type="button" className="intent-card glass" onClick={() => choose('inspect')}>
           <span className="intent-title">{t('home.inspect')}</span>
           <span className="intent-hint">{t('home.inspect.hint')}</span>

@@ -2428,6 +2428,11 @@ select {
 
 .chat-form textarea {
   width: 100%;
+  padding: 6px 10px;
+  color: var(--text-1);
+  background: var(--surface-0);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius);
   resize: vertical;
   font: inherit;
 }
@@ -2462,5 +2467,21 @@ select {
 
   .lens-table thead th {
     white-space: normal;
+  }
+
+  /* the three phone steps fit the width instead of scrolling with the last one cut off */
+  .stepper ol {
+    gap: 2px;
+  }
+
+  .stepper li {
+    gap: 4px;
+    padding: 3px 6px 3px 4px;
+    font-size: 0.8125rem;
+  }
+
+  .stepper li::before {
+    width: 1.2rem;
+    height: 1.2rem;
   }
 }
