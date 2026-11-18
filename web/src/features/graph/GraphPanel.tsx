@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { getApi } from '@/api/currentApi';
+import { isDeviceApp } from '@/api/device/bridge';
 import { ApiError, BusyError, isAbortError, type ErrorCode } from '@/api/errors';
 import { graphResult, type GraphCut, type GraphEdge, type GraphResult } from '@/api/schemas';
 import { useJob } from '@/api/useJob';
@@ -91,6 +92,8 @@ export function GraphPanel({
   const name = useNodeName();
   const sliderId = useId();
   const pickId = useId();
+  // The phone cannot draw the graph (it needs gradients): there the scene is the heatmap, flat or as towers.
+  const phone = isDeviceApp();
   const { job, start, cancel, reset } = useJob<GraphResult>();
   const locked = useStore(jobsStore, isLocked);
   const chosen = useStore(selectionStore, (s) => s.selected);
@@ -99,7 +102,7 @@ export function GraphPanel({
   const model = useStore(sessionStore, (s) => s.model);
   const [back] = useState(() => (kept !== null && kept.prompt === prompt && kept.model === model ? kept : null));
   const [graph, setGraph] = useState<GraphResult | null>(back?.graph ?? null);
-  const [mode, setMode] = useState<SceneMode>(back?.mode ?? 'heat');
+  const [mode, setMode] = useState<SceneMode>(back?.mode ?? (phone ? 'towers' : 'heat'));
   const [failure, setFailure] = useState<Failure | null>(null);
   const [limit, setLimit] = useState(back?.limit ?? DEFAULT_LIMIT);
   const [selected, setSelected] = useState<Pick | null>(null);
@@ -126,7 +129,7 @@ export function GraphPanel({
   if (shownPrompt !== prompt) {
     setShownPrompt(prompt);
     setGraph(null);
-    setMode('heat');
+    setMode((m) => (m === 'flow' ? 'heat' : m));
     setCut([]);
     setReport(null);
     setSelected(null);
@@ -273,12 +276,14 @@ export function GraphPanel({
   return (
     <section className="graph-panel" aria-labelledby="graph-title">
       <div className="insight-head">
-        <h2 id="graph-title">{t('graph.title')}</h2>
-        <Button variant="primary" disabled={locked || running || prompt.trim() === ''} onClick={() => void draw()}>
-          {graph === null ? t('graph.draw') : t('graph.redraw')}
-        </Button>
+        <h2 id="graph-title">{t(phone ? 'graph.titlePhone' : 'graph.title')}</h2>
+        {!phone && (
+          <Button variant="primary" disabled={locked || running || prompt.trim() === ''} onClick={() => void draw()}>
+            {graph === null ? t('graph.draw') : t('graph.redraw')}
+          </Button>
+        )}
       </div>
-      <p className="field-hint">{t('graph.lead')}</p>
+      <p className="field-hint">{t(phone ? 'graph.leadPhone' : 'graph.lead')}</p>
       {running && job !== null && <ProgressCard job={job} onCancel={() => void cancel()} />}
       {failure !== null && <ErrorCard code={failure.code} detail={failure.detail} />}
 
@@ -335,9 +340,14 @@ export function GraphPanel({
               <button type="button" aria-pressed={mode === 'heat'} onClick={() => setMode('heat')}>
                 {t('graph.mode.heat')}
               </button>
-              <button type="button" aria-pressed={mode === 'flow'} disabled={graph === null} onClick={() => setMode('flow')}>
-                {t('graph.mode.flow')}
+              <button type="button" aria-pressed={mode === 'towers'} onClick={() => setMode('towers')}>
+                {t('graph.mode.towers')}
               </button>
+              {!phone && (
+                <button type="button" aria-pressed={mode === 'flow'} disabled={graph === null} onClick={() => setMode('flow')}>
+                  {t('graph.mode.flow')}
+                </button>
+              )}
             </div>
             {hoverText !== null && hover !== null && (
               <div className="graph-tip" style={{ left: hover.x, top: hover.y }} aria-hidden="true">
@@ -345,9 +355,10 @@ export function GraphPanel({
               </div>
             )}
             <p className="graph-legend" aria-hidden="true">
-              {mode === 'heat' ? (
+              {mode !== 'flow' ? (
                 <>
-                  {t('map.legend.low')} <span className="sw sw-heat" /> {t('map.legend.high')} · {t('graph.legend.heat')}
+                  {t('map.legend.low')} <span className="sw sw-heat" /> {t('map.legend.high')} ·{' '}
+                  {t(mode === 'towers' ? 'graph.legend.towers' : 'graph.legend.heat')}
                 </>
               ) : (
                 <>
@@ -361,7 +372,7 @@ export function GraphPanel({
           <div className="graph-side">
             {graph === null ? (
               <section className="graph-card">
-                <p className="field-hint">{t('graph.heatFirst')}</p>
+                <p className="field-hint">{t(phone ? 'graph.flowOnDesktop' : 'graph.heatFirst')}</p>
               </section>
             ) : (
               <>

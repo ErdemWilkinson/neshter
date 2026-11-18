@@ -1,5 +1,4 @@
 import { useStore } from 'zustand';
-import { isDeviceApp } from '@/api/device/bridge';
 import { uiStore, type View } from '@/core/stores/ui';
 import { useT, type MessageKey } from '@/i18n';
 import { Segmented } from '@/ui/Segmented';
@@ -19,8 +18,8 @@ const LABELS: Record<View, MessageKey> = {
   '3d': 'map.view.3d',
 };
 
-/** The phone has no connection graph (it needs gradients): `3d` is off there. */
-const available = (v: { id: View; enabled: boolean }): boolean => v.enabled && !(v.id === '3d' && isDeviceApp());
+/** Every view is on the phone too; there `3d` shows the heatmap as towers (the connection graph needs gradients). */
+const available = (v: { id: View; enabled: boolean }): boolean => v.enabled;
 
 export const isEnabledView = (view: View): boolean => VIEWS.some((v) => v.id === view && available(v));
 

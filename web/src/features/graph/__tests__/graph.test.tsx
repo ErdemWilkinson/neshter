@@ -312,3 +312,35 @@ test('the graph fades up with the tilt: straight above is the dotted map, a tilt
   expect(tiltMix(1.2)).toBeGreaterThan(0);
   expect(tiltMix(1.2)).toBeLessThan(1);
 });
+
+test('overlapping towers: the one drawn last (the nearest) is picked', () => {
+  const square = [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][];
+  const hits = { cells: [{ id: 'h:0:0', corners: square }, { id: 'h:5:0', corners: square }], nodes: [], edges: [] };
+  expect(hitTest(hits, 5, 5)).toEqual({ kind: 'cell', id: 'h:5:0' });
+});
+
+test('the heatmap can be seen as towers without drawing a graph', async () => {
+  const user = userEvent.setup();
+  mount({}, HEAT);
+  await user.click(screen.getByRole('button', { name: 'Isı 3B' }));
+  expect(document.querySelector('[data-mode="towers"]')).not.toBeNull();
+  expect(screen.getByText(/sütun yüksekliği/)).toBeInTheDocument();
+});
+
+describe('on the phone', () => {
+  beforeEach(() => {
+    (window as unknown as { NeshterNative?: unknown }).NeshterNative = { call: () => undefined };
+  });
+  afterEach(() => {
+    delete (window as unknown as { NeshterNative?: unknown }).NeshterNative;
+  });
+
+  test('opens on the towers and offers no graph (it needs gradients)', () => {
+    mount({}, HEAT);
+    expect(screen.getByRole('heading', { name: '3B ısı haritası' })).toBeInTheDocument();
+    expect(document.querySelector('[data-mode="towers"]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bağ grafiğini çiz' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bağlar 3B' })).toBeNull();
+    expect(screen.getByText(/bilgisayardaki Neşter'de çizilebilir/)).toBeInTheDocument();
+  });
+});

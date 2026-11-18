@@ -25,7 +25,8 @@ export function ModelRow({
           {row.name}
         </p>
         <p className="model-meta">
-          {row.source} · {row.fmt} · <span className="num">{t('models.size', { size: formatBytes(row.size_bytes) })}</span>
+          {row.source} · {row.fmt.toLowerCase() === row.source.toLowerCase() ? '' : `${row.fmt} · `}
+          <span className="num">{t('models.size', { size: formatBytes(row.size_bytes) })}</span>
         </p>
         <p className="model-meta">{row.arch === null ? t('models.arch.unknown') : formatArch(row.arch)}</p>
         <p className="model-meta">
