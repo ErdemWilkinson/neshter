@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import models from '@/api/__fixtures__/models.json';
 import type { Api } from '@/api/client';
@@ -77,6 +77,7 @@ beforeEach(() => {
   uiStore.setState({ route: 'models', intent: null });
 });
 afterEach(() => {
+  cleanup(); // unmount first: the store resets below would re-render a mounted screen without an API
   setApi(null);
   sessionStore.setState({ model: null });
   basketStore.getState().replaceAll({ items: [], shelf: [], savedOps: [] });

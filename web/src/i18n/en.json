@@ -107,7 +107,13 @@
   "saveflow.nothing": "No cuts are left to save.",
   "saveflow.failed": "The numbers could not be refreshed; your basket is unchanged.",
 
+  "home.kicker": "NESHTER · LOCAL MODEL SURGERY",
+  "home.headline": "See inside your model. Cut what you don’t want.",
+  "home.promise": "100% local · no account · no telemetry",
   "home.title": "What do you want to do?",
+  "home.demo": "Try the example",
+  "home.demo.hint": "About a 1 GB download the first time. A small model reads “The capital of France is”; we switch off its two strongest heads and measure how the answer changes.",
+  "demo.note": "Example: the model read “The capital of France is”. The {n} strongest heads at the last word are picked and measured: how likely is “Paris” with and without them?",
   "home.reduce": "Reduce a behavior",
   "home.reduce.hint": "Pick a behavior; you find the related heads and cut them temporarily.",
   "home.chat": "Chat",

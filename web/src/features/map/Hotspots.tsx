@@ -8,6 +8,14 @@ import { formatPower } from './format';
 
 export const HOTSPOT_COUNT = 10;
 
+/** The `n` strongest heads, strongest first (ties: lower layer, then lower head). */
+export function topHeads(values: number[][], n: number): { layer: number; head: number; power: number; id: NodeId }[] {
+  return values
+    .flatMap((row, layer) => row.map((power, head) => ({ layer, head, power, id: headId(layer, head) })))
+    .sort((a, b) => b.power - a.power || a.layer - b.layer || a.head - b.head)
+    .slice(0, n);
+}
+
 /**
  * The strongest heads at the chosen token, strongest first, each with a bar and a one-click pick: the shortest way
  * from "which heads matter here?" to a selection. `values` must be scaled over the whole map (not per layer), or
@@ -24,14 +32,7 @@ export function Hotspots({
 }) {
   const t = useT();
   const selected = useStore(selectionStore, (s) => s.selected);
-  const top = useMemo(
-    () =>
-      values
-        .flatMap((row, layer) => row.map((power, head) => ({ layer, head, power, id: headId(layer, head) })))
-        .sort((a, b) => b.power - a.power || a.layer - b.layer || a.head - b.head)
-        .slice(0, HOTSPOT_COUNT),
-    [values],
-  );
+  const top = useMemo(() => topHeads(values, HOTSPOT_COUNT), [values]);
 
   return (
     <div className="hotspots">

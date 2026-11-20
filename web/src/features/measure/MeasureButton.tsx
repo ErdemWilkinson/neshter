@@ -1,7 +1,9 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { etaSeconds } from '@/api/eta';
 import { getApi } from '@/api/currentApi';
+import { jobMessage } from '@/api/jobMessage';
+import { uiStore } from '@/core/stores/ui';
 import { ApiError, BusyError, type ErrorCode } from '@/api/errors';
 import type { EffectResult } from '@/api/schemas';
 import { useJob } from '@/api/useJob';
@@ -10,6 +12,7 @@ import { fromEffectResult } from '@/core/measurement';
 import type { HeadOp } from '@/core/ops';
 import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { measureStore } from '@/core/stores/measure';
+import { demoStore } from '@/features/demo/demoStore';
 import { exploreStore } from '@/features/map/exploreStore';
 import { sessionStore } from '@/core/stores/session';
 import { useT } from '@/i18n';
@@ -43,7 +46,7 @@ function Progress({ message, progress, startedAt }: { message: string; progress:
   return (
     <div className="measure-progress" role="status">
       <progress value={Math.min(1, Math.max(0, progress))} max={1} aria-label={t('jobs.progress')} />
-      <p>{message === '' ? t('measure.running') : message}</p>
+      <p>{message === '' ? t('measure.running') : jobMessage(message, uiStore.getState().lang)}</p>
       {elapsedMs !== null && <p className="num">{t('jobs.elapsed', { t: duration(elapsedMs / 1000) })}</p>}
       {eta !== null && <p className="num">{t('measure.eta', { t: duration(eta) })}</p>}
     </div>
@@ -62,6 +65,8 @@ export function MeasureButton({ ops }: { ops: readonly HeadOp[] }) {
   const [text, setText] = useState(String(bounds.default));
   const nMax = clampNMax(text, bounds);
   const running = job !== null && (job.state === 'queued' || job.state === 'running');
+  const box = useRef<HTMLDivElement>(null);
+  const demoStep = useStore(demoStore, (s) => s.step);
 
   const measure = async () => {
     setFailure(null);
@@ -96,8 +101,17 @@ export function MeasureButton({ ops }: { ops: readonly HeadOp[] }) {
     }
   };
 
+  // The example from Home measures its picked heads without a click, and brings the progress into view.
+  useEffect(() => {
+    if (demoStore.getState().step !== 'measure' || ops.length === 0 || locked || running) return;
+    demoStore.getState().setStep('idle');
+    box.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    queueMicrotask(() => void measure()); // after the effect: measuring sets this component's state
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one measurement per example; `measure` is a fresh closure each render
+  }, [demoStep, ops, locked, running]);
+
   return (
-    <div className="measure">
+    <div className="measure" ref={box}>
       <Button variant="primary" onClick={() => void measure()} disabled={ops.length === 0 || locked || running}>
         {t('measure.button')}
       </Button>

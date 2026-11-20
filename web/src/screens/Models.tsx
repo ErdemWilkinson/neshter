@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { useStore } from 'zustand';
 import { isDeviceApp } from '@/api/device/bridge';
 import { getApi } from '@/api/currentApi';
 import { asPhoneApi } from '@/api/device/deviceApi';
 import { ApiError, type ErrorCode } from '@/api/errors';
 import type { ModelEntry } from '@/api/schemas';
+import { demoStore } from '@/features/demo/demoStore';
 import { LoadScreen, type LoadPlan } from '@/features/models/LoadScreen';
 import { ModelRow } from '@/features/models/ModelRow';
 import { PathField } from '@/features/models/PathField';
@@ -58,7 +60,21 @@ export function Models() {
   // Switching models drops the cuts of the model on screen, so unsaved work asks first (autosave keeps the draft).
   const begin = (next: LoadPlan) => guard.request('switch_model', () => setPlan(next));
 
-  if (plan !== null) return <LoadScreen plan={plan} onBack={() => setPlan(null)} />;
+  // The example from Home skips the list: it starts the sample download straight away.
+  const demoStep = useStore(demoStore, (s) => s.step);
+  useEffect(() => {
+    if (demoStep !== 'load' || isDeviceApp()) return;
+    demoStore.getState().setStep('run');
+    begin({ kind: 'sample' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per example start; `begin` is a fresh closure each render
+  }, [demoStep]);
+
+  const back = () => {
+    demoStore.getState().stop(); // a cancelled or failed load ends the example too
+    setPlan(null);
+  };
+
+  if (plan !== null) return <LoadScreen plan={plan} onBack={back} />;
 
   return (
     <section className="models-screen">

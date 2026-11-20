@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { etaSeconds } from '@/api/eta';
+import { jobMessage } from '@/api/jobMessage';
 import type { JobState } from '@/api/schemas';
+import { uiStore } from '@/core/stores/ui';
 import { t, useT } from '@/i18n';
 import { Button } from './Button';
 import { useProgressShown } from './useProgressShown';
@@ -30,7 +32,7 @@ export function ProgressCard({ job, onCancel }: { job: JobState; onCancel: () =>
     <div className="progress-card glass">
       <progress value={progress} max={1} aria-label={t('jobs.progress')} />
       <span className="num">{t('jobs.percent', { pct: Math.round(progress * 100) })}</span>
-      <p className="progress-message">{job.message}</p>
+      <p className="progress-message">{jobMessage(job.message, uiStore.getState().lang)}</p>
       {elapsedMs !== null && <p className="num">{t('jobs.elapsed', { t: duration(elapsedMs / 1000) })}</p>}
       {eta !== null && eta >= 1 && <p className="num">{t('jobs.eta', { t: duration(eta) })}</p>}
       <Button onClick={onCancel}>{t('ui.cancel')}</Button>

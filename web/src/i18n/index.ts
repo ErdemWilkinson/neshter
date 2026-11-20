@@ -40,7 +40,6 @@ export function plural(key: MessageKey, n: number, params?: Params): string {
   return t(chosen, { n, ...params });
 }
 
-/** `prefs.lang`, else `tr` when the browser language starts with `tr`, else `en`. */
 /** The saved choice, else English: the app starts in English whatever the system language is. */
 export function resolveLang(prefLang: Lang | null): Lang {
   return prefLang ?? 'en';

@@ -8,6 +8,11 @@ dosyası olarak kaydeder.
 
 **%100 yereldir:** içinde bulut API'si, hesap ve **telemetri yoktur**.
 
+<img src="docs/screenshots/demo.gif" alt="Örneği dene: model 'The capital of France is' metnini okur, en güçlü iki head seçilip kapatılır ve Paris olasılığı %27'den %22'ye düşer">
+
+*Ana sayfadaki tek tıklık örnek (CPU'da Qwen2.5-0.5B-Instruct, bekleme kısımları hızlandırıldı): son
+kelimedeki en güçlü iki head kapatılır ve rastgele head'lere karşı ölçülür.*
+
 ## Ekran görüntüleri
 
 Tüm görüntüler: CPU'da SmolLM2-135M-Instruct, metin "The capital of France is". Arayüz İngilizce açılır;
@@ -27,8 +32,9 @@ taşıyan head'leri sıralar ve her birini ölçer.
 <td><img src="docs/screenshots/03-hunt-results.png" alt="Bulunan headler, tahmini skor ve ölçülen etki"></td>
 </tr></table>
 
-**3B görünümler.** Sütunlar halinde ısı haritası (yükseklik head'in gücü) ve bir cevabın tahmini bağ
-grafiği: düğümler head, MLP birimi ve token; nehirler cevaba akan bilgi.
+**3B görünümler.** Sütunlar halinde ısı haritası (yükseklik head'in gücü; kesilen iki head kırmızı) ve
+bir cevabın tahmini bağ grafiği: düğümler head, MLP birimi ve token; nehirler cevaba akan bilgi. Bir
+nehir kesilmiş (✕) ve gerçek etkisi ölçülmüş.
 
 <table><tr>
 <td><img src="docs/screenshots/07-heat-3d.png" alt="Sütunlu 3B ısı haritası"></td>
