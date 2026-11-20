@@ -28,6 +28,8 @@ export interface FlowPalette {
 }
 
 const NEON = { river: '#2ee6c5', light: '#c8fff5', cut: '#ff7a45' } as const;
+/** The side of a tower in the basket: a darker red than its lid, so the lid still reads as the top. */
+const BASKET_SIDE = '#8f1d17';
 
 /** The app's look tokens; fallbacks are the dark values in tokens.css (jsdom has no stylesheet). */
 export function readFlowPalette(): FlowPalette {
@@ -99,7 +101,14 @@ export interface Hits {
   edges: { id: string; pts: [number, number][]; w: number }[];
 }
 
-const CUT_SECONDS = 0.9;
+/** A river cut: it snaps, its halves pull back over this long, then the ✕ pops in. */
+const CUT_SECONDS = 1.4;
+/** The white ring that spreads from the snap point. */
+const CUT_RING_SECONDS = 0.6;
+const easeInOut = (x: number): number => {
+  const c = clamp01(x);
+  return c < 0.5 ? 4 * c ** 3 : 1 - (-2 * c + 2) ** 3 / 2;
+};
 const REMOVE_SECONDS = 0.7;
 
 function polyline(ctx: CanvasRenderingContext2D, ps: readonly (readonly number[])[]) {
@@ -214,10 +223,12 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     const base = P([x, 0, z]);
     const c = towerH > 0 && !inGraph ? P([x, towerH * v, z]) : base;
     const rx = Math.max(1, rmax * (0.3 + 0.7 * Math.sqrt(v)) * shrink);
-    ctx.globalAlpha = alpha * (0.65 + 0.35 * v) * (inBasket ? 0.45 : 1);
+    // A head in the basket is painted red (it fades in when added) instead of being crossed out.
+    const red = inBasket ? (f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35)) : 0;
+    ctx.globalAlpha = inBasket ? alpha : alpha * (0.65 + 0.35 * v);
     if (c !== base) {
       // the tower's side: a band from its foot to its top, darker than the top so the top reads as a lid
-      ctx.fillStyle = rgbCss(color(0.1 + 0.6 * v));
+      ctx.fillStyle = red > 0.5 ? BASKET_SIDE : rgbCss(color(0.1 + 0.6 * v));
       ctx.beginPath();
       ctx.moveTo(base[0] - rx, base[1]);
       ctx.lineTo(c[0] - rx, c[1]);
@@ -233,19 +244,19 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
     ctx.beginPath();
     ctx.ellipse(c[0], c[1], rx, rx * squash, 0, 0, Math.PI * 2);
     ctx.fill();
+    if (red > 0) {
+      ctx.globalAlpha = alpha * red;
+      ctx.fillStyle = pal.select;
+      ctx.fill();
+    }
     ctx.globalAlpha = alpha;
-    if (f.chosen.has(id) || f.focus.has(id)) {
+    // a red tower is mark enough: no selection ring on top of it (the keyboard focus ring still shows)
+    if ((f.chosen.has(id) && !inBasket) || f.focus.has(id)) {
       ctx.strokeStyle = f.focus.has(id) ? pal.text1 : pal.select;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.ellipse(c[0], c[1], rmax + 1.5, (rmax + 1.5) * squash, 0, 0, Math.PI * 2);
       ctx.stroke();
-    }
-    const cw = COL * 0.88;
-    const cd = ROW * 0.84;
-    if (inBasket) {
-      const k = f.reduced ? 1 : easeOut((t - (f.basketAt.get(id) ?? -9)) / 0.35);
-      cross(ctx, c[0], c[1], Math.min(cw, cd) * 0.22 * fitPx(f) * k, pal.basket, 2);
     }
     ctx.globalAlpha = 1;
   }
@@ -397,13 +408,6 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
   return hits;
 }
 
-/** Cell size in px at the floor's centre, as a 0.5..1.5 factor (so marks keep a sane size on any model). */
-function fitPx(f: FrameState): number {
-  const a = project(f.cam, f.vp, [0, 0, 0]);
-  const b = project(f.cam, f.vp, [COL, 0, 0]);
-  return Math.min(1.5, Math.max(0.5, (b[0] - a[0]) / COL));
-}
-
 /** A cut: the river snaps at its middle, a short ring marks the spot, both halves pull back to their ends, and a
  * dashed trace with a ✕ stays. */
 function drawCut(
@@ -416,7 +420,7 @@ function drawCut(
   alpha: number,
 ) {
   const since = f.t - (f.cutAt.get(id) ?? -9);
-  const k = f.reduced ? 1 : easeOut(since / CUT_SECONDS);
+  const k = f.reduced ? 1 : easeInOut(since / CUT_SECONDS);
   const mid = CURVE_STEPS / 2;
   const m = ps[mid];
   ctx.globalAlpha = alpha * 0.7;
@@ -440,7 +444,7 @@ function drawCut(
       polyline(ctx, ps.slice(down));
       ctx.stroke();
     }
-    const ring = easeOut(since / 0.35);
+    const ring = easeOut(since / CUT_RING_SECONDS);
     if (ring < 1 && m !== undefined) {
       ctx.globalAlpha = alpha * (1 - ring);
       ctx.strokeStyle = f.palette.text1;
@@ -451,8 +455,22 @@ function drawCut(
     }
   }
   ctx.globalAlpha = alpha;
-  if (m !== undefined) cross(ctx, m[0], m[1], 5.5 * Math.min(1, k * 3), f.palette.cut, 2.4);
+  // the ✕ waits until the halves have mostly pulled back, so the snap itself stays visible
+  if (m !== undefined) cutMark(ctx, m[0], m[1], f.reduced ? 1 : easeOut((k - 0.55) / 0.45), f.palette);
   ctx.globalAlpha = 1;
+}
+
+/** The ✕ on a cut river: a glowing round-capped cross that pops in. */
+function cutMark(ctx: CanvasRenderingContext2D, x: number, y: number, k: number, pal: FlowPalette) {
+  if (k <= 0) return;
+  const pop = 1 + 0.25 * Math.sin(Math.PI * k); // a little overshoot while it appears
+  const r = 9 * k * pop;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.shadowColor = pal.cut;
+  ctx.shadowBlur = GLOW.ring * 2;
+  cross(ctx, x, y, r * 0.45, pal.cut, 2.6);
+  ctx.restore();
 }
 
 /** A head in the basket: its ring closes in on itself, then a dashed outline and a ✕ stay where it was. */

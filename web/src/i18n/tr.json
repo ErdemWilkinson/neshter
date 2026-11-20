@@ -107,7 +107,13 @@
   "saveflow.nothing": "Kaydedilecek kesim kalmıyor.",
   "saveflow.failed": "Sayılar yenilenemedi; sepetiniz değişmedi.",
 
+  "home.kicker": "NESHTER · YEREL MODEL CERRAHİSİ",
+  "home.headline": "Modelinin içini gör. İstemediğini kes.",
+  "home.promise": "%100 yerel · hesap yok · telemetri yok",
   "home.title": "Ne yapmak istiyorsun?",
+  "home.demo": "Örneği dene",
+  "home.demo.hint": "İlk seferde yaklaşık 1 GB indirilir. Küçük bir model “The capital of France is” metnini okur; en güçlü iki head’ini kapatıp cevabın nasıl değiştiğini ölçeriz.",
+  "demo.note": "Örnek: model “The capital of France is” metnini okudu. Son kelimedeki en güçlü {n} head seçildi ve ölçülüyor: onlarla ve onlarsız “Paris” ne kadar olası?",
   "home.reduce": "Bir davranışı azalt",
   "home.reduce.hint": "Bir davranışı seç; ilgili head'leri bulup geçici olarak kesersin.",
   "home.chat": "Sohbet et",

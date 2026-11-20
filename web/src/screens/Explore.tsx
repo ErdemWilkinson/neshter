@@ -7,6 +7,7 @@ import type { NodeId } from '@/core/ids';
 import { headId } from '@/core/ids';
 import { isLocked, jobsStore } from '@/core/stores/jobs';
 import { basketStore } from '@/core/stores/basket';
+import { selectionStore } from '@/core/stores/selection';
 import { sessionStore } from '@/core/stores/session';
 import { uiStore } from '@/core/stores/ui';
 import type { BasketItem } from '@/core/basket';
@@ -15,10 +16,11 @@ import { normalizeGlobal, normalizePerLayer, sliceToken } from '@/core/normalize
 import { BasketPanel } from '@/features/basket/BasketPanel';
 import { ShelfView } from '@/features/basket/ShelfView';
 import { SelectionPanel } from '@/features/measure/SelectionPanel';
+import { DEMO_HEADS, DEMO_PROMPT, demoStore } from '@/features/demo/demoStore';
 import { exploreStore, type Unit } from '@/features/map/exploreStore';
 import { Heatmap } from '@/features/map/Heatmap';
 import { HeatmapTable } from '@/features/map/HeatmapTable';
-import { Hotspots } from '@/features/map/Hotspots';
+import { Hotspots, topHeads } from '@/features/map/Hotspots';
 import { MlpList } from '@/features/map/MlpList';
 import { ScaleToggle } from '@/features/map/ScaleToggle';
 import { TokenStrip } from '@/features/map/TokenStrip';
@@ -99,17 +101,17 @@ export function Explore() {
     [values],
   );
 
-  const run = async () => {
+  const run = async (text: string = prompt) => {
     const id = ++runId.current;
     setRunning(true);
     setFailure(null);
     try {
-      const text = prompt;
       const response = await getApi().activity({ prompt: text });
       if (id !== runId.current) return;
       exploreStore.getState().setResult({ prompt: text, tokens: response.tokens, powerRaw: response.power_raw });
     } catch (error) {
       if (id !== runId.current) return;
+      if (demoStore.getState().step === 'pick') demoStore.getState().setStep('idle'); // the example stops here
       // Busy is the banner's business (the client flags it too; this also covers a client without the hook).
       if (error instanceof BusyError) sessionStore.getState().setBusy(true);
       else setFailure(asFailure(error));
@@ -117,6 +119,24 @@ export function Explore() {
       if (id === runId.current) setRunning(false);
     }
   };
+
+  // The example from Home: send its text once, then pick the strongest heads at the last token for the measure step.
+  const demoStep = useStore(demoStore, (s) => s.step);
+  const demoShown = useStore(demoStore, (s) => s.shown);
+  const model = useStore(sessionStore, (s) => s.model);
+  useEffect(() => {
+    if (demoStore.getState().step !== 'run' || model === null) return; // the live step: StrictMode runs this twice
+    demoStore.getState().setStep('pick');
+    exploreStore.getState().setPrompt(DEMO_PROMPT);
+    setExplorePrompt(DEMO_PROMPT);
+    queueMicrotask(() => void run(DEMO_PROMPT)); // after the effect: the run sets this component's state
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one run per example; `run` is a fresh closure each render
+  }, [demoStep, model]);
+  useEffect(() => {
+    if (demoStep !== 'pick' || hotValues === null || result?.prompt !== DEMO_PROMPT) return;
+    selectionStore.getState().set(topHeads(hotValues, DEMO_HEADS).map((row) => row.id));
+    demoStore.getState().setStep('measure');
+  }, [demoStep, hotValues, result]);
 
   const unitOptions: { value: Unit; label: string }[] = [
     { value: 'head', label: t('map.unit.head') },
@@ -139,6 +159,7 @@ export function Explore() {
           rows={2}
           value={prompt}
           onChange={(event) => {
+            demoStore.getState().stop(); // their own text: the example's explanation no longer fits
             exploreStore.getState().setPrompt(event.target.value);
             setExplorePrompt(event.target.value);
           }}
@@ -148,6 +169,7 @@ export function Explore() {
         </Button>
       </form>
 
+      {demoShown && <p className="demo-note glass">{t('demo.note', { n: DEMO_HEADS })}</p>}
       {running && <p role="status">{t('map.running')}</p>}
       {failure !== null && <ErrorCard code={failure.code} detail={failure.detail} />}
 

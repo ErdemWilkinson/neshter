@@ -8,6 +8,11 @@ new model file.
 
 It is **100% local**: there is no cloud API in it, no account, and **no telemetry**.
 
+<img src="docs/screenshots/demo.gif" alt="Try the example: the model reads 'The capital of France is', the two strongest heads are picked and switched off, and the probability of Paris drops from 27% to 22%">
+
+*The one-click example on the home screen (Qwen2.5-0.5B-Instruct on a CPU, waiting parts sped up):
+the two strongest heads at the last word are switched off and measured against random heads.*
+
 ## Screenshots
 
 All screenshots: SmolLM2-135M-Instruct on a CPU, prompt "The capital of France is".
@@ -26,9 +31,9 @@ Neshter ranks the heads that carry it and measures each one.
 <td><img src="docs/screenshots/03-hunt-results.png" alt="Heads found, with estimated score and measured effect"></td>
 </tr></table>
 
-**3D views.** The heatmap as towers (height is the head's power), and the estimated connection graph
-of one answer: nodes are heads, MLP units and tokens, rivers are the flow of information into the
-answer.
+**3D views.** The heatmap as towers (height is the head's power; the two cut heads are red), and the
+estimated connection graph of one answer: nodes are heads, MLP units and tokens, rivers are the flow
+of information into the answer. One river is cut (✕), and its real effect is measured.
 
 <table><tr>
 <td><img src="docs/screenshots/07-heat-3d.png" alt="3D heatmap as towers"></td>
