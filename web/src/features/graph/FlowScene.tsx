@@ -109,8 +109,10 @@ export default function FlowScene(props: FlowSceneProps) {
   const latestWorlds = useRef(worlds);
 
   const latestScene = useRef(scene);
+  const latestT = useRef(t);
   useEffect(() => {
     latest.current = props;
+    latestT.current = t;
     latestScene.current = scene;
     latestWorlds.current = worlds;
     if (anim.current !== null) anim.current.awakeUntil = now() + SETTLE;
@@ -230,6 +232,7 @@ export default function FlowScene(props: FlowSceneProps) {
           reduced: p.reducedMotion,
           palette,
           name: p.name,
+          layerName: (l) => latestT.current('layer.id', { layer: l }),
         });
       }
       frame = requestAnimationFrame(tick);

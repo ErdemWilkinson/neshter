@@ -1,12 +1,56 @@
 [English README](README.md)
 
-# Neşter
+# Neshter
 
-Neşter, kendi bilgisayarındaki dil modellerini açar, hangi dikkat head'inin ve davranış yönünün ne
+Neshter, kendi bilgisayarındaki dil modellerini açar, hangi dikkat head'inin ve davranış yönünün ne
 işe yaradığını gösterir, seçtiğin parçaları ölçüp susturmana izin verir ve sonucu yeni bir model
 dosyası olarak kaydeder.
 
 **%100 yereldir:** içinde bulut API'si, hesap ve **telemetri yoktur**.
+
+## Ekran görüntüleri
+
+Tüm görüntüler: CPU'da SmolLM2-135M-Instruct, metin "The capital of France is". Arayüz İngilizce açılır;
+dil seçicisinden Türkçe'ye geçilebilir.
+
+**Ağ haritası ve ölçüm.** Her head'in çıktı gücü bir ısı haritasında (satırlar katman, sütunlar head).
+Seçilen iki head, aynı katmanlardan rastgele seçilen head'lere karşı ölçülür; ikisini kesmek " Paris"
+olasılığını %48'den %20'ye düşürür.
+
+<img src="docs/screenshots/05-measure.png" alt="Seçili iki head ve ölçülen gerçek etkiyle ısı haritası">
+
+**Davranışı bul.** Bir davranışı, onu gösteren ve göstermeyen örnek isteklerle tarif edersin; Neshter onu
+taşıyan head'leri sıralar ve her birini ölçer.
+
+<table><tr>
+<td><img src="docs/screenshots/02-find-behavior.png" alt="Davranış hazır ayarları ve örnek istekler"></td>
+<td><img src="docs/screenshots/03-hunt-results.png" alt="Bulunan headler, tahmini skor ve ölçülen etki"></td>
+</tr></table>
+
+**3B görünümler.** Sütunlar halinde ısı haritası (yükseklik head'in gücü) ve bir cevabın tahmini bağ
+grafiği: düğümler head, MLP birimi ve token; nehirler cevaba akan bilgi.
+
+<table><tr>
+<td><img src="docs/screenshots/07-heat-3d.png" alt="Sütunlu 3B ısı haritası"></td>
+<td><img src="docs/screenshots/08-connections-3d.png" alt="Paris cevabında biten 3B bağ grafiği"></td>
+</tr></table>
+
+**İçine bak ve karşılaştır.** Katman katman tahmin (logit lens), modelin her katmandan sonra ne
+cevaplayacağını gösterir. Karşılaştır, orijinal ve kesilmiş modeli yan yana koyar, sonra test setini koşar.
+
+<table><tr>
+<td><img src="docs/screenshots/06-logit-lens.png" alt="Katman katman tahmin"></td>
+<td><img src="docs/screenshots/09-compare.png" alt="Orijinal ve kesilmiş cevaplar yan yana"></td>
+</tr></table>
+
+**Telefonda.** Android uygulaması modeli cihazda çalıştırır (llama.cpp ile GGUF): ısı haritası, 3B ısı
+haritası ve sohbet; sunucu ve internet gerekmez.
+
+<table><tr>
+<td><img src="docs/screenshots/phone-heatmap.png" alt="Telefon: ısı haritası" width="260"></td>
+<td><img src="docs/screenshots/phone-heat-3d.png" alt="Telefon: 3B ısı haritası" width="260"></td>
+<td><img src="docs/screenshots/phone-chat.png" alt="Telefon: cihazdaki modelle sohbet" width="260"></td>
+</tr></table>
 
 ## Neleri destekler
 
@@ -26,30 +70,30 @@ dosyası olarak kaydeder.
 - Test setindeki KL ve perplexity kancalarla ölçülür; yön içeren tariflerin ürettiği cevaplar ise
   pişirilmiş, kayıtta yuvarlanmış ağırlıklardan gelir. Yani "gönderdiğini ölç" ilkesi cevaplar için
   geçerlidir, bu iki sayı için değil.
-- Yerel bf16 desteği olmayan işlemcilerde, RAM yetiyorsa Neşter float32 ile hesaplar. CPU'da varsayılan
+- Yerel bf16 desteği olmayan işlemcilerde, RAM yetiyorsa Neshter float32 ile hesaplar. CPU'da varsayılan
   av yöntemi `activation_diff`'tir (attribution GPU için önerilir).
 
 ## Kurulum ve çalıştırma
 
-Neşter henüz PyPI'da yayımlanmadı; bu deponun bir klonundan, kilitli bağımlılık kümesiyle
+Neshter henüz PyPI'da yayımlanmadı; bu deponun bir klonundan, kilitli bağımlılık kümesiyle
 (`uv.lock`) çalıştır:
 
 ```
-git clone <repo-url> neshter
+git clone https://github.com/ErdemWilkinson/neshter.git
 cd neshter
 uv run --frozen neshter
 ```
 
 Windows'ta klondaki `neshter.bat` dosyasını çift tıklayabilir ya da çalıştırabilirsin. Bu klonu kilit
 dosyasıyla çalıştırır; [uv](https://docs.astral.sh/uv/) yoksa kurmadan önce sorar (E/H) ve Astral'in
-resmi kurulum betiğini (sabit sürüm) kullanır. Neşter yerel bir sunucu başlatır ve tarayıcını açar.
+resmi kurulum betiğini (sabit sürüm) kullanır. Neshter yerel bir sunucu başlatır ve tarayıcını açar.
 Seçenekler: `--no-browser`, `--port N`.
 
 NVIDIA ekran kartında: `neshter.bat` kartı görürse torch'un CUDA derlemesini kullanır (sürücü 580+;
 kapatmak için `NESHTER_TORCH=cpu`). Elle: `uv run --frozen --no-group cpu --group gpu neshter`.
 Varsayılan `uv run` işlemci derlemesini kurar.
 
-`uvx --from git+<repo-url> neshter` da çalışır, ama kilitsizdir: bağımlılıklar izin verilen
+`uvx --from git+https://github.com/ErdemWilkinson/neshter neshter` da çalışır, ama kilitsizdir: bağımlılıklar izin verilen
 aralıktaki en yeni sürüme çözülür, riski sana aittir. Çıplak `uvx neshter` çalıştırma: paket
 yayımlanana kadar PyPI'daki o ad bize ait değil.
 
@@ -75,7 +119,7 @@ GGUF çıktısı, uçtan uca denenene kadar **deneyseldir**. Bilgisayarında
 `.gguf` dosyasının yanında tutar.
 
 Kaydedilen GGUF'u Ollama'ya eklemek isteğe bağlıdır ve **varsayılan olarak kapalıdır**. Açılırsa
-Neşter senin yerine `ollama create` çalıştırır.
+Neshter senin yerine `ollama create` çalıştırır.
 
 ## Güvenlik modeli
 
@@ -101,7 +145,7 @@ Neşter senin yerine `ollama create` çalıştırır.
 
 ## Sorumlu kullanım
 
-Neşter'de hazır bir `refusal` (reddetme) kavramı vardır. Bu kavram kesilerek kaydedilen modellerin
+Neshter'de hazır bir `refusal` (reddetme) kavramı vardır. Bu kavram kesilerek kaydedilen modellerin
 güvenlik davranışı zayıfladığı için, bu modellerde `abliterated: refusal` metadata'sı ve model
 kartında `safety-ablated` etiketi bulunur. Bu modelleri sorumlulukla kullan ve temel modelin
 lisansına uy (örneğin Llama lisansı, türetilmiş modeller için adlandırma ve kullanım politikası
@@ -118,10 +162,12 @@ kendi yapmadığın bir tarifi uygularken `--label-safety` kullan.
 ## Durum
 
 v0.1 arka ucu hazır: model yükleme, tarama, head etkinlik haritaları, davranış bulma, karşılaştırma,
-tarifler, dışa aktarma, yerel API ve komut satırı. 2D web arayüzü (Plan 2) tamam: model seçici, ısı
-haritası, ölçme, kesme, karşılaştırma, davranış avı, kaydetme, taslaklar ve geri yükleme. Arayüz şimdilik
-yalnızca koyu temalı; sıradaki iş 3D grafik görünümü (Plan 3).
+tarifler, dışa aktarma, yerel API ve komut satırı. Web arayüzü tamam: model seçici, ısı haritası, ölçme,
+kesme, karşılaştırma, davranış avı, kaydetme, taslaklar ve geri yükleme, katman katman tahmin ve dikkat
+desenleri, 3B görünümler (3B ısı haritası ve bağ grafiği). Android uygulaması GGUF modelleri telefonda
+çalıştırır (ısı haritası, 3B ısı haritası, katman katman tahmin, sohbet). Arayüz şimdilik yalnızca koyu
+temalı.
 
 ## Lisans
 
-License: TBD
+Neshter, [Apache Lisansı 2.0](LICENSE) ile lisanslanmıştır.

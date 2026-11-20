@@ -28,6 +28,7 @@ function fakeCtx() {
     fillRect: (...args: number[]) => void tiles.push({ args, style: ctx.fillStyle }),
     strokeRect: (...args: number[]) => void strokes.push({ style: ctx.strokeStyle, args }),
     setTransform: () => undefined,
+    clearRect: () => undefined,
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, tiles, strokes };
 }
@@ -108,6 +109,28 @@ test('a cell that is selected and in the basket gets both outlines, the keyboard
   expect(strokes[2]?.args.slice(0, 2)).toEqual([0, 0]); // the keyboard focus on the cell's edge
 });
 
+test('lifted cells are drawn last, larger, the hovered one on top with a light edge', () => {
+  const values = zeros(1, 3);
+  const layout = makeCellLayout({ n_layers: 1, n_heads: 3 }, rect(0, 0, 300, 100), values, scale);
+  const { ctx, tiles, strokes } = fakeCtx();
+  drawHeatmap(ctx, layout, values, {
+    selected: new Set([headId(0, 0)]),
+    basket: new Set<NodeId>(),
+    focus: null,
+    lift: new Map([
+      [headId(0, 2), 1.35],
+      [headId(0, 0), 1.2],
+    ]),
+    hover: headId(0, 2),
+  });
+  expect(tiles).toHaveLength(3);
+  expect(tiles[0]?.args[0]).toBe(100 + TILE_GAP / 2); // the flat cell first
+  expect(tiles[1]?.args).toEqual([0, -10, 120, 120]); // moved back inside sideways; taller than the one row, so centred
+  expect(tiles[2]?.args[2]).toBeCloseTo(135); // the hovered cell last, the largest
+  expect((tiles[2]?.args[0] ?? 0) + (tiles[2]?.args[2] ?? 0)).toBeCloseTo(300); // its right edge stays on the map
+  expect(strokes.map((s) => s.style)).toEqual(['#ff3b30', '#e6eaf2']);
+});
+
 test('the heat colour runs along viridis, clamped', () => {
   expect(heatColor(0)).toEqual([68, 1, 84]);
   expect(heatColor(1)).toEqual([253, 231, 37]);
@@ -139,7 +162,8 @@ function renderHeatmap(values: number[][], basket: ReadonlySet<NodeId> = new Set
     lineWidth: 1,
     fillRect: () => void fills.push(1),
     strokeRect: () => undefined,
-    setTransform: () => void (fills.length = 0), // each draw starts with a transform: count the last draw only
+    setTransform: () => undefined,
+    clearRect: () => void (fills.length = 0), // each frame starts with a clear: count the last frame only
   };
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
   const dims = { n_layers: values.length, n_heads: values[0]?.length ?? 0 };

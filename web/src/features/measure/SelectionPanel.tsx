@@ -34,7 +34,7 @@ export function SelectionPanel({ values }: { values: number[][] | null }) {
         <ul className="chip-list" aria-label={t('selection.list')}>
           {ops.map((op) => (
             <li key={headId(op.layer, op.head)} className="chip">
-              <span className="num">{`K${op.layer}·H${op.head}`}</span>
+              <span className="num">{t('head.id', { layer: op.layer, head: op.head })}</span>
               <Button
                 variant="ghost"
                 aria-label={t('selection.remove', { layer: op.layer, head: op.head })}
@@ -54,7 +54,7 @@ export function SelectionPanel({ values }: { values: number[][] | null }) {
       <p>{t('measure.zero')}</p>
       <TechDetail>{t('measure.zero.tech')}</TechDetail>
       <MeasureButton ops={ops} />
-      {measurement !== undefined && <ControlStatsCard m={measurement} cuts={ops.map((op) => `K${op.layer}·H${op.head}`)} />}
+      {measurement !== undefined && <ControlStatsCard m={measurement} cuts={ops.map((op) => t('head.id', { layer: op.layer, head: op.head }))} />}
       <CutButton selection={ops} />
     </section>
   );

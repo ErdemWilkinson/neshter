@@ -705,7 +705,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
     def load(body: LoadReq):
         path = Path(body.path)
         if not path.exists():
-            raise HTTPException(422, f"'{path}' bulunamadı.")
+            raise HTTPException(404, f"'{path}' bulunamadı.")
 
         def fn(report, cancel):
             with session.lock:

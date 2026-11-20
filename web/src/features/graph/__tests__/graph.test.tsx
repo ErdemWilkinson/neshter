@@ -11,7 +11,7 @@ import { setLang } from '@/i18n';
 import { forgetKeptGraph, GraphPanel } from '../GraphPanel';
 import { PITCH_MAX, project, tiltMix, VIEWS } from '../camera';
 import { hitTest } from '../drawFlow';
-import { dotKinds } from '../HundredDots';
+import { dotKinds, HundredDots } from '../HundredDots';
 import { extent, incomingShare, liveWeights, placeNodes, trunkWidths, visibleEdges } from '../layout';
 
 // jsdom has no canvas: the scene is replaced by buttons that pick what the real scene would.
@@ -343,4 +343,14 @@ describe('on the phone', () => {
     expect(screen.queryByRole('button', { name: 'Bağlar 3B' })).toBeNull();
     expect(screen.getByText(/bilgisayardaki Neşter'de çizilebilir/)).toBeInTheDocument();
   });
+});
+
+test('the big before/after numbers follow the language: 48% in English, %48 in Turkish', () => {
+  setLang('en');
+  const { container, unmount } = render(<HundredDots before={0.48} after={0.2} sentence="s" cuts={[]} guess="the" changed />);
+  expect(container.querySelector('.hundred-head')?.textContent).toBe('48% 20%');
+  unmount();
+  setLang('tr');
+  const tr = render(<HundredDots before={0.48} after={0.2} sentence="s" cuts={[]} guess="the" changed />);
+  expect(tr.container.querySelector('.hundred-head')?.textContent).toBe('%48 %20');
 });

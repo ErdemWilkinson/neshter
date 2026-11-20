@@ -72,7 +72,7 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
                       </span>
                       {row.top.slice(0, 3).map((tok, j) => (
                         <span key={tok.token_id} className={`lens-token ${kind(tok.token_id, j)}`.trim()}>
-                          <code>{shownToken(tok.text)}</code> <span className="num">%{pct(tok.p)}</span>
+                          <code>{shownToken(tok.text)}</code> <span className="num">{t('jobs.percent', { pct: pct(tok.p) })}</span>
                         </span>
                       ))}
                     </td>
@@ -80,7 +80,7 @@ export function LensPanel({ prompt, position, disabled }: { prompt: string; posi
                       <span className="lens-bar" aria-hidden="true">
                         <i style={{ width: `${Math.max(1, row.p_final * 100)}%` }} />
                       </span>
-                      <span className="num">%{pct(row.p_final)}</span>
+                      <span className="num">{t('jobs.percent', { pct: pct(row.p_final) })}</span>
                     </td>
                   </tr>
                 ))}

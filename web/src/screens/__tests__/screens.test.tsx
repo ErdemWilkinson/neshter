@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import models from '@/api/__fixtures__/models.json';
 import type { Api } from '@/api/client';
 import { setApi } from '@/api/currentApi';
+import { ApiError } from '@/api/errors';
 import type { JobState, LoadedSession, ModelEntry } from '@/api/schemas';
 import { sessionLoaded } from '@/app/__tests__/fakeServer';
 import { basketStore } from '@/core/stores/basket';
@@ -314,6 +315,19 @@ test('a failed load shows the error by code and a way back', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Modellere dön' }));
   expect(await screen.findByRole('list', { name: 'Modeller' })).toBeInTheDocument();
   expect(api.loadModel).toHaveBeenCalledTimes(1);
+});
+
+test('a folder that does not exist says so, under a heading that is no longer "loading"', async () => {
+  const { api } = makeApi();
+  api.loadModel = vi.fn(async () => {
+    throw new ApiError(404, 'not_found', "'D:\\yok' bulunamadı.");
+  });
+  render(<Models />);
+  await screen.findByRole('list', { name: 'Modeller' });
+  await userEvent.type(screen.getByLabelText('Model klasörü (tam yol)'), 'D:\\yok{Enter}');
+  expect(await screen.findByRole('heading', { level: 1, name: 'Model açılamadı' })).toBeInTheDocument();
+  expect(screen.getByText('Bu klasör ya da dosya bulunamadı; yolu kontrol edip yeniden deneyin.')).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Model yükleniyor' })).toBeNull();
 });
 
 test('İptal cancels the running load job', async () => {

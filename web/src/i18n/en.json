@@ -162,6 +162,7 @@
   "models.loading": "Loading the model",
   "models.back": "Back to models",
   "models.fail": "The model could not be opened",
+  "models.fail.notFound": "This folder or file was not found; check the path and try again.",
 
   "map.run": "Run",
   "map.prompt": "Text",
@@ -187,6 +188,8 @@
   "map.legend.high": "strong",
   "map.heatmap.label": "Head output strength heatmap",
   "map.heatmap.role": "heatmap",
+  "head.id": "L{layer}·H{head}",
+  "layer.id": "L{layer}",
   "map.announce": "L{layer} · H{head} · strength {value} · {state}",
   "map.selected": "selected",
   "map.notSelected": "not selected",
@@ -412,8 +415,8 @@
   "lens.col.final": "Probability of \"{answer}\"",
   "attn.title": "Attention pattern",
   "attn.lead": "Shows which earlier tokens a head reads for every token. Row: the reading token, column: the token read. A token can only read itself and earlier tokens, so the table is a triangle; a bright cell is read a lot.",
-  "attn.summary": "K{layer}·H{head} at the token \"{token}\" looks most at:",
-  "attn.gridLabel": "K{layer}·H{head} attention pattern",
+  "attn.summary": "L{layer}·H{head} at the token \"{token}\" looks most at:",
+  "attn.gridLabel": "L{layer}·H{head} attention pattern",
   "attn.tooLong": "The prompt is long: the table is drawn for at most {n} tokens. The line above shows where the chosen token looks most.",
 
   "graph.title": "3D connections",

@@ -103,10 +103,10 @@ export function LoadScreen({ plan, onBack }: { plan: LoadPlan; onBack: () => voi
 
   return (
     <section className="load-screen" aria-busy={failure === null}>
-      <h1>{t('models.loading')}</h1>
+      <h1>{failure !== null ? t('models.fail') : t('models.loading')}</h1>
       {failure !== null ? (
         <>
-          <p>{t('models.fail')}</p>
+          {failure.code === 'not_found' && <p>{t('models.fail.notFound')}</p>}
           <ErrorCard code={failure.code} detail={failure.detail} />
           <Button onClick={onBack}>{t('models.back')}</Button>
         </>

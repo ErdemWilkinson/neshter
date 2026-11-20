@@ -1,6 +1,6 @@
-# Neşter for Android
+# Neshter for Android
 
-The phone app runs Neşter's UI in a WebView, with the model running on the phone itself. It needs no server and no internet.
+The phone app runs Neshter's UI in a WebView, with the model running on the phone itself. It needs no server and no internet.
 
 The app runs two kinds of model:
 
@@ -68,7 +68,7 @@ Real-effect measurements use 8 of the neutral prompts, 4 Turkish and 4 English. 
     - present key/values (used for generation).
   - Also writes `meta.json` (name, sha256, neutral prompts, chat prefix and suffix).
   - Also writes `vocab.txt`, `merges.txt` and `added.txt` for the Kotlin tokenizer.
-- `export/verify_engine.py`: compares the engine with Neşter's own measurements:
+- `export/verify_engine.py`: compares the engine with Neshter's own measurements:
   - head power;
   - attention;
   - logit lens;

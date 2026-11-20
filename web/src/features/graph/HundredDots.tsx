@@ -44,7 +44,7 @@ export function HundredDots({
       </div>
       <div className="hundred-side">
         <p className="hundred-head num" aria-hidden="true">
-          <s>%{b}</s> <b>%{a}</b>
+          <s>{t('jobs.percent', { pct: b })}</s> <b>{t('jobs.percent', { pct: a })}</b>
         </p>
         <p className="hundred-sentence">{sentence}</p>
         <ul className="hundred-key">

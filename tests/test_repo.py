@@ -14,7 +14,6 @@ def test_docs_have_no_private_links_or_local_paths():
         ROOT / "SECURITY.md",
         *(ROOT / "docs" / "notes").glob("*.md"),
         *(ROOT / "docs" / "superpowers" / "specs").glob("*.md"),
-        *(ROOT / "docs" / "ogrenme").glob("*.md"),
     ]
     files = [f for f in files if f.name not in _PENDING_REVIEW]
     assert ROOT / "SECURITY.md" in files and all(f.exists() for f in files)
@@ -27,5 +26,6 @@ def test_version_is_0_1_1():
     assert neshter.__version__ == "0.1.1"
 
 
-def test_no_license_file_yet():
-    assert not (ROOT / "LICENSE").exists()
+def test_license_is_apache_2():
+    text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "Apache License" in text and "Version 2.0, January 2004" in text
