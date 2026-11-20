@@ -162,6 +162,7 @@
   "models.loading": "Model yükleniyor",
   "models.back": "Modellere dön",
   "models.fail": "Model açılamadı",
+  "models.fail.notFound": "Bu klasör ya da dosya bulunamadı; yolu kontrol edip yeniden deneyin.",
 
   "map.run": "Çalıştır",
   "map.prompt": "Metin",
@@ -187,6 +188,8 @@
   "map.legend.high": "güçlü",
   "map.heatmap.label": "Head çıktı gücü ısı haritası",
   "map.heatmap.role": "ısı haritası",
+  "head.id": "K{layer}·H{head}",
+  "layer.id": "K{layer}",
   "map.announce": "K{layer} · H{head} · güç {value} · {state}",
   "map.selected": "seçili",
   "map.notSelected": "seçili değil",

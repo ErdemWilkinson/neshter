@@ -43,7 +43,7 @@ export function Hotspots({
               <span className="hotspot-rank num" aria-hidden="true">
                 {i + 1}
               </span>
-              <span className="hotspot-id num">{`K${row.layer}·H${row.head}`}</span>
+              <span className="hotspot-id num">{t('head.id', { layer: row.layer, head: row.head })}</span>
               <span className="hotspot-bar" aria-hidden="true">
                 <i style={{ width: `${Math.max(2, row.power * 100)}%` }} />
               </span>

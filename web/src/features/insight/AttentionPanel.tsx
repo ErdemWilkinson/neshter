@@ -89,7 +89,7 @@ export function AttentionPanel({
             {strongest.map((s, i) => (
               <span key={s.k}>
                 {i > 0 && ', '}
-                <code>{tok(s.k)}</code> <span className="num">%{Math.round(s.p * 100)}</span>
+                <code>{tok(s.k)}</code> <span className="num">{t('jobs.percent', { pct: Math.round(s.p * 100) })}</span>
               </span>
             ))}
           </p>

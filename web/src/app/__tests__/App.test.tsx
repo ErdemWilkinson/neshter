@@ -16,7 +16,10 @@ import { getSessionStorage } from '../sessionStorage';
 import { SCREENS } from '../Shell';
 import { bodyOf, fakeServer, headersOf, jsonResponse, prefs, sessionLoaded } from './fakeServer';
 
-function mount(server = fakeServer()) {
+/** These tests read the Turkish UI: the saved choice is Turkish (with none the app would start in English). */
+const trPrefs = () => jsonResponse(200, { ...prefs, lang: 'tr' });
+
+function mount(server = fakeServer({ 'GET /api/prefs': trPrefs })) {
   vi.stubGlobal('fetch', server.fetchFn);
   return { ...render(<App />), server };
 }
@@ -91,20 +94,27 @@ test('prefs.lang wins over the browser language and sets <html lang>', async () 
   expect(document.documentElement).toHaveAttribute('lang', 'en');
 });
 
-test('a failing prefs read falls back to defaults and the app still starts', async () => {
+test('a failing prefs read falls back to defaults (English) and the app still starts', async () => {
   mount(fakeServer({ 'GET /api/prefs': () => jsonResponse(500, { detail: 'x', error_code: 'internal' }) }));
-  expect(await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'What do you want to do?' })).toBeInTheDocument();
+  expect(document.documentElement.lang).toBe('en');
+});
+
+test('with no saved language the app starts in English even on a Turkish system', async () => {
+  mount(fakeServer());
+  expect(await screen.findByRole('heading', { name: 'What do you want to do?' })).toBeInTheDocument();
+  expect(navigator.language).toBe('tr-TR');
 });
 
 test('an unloaded session shows no model chip', async () => {
-  mount(fakeServer({ 'GET /api/session': () => jsonResponse(200, { loaded: false }) }));
+  mount(fakeServer({ 'GET /api/prefs': trPrefs, 'GET /api/session': () => jsonResponse(200, { loaded: false }) }));
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   expect(sessionStore.getState().model).toBeNull();
   expect(screen.queryByText(/float32/)).toBeNull();
 });
 
 test('a 403 shows the one stale screen instead of the app', async () => {
-  mount(fakeServer({ 'GET /api/session': () => jsonResponse(403, { detail: 'x', error_code: 'forbidden' }) }));
+  mount(fakeServer({ 'GET /api/prefs': trPrefs, 'GET /api/session': () => jsonResponse(403, { detail: 'x', error_code: 'forbidden' }) }));
   expect(await screen.findByRole('heading', { name: 'Oturum bitti, sunucu yeniden başlatılmış' })).toBeInTheDocument();
   expect(screen.queryByRole('banner')).toBeNull();
   expect(screen.queryByText(/Teknik ayrıntı/)).toBeNull();
@@ -112,17 +122,17 @@ test('a 403 shows the one stale screen instead of the app', async () => {
 });
 
 test('another boot failure shows an error card with the detail only in the disclosure', async () => {
-  mount(fakeServer({ 'GET /api/system': () => jsonResponse(500, { detail: 'boom <b>x</b>', error_code: 'internal' }) }));
+  mount(fakeServer({ 'GET /api/prefs': trPrefs, 'GET /api/system': () => jsonResponse(500, { detail: 'boom <b>x</b>', error_code: 'internal' }) }));
   expect(await screen.findByText('Neşter başlatılamadı')).toBeInTheDocument();
   expect(screen.getByText('Beklenmeyen bir hata oldu.')).toBeInTheDocument();
   expect(screen.getByText('boom <b>x</b>').closest('details')).not.toBeNull();
 });
 
-test('without a token outside dev the app asks for the printed address', async () => {
+test('without a token outside dev the app asks for the printed address (in English: no prefs yet)', async () => {
   vi.stubEnv('DEV', false);
-  const server = fakeServer();
+  const server = fakeServer({ 'GET /api/prefs': trPrefs });
   mount(server);
-  expect(await screen.findByRole('heading', { name: "Neşter'i terminalde yazdırılan adresten açın." })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Open Neshter from the address printed in the terminal.' })).toBeInTheDocument();
   expect(server.fetchFn).not.toHaveBeenCalled();
 });
 
@@ -134,7 +144,7 @@ test('the heartbeat reports a dead server as stale "down"; "kesimlerin taslakta"
   vi.useFakeTimers({ shouldAdvanceTime: true });
   let alive = true;
   mount(
-    fakeServer({
+    fakeServer({ 'GET /api/prefs': trPrefs, 
       'GET /api/session': () => {
         if (!alive) throw new TypeError('Failed to fetch');
         return jsonResponse(200, sessionLoaded);
@@ -160,7 +170,7 @@ test('unsaved cuts without a server draft do not claim a draft on the down scree
   basketStore.getState().add([aCut()]);
   let alive = true;
   mount(
-    fakeServer({
+    fakeServer({ 'GET /api/prefs': trPrefs, 
       'GET /api/session': () => {
         if (!alive) throw new TypeError('Failed to fetch');
         return jsonResponse(200, sessionLoaded);
@@ -208,7 +218,7 @@ test('Kapat with unsaved cuts asks first; Kaydetmeden çık then shuts down', as
 
 test('a failed shutdown shows an error card and leaves the app and its state untouched', async () => {
   const { server } = mount(
-    fakeServer({ 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
+    fakeServer({ 'GET /api/prefs': trPrefs, 'POST /api/shutdown': () => jsonResponse(500, { detail: 'kapanmadı <b>x</b>', error_code: 'internal' }) }),
   );
   await screen.findByRole('heading', { name: 'Ne yapmak istiyorsun?' });
   await userEvent.click(screen.getByRole('button', { name: "Neşter'i kapat" }));
@@ -227,7 +237,7 @@ test('App with lock other and no token renders MultiTabScreen, not the token scr
   vi.stubEnv('DEV', false);
   const request = vi.fn(async (_name: string, _opts: unknown, cb: (lock: null) => unknown) => cb(null));
   Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
-  const server = fakeServer();
+  const server = fakeServer({ 'GET /api/prefs': trPrefs });
   mount(server);
   expect(await screen.findByRole('heading', { name: 'Neşter başka bir sekmede açık' })).toBeInTheDocument();
   expect(screen.queryByText("Neşter'i terminalde yazdırılan adresten açın.")).toBeNull();
@@ -238,7 +248,7 @@ test('App with lock other and no token renders MultiTabScreen, not the token scr
 test('a restorable server draft is offered after boot and restoring fills the basket', async () => {
   const stored = encodeDraft({ items: [aCut()], shelf: [], savedOps: [], model: { name: 'abc123', sha256: SHA }, prompts: [] });
   const { server } = mount(
-    fakeServer({
+    fakeServer({ 'GET /api/prefs': trPrefs, 
       'GET /api/drafts': () => jsonResponse(200, [{ sha256: SHA, model_name: 'abc123', updated_at: 'x', unsaved_count: 1 }]),
       [`GET /api/draft/${SHA}`]: () => jsonResponse(200, { ...stored, updated_at: 'x' }),
       'POST /api/recipe/check': () => jsonResponse(200, { ok: true, errors: [], sha_mismatch: false }),
@@ -294,7 +304,7 @@ test('useJob works inside the mounted App (the api is registered after bootstrap
   };
   try {
     mount(
-      fakeServer({
+      fakeServer({ 'GET /api/prefs': trPrefs, 
         'POST /api/models/sample': () => jsonResponse(200, { job_id: 'j1' }),
         'GET /api/jobs/j1': () => jsonResponse(200, done),
       }),
@@ -327,7 +337,7 @@ test('the motion toggle sets data-motion and saves reduced_motion', async () => 
   expect(document.documentElement).toHaveAttribute('data-motion', 'reduce');
   expect(toggle).toBeChecked();
   await waitFor(() => expect(server.count('PUT /api/prefs')).toBe(1));
-  expect(bodyOf(server.calls.find((call) => call.key === 'PUT /api/prefs')?.init)).toEqual({ ...prefs, reduced_motion: 'on' });
+  expect(bodyOf(server.calls.find((call) => call.key === 'PUT /api/prefs')?.init)).toEqual({ ...prefs, lang: 'tr', reduced_motion: 'on' });
   await userEvent.click(toggle);
   expect(document.documentElement).toHaveAttribute('data-motion', 'full');
 });

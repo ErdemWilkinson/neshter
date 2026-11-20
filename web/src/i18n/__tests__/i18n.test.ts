@@ -25,14 +25,10 @@ test('setLang sets html lang and the store', () => {
   expect(document.documentElement.lang).toBe('tr');
 });
 
-test('default language follows navigator when prefs.lang is null', () => {
-  expect(resolveLang(null, 'tr-TR')).toBe('tr');
-  expect(resolveLang(null, 'TR')).toBe('tr');
-  expect(resolveLang(null, 'en-US')).toBe('en');
-  expect(resolveLang(null, 'de')).toBe('en');
-  expect(resolveLang(null, undefined)).toBe('en');
-  expect(resolveLang('en', 'tr-TR')).toBe('en');
-  expect(resolveLang('tr', 'en-US')).toBe('tr');
+test('with no saved language the app starts in English; a saved choice wins', () => {
+  expect(resolveLang(null)).toBe('en'); // no saved choice: English, even on a Turkish system
+  expect(resolveLang('en')).toBe('en');
+  expect(resolveLang('tr')).toBe('tr');
 });
 
 test('plural picks the singular form where the language has one', () => {
@@ -83,4 +79,13 @@ test('forbidden copy is absent from catalogs', () => {
 test('every catalog value is non-empty and both catalogs have the same keys', () => {
   expect(Object.keys(en).sort()).toEqual(Object.keys(tr).sort());
   for (const value of [...Object.values(tr), ...Object.values(en)]) expect(value.trim()).not.toBe('');
+});
+
+test('the short head and layer ids follow the language: L in English, K in Turkish', () => {
+  setLang('en');
+  expect(t('head.id', { layer: 23, head: 4 })).toBe('L23·H4');
+  expect(t('layer.id', { layer: 5 })).toBe('L5');
+  setLang('tr');
+  expect(t('head.id', { layer: 23, head: 4 })).toBe('K23·H4');
+  expect(t('layer.id', { layer: 5 })).toBe('K5');
 });

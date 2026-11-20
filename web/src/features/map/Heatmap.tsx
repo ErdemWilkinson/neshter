@@ -20,6 +20,11 @@ const MAX_HEIGHT = 860;
 const MAX_ROW_PX = 40;
 /** A tile is about this many times as wide as it is tall once the rows have room to grow. */
 const TILE_ASPECT = 3;
+/** How much the cell under the mouse and the selected cells grow (they sit on top of their neighbours). */
+const HOVER_LIFT = 1.35;
+const SELECT_LIFT = 1.2;
+/** Time constant of the pop, ms: about 0.12 s to settle. */
+const LIFT_MS = 40;
 
 export function Heatmap({
   dims,
@@ -39,6 +44,9 @@ export function Heatmap({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selected = useStore(selectionStore, (s) => s.selected);
   const [hasFocus, setHasFocus] = useState(false);
+  const [hover, setHover] = useState<NodeId | null>(null);
+  /** Current size of every lifted cell; the frame loop eases them toward their targets. */
+  const lift = useRef(new Map<NodeId, number>());
   const [width, setWidth] = useState(0);
   const keys = useHeatmapKeys(dims, values);
   const focusId = keys.current === null ? null : headId(keys.current.layer, keys.current.head);
@@ -70,8 +78,34 @@ export function Heatmap({
     canvas.height = Math.max(1, Math.round(height * dpr));
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const layout = makeCellLayout(dims, { left: 0, top: 0, width: cssWidth, height }, values, scale);
-    drawHeatmap(ctx, layout, values, { selected, basket, focus: hasFocus ? focusId : null });
-  }, [dims, values, scale, selected, basket, focusId, hasFocus, width, height]);
+    const targets = new Map<NodeId, number>();
+    for (const id of selected) targets.set(id, SELECT_LIFT);
+    if (hover !== null) targets.set(hover, HOVER_LIFT);
+    // The app's motion setting (it already folds in the OS one): with "reduce" the cells jump to their size.
+    const still = document.documentElement.dataset['motion'] === 'reduce';
+    const current = lift.current;
+    let frame = 0;
+    let last = performance.now();
+    const step = (now: number): void => {
+      const k = still ? 1 : 1 - Math.exp(-(now - last) / LIFT_MS);
+      last = now;
+      let moving = false;
+      for (const id of new Set([...current.keys(), ...targets.keys()])) {
+        const to = targets.get(id) ?? 1;
+        const from = current.get(id) ?? 1;
+        let next = from + (to - from) * k;
+        if (Math.abs(to - next) < 0.004) next = to;
+        else moving = true;
+        if (next === 1) current.delete(id);
+        else current.set(id, next);
+      }
+      ctx.clearRect(0, 0, cssWidth, height);
+      drawHeatmap(ctx, layout, values, { selected, basket, focus: hasFocus ? focusId : null, lift: current, hover });
+      frame = moving ? requestAnimationFrame(step) : 0;
+    };
+    step(last);
+    return () => cancelAnimationFrame(frame);
+  }, [dims, values, scale, selected, basket, focusId, hasFocus, width, height, hover]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -92,6 +126,17 @@ export function Heatmap({
       if (cell !== null) keys.toggle(cell);
     },
     [dims, values, scale, keys],
+  );
+
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      const canvas = canvasRef.current;
+      if (canvas === null || event.pointerType !== 'mouse') return;
+      const layout = makeCellLayout(dims, canvas.getBoundingClientRect(), values, scale);
+      const id = hitTest(layout, event.clientX, event.clientY);
+      setHover((old) => (old === id ? old : id));
+    },
+    [dims, values, scale],
   );
 
   // Axis labels and numbers are decoration for sighted users (the canvas has its own keyboard and spoken model).
@@ -140,6 +185,8 @@ export function Heatmap({
         }}
         onBlur={() => setHasFocus(false)}
         onClick={onClick}
+        onPointerMove={onPointerMove}
+        onPointerLeave={() => setHover(null)}
       />
     </div>
   );

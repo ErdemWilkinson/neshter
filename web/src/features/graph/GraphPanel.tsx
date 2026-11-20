@@ -65,7 +65,7 @@ function useNodeName() {
   const t = useT();
   return (graph: GraphResult | null, id: string): string => {
     const [tag, a, b] = id.split(':');
-    if (tag === 'h') return `K${a}·H${b}`;
+    if (tag === 'h') return t('head.id', { layer: a ?? '', head: b ?? '' });
     if (tag === 'n') return t('graph.node.neuron', { layer: a ?? '', index: b ?? '' });
     if (tag === 't') return shownToken(graph?.tokens[Number(a)]?.text ?? '');
     return shownToken(graph?.metric.text ?? '');
@@ -513,7 +513,7 @@ export function GraphPanel({
                         {report.top_after.slice(0, 3).map((tok, i) => (
                           <span key={tok.token_id}>
                             {i > 0 && ', '}
-                            <code>{shownToken(tok.text)}</code> <span className="num">%{Math.round(tok.p * 100)}</span>
+                            <code>{shownToken(tok.text)}</code> <span className="num">{t('jobs.percent', { pct: Math.round(tok.p * 100) })}</span>
                           </span>
                         ))}
                       </p>

@@ -203,7 +203,10 @@ select {
   border-radius: var(--radius);
   font-family: inherit;
   cursor: pointer;
-  transition: background var(--motion);
+  transition:
+    background var(--motion),
+    color var(--motion),
+    border-color var(--motion);
 }
 
 .btn:hover {
@@ -761,6 +764,7 @@ select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  cursor: pointer;
 }
 
 .heatmap-table-scroll {
@@ -2446,6 +2450,11 @@ select {
 /* Narrow screens (the phone): the lens row keeps its bar and only the top guess in words; the other two are still
    segments of the bar. Without this the row is wider than the screen and scrolls sideways. */
 @media (max-width: 40rem) {
+  /* The scene's mode switch (top left) and camera buttons (top right) would touch: the camera row goes under it. */
+  .flow-hud {
+    top: 48px;
+  }
+
   .lens-stack {
     width: 5rem;
     margin-right: 6px;

@@ -251,9 +251,10 @@ def test_load_replaces_and_frees_old_model(client, auth, tiny_model_dir):
     assert old() is None  # eski model serbest bırakıldı
 
 
-def test_load_missing_path_is_422(client, auth, tmp_path):
+def test_load_missing_path_is_404_not_found(client, auth, tmp_path):
     r = client.post("/api/session/load", json={"path": str(tmp_path / "yok")}, headers=auth)
-    assert r.status_code == 422
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "not_found" and "bulunamadı" in r.json()["detail"]
 
 
 def test_load_unsupported_dir_is_job_error(client, auth, tmp_path):
@@ -1683,7 +1684,7 @@ def test_http_errors_have_error_code(client, auth):
     r = client.post("/api/activity", json={"prompt": "a", "scale": "kotu"}, headers=auth)
     assert r.status_code == 422 and r.json()["error_code"] == "invalid_input" and r.json()["detail"]
     r = client.post("/api/session/load", json={"path": "X:\\yok\\boyle\\bir\\yol"}, headers=auth)
-    assert r.status_code == 422 and r.json()["error_code"] == "invalid_input"
+    assert r.status_code == 404 and r.json()["error_code"] == "not_found"  # a missing path says so, not "invalid"
 
 
 def test_busy_409_has_busy_code(client, auth):

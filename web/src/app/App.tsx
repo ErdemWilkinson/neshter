@@ -71,7 +71,7 @@ export function App() {
         return;
       }
       if (cancelled) return;
-      setLang(resolveLang(null, navigator.language)); // until the prefs say otherwise
+      setLang(resolveLang(null)); // until the prefs say otherwise
       const session = sessionStore.getState();
       let api: Api;
       if (isDeviceApp() && window.NeshterNative !== undefined) {
@@ -94,7 +94,7 @@ export function App() {
 
       const prefs = await loadPrefs(api);
       if (cancelled) return;
-      applyPrefs(prefs, resolveLang(prefs.lang, navigator.language), systemMatchMedia());
+      applyPrefs(prefs, resolveLang(prefs.lang), systemMatchMedia());
       try {
         const [system, current] = await Promise.all([api.system(), api.session()]);
         if (cancelled) return;

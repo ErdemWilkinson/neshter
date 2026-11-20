@@ -77,6 +77,11 @@ export async function startServer(opts: { workdir: string; port?: number; token?
     await new Promise((r) => setTimeout(r, 250));
   }
 
+  // The app starts in English unless a language is saved; these flows read the Turkish UI, so save Turkish.
+  const headers = { 'X-Neshter-Token': token, 'Content-Type': 'application/json' };
+  const saved: unknown = await (await fetch(`${origin}/api/prefs`, { headers })).json();
+  await fetch(`${origin}/api/prefs`, { method: 'PUT', headers, body: JSON.stringify({ ...(saved as object), lang: 'tr' }) });
+
   return {
     url: `${origin}/#token=${token}`,
     origin,

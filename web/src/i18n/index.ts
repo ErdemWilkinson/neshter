@@ -41,9 +41,9 @@ export function plural(key: MessageKey, n: number, params?: Params): string {
 }
 
 /** `prefs.lang`, else `tr` when the browser language starts with `tr`, else `en`. */
-export function resolveLang(prefLang: Lang | null, navigatorLanguage: string | undefined): Lang {
-  if (prefLang !== null) return prefLang;
-  return (navigatorLanguage ?? '').toLowerCase().startsWith('tr') ? 'tr' : 'en';
+/** The saved choice, else English: the app starts in English whatever the system language is. */
+export function resolveLang(prefLang: Lang | null): Lang {
+  return prefLang ?? 'en';
 }
 
 export function setLang(lang: Lang): void {

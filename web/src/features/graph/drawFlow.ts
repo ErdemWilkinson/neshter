@@ -88,6 +88,8 @@ export interface FrameState {
   reduced: boolean;
   palette: FlowPalette;
   name(id: string): string;
+  /** The short layer label on the axis ("L5" in English, "K5" in Turkish). */
+  layerName(layer: number): string;
 }
 
 export interface Hits {
@@ -162,7 +164,7 @@ export function drawFlow(ctx: CanvasRenderingContext2D, scene: SceneData, f: Fra
       ctx.fillStyle = pal.text2;
       ctx.textAlign = 'right';
       ctx.font = `11px ${pal.mono}`;
-      ctx.fillText(`K${l}`, a[0] - 6, a[1] + 4);
+      ctx.fillText(f.layerName(l), a[0] - 6, a[1] + 4);
     }
   }
   ctx.globalAlpha = 1;
