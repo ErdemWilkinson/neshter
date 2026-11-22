@@ -18,7 +18,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import java.io.IOException
 
-/** One WebView with Neşter's web UI, served from the APK; the model behind it runs on the phone (NativeBridge). */
+/** One WebView with Neshter's web UI, served from the APK; the model behind it runs on the phone (NativeBridge). */
 class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var bridge: NativeBridge

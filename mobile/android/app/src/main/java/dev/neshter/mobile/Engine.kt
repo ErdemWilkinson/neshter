@@ -236,7 +236,7 @@ class Engine(
         }
     }
 
-    /** Per prompt: KL(original ‖ masked), averaged over the last `keep` positions (Neşter's kl_effect). */
+    /** Per prompt: KL(original ‖ masked), averaged over the last `keep` positions (Neshter's kl_effect). */
     override fun kl(mask: FloatArray): List<Double> {
         if (bases.isEmpty()) throw BridgeError("internal", "Önce klBase çağrılmalı.")
         cancel.set(false)

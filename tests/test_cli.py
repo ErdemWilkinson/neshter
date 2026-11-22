@@ -1,4 +1,3 @@
-import base64
 import json
 import re
 import socket
@@ -87,14 +86,14 @@ def test_apply_refuses_existing_out_dir(tmp_path, tiny_model_dir, lm, capsys):
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     (tmp_path / "o").mkdir()
     assert _apply(r, tiny_model_dir, tmp_path / "o") == 1
-    assert "zaten var" in capsys.readouterr().err
+    assert "already exists" in capsys.readouterr().err
 
 
 def test_apply_gguf_without_llama_cpp_exits_4(tmp_path, tiny_model_dir, lm, monkeypatch, capsys):
     monkeypatch.setattr(cli, "find_llama_cpp", lambda: None)
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     assert _apply(r, tiny_model_dir, tmp_path / "o", "--format", "gguf_q4_k_m") == 4
-    assert "llama.cpp gerekli" in capsys.readouterr().err
+    assert "llama.cpp is required" in capsys.readouterr().err
     assert not (tmp_path / "o").exists()
 
 
@@ -400,7 +399,7 @@ def test_lockfile_matches_pyproject():
 def test_apply_prints_intervention_summary(tmp_path, tiny_model_dir, lm, capsys):
     r = _recipe_file(tmp_path, lm, [HeadAblation(1, 0)])
     assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
-    assert "Tarif: 1 head, 0 yön, kavram=code" in capsys.readouterr().out
+    assert "Recipe: 1 head cuts, 0 direction cuts, concept=code" in capsys.readouterr().out
 
 
 def _dir_recipe(tmp_path, lm, concept):
@@ -412,19 +411,19 @@ def test_apply_warns_on_unlabelled_direction_recipe(tmp_path, tiny_model_dir, lm
     r = _dir_recipe(tmp_path, lm, "code")
     assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
     cap = capsys.readouterr()
-    assert "Tarif: 0 head, 1 yön, kavram=code" in cap.out
-    assert "yön silme" in cap.err and "--label-safety" in cap.err
+    assert "Recipe: 0 head cuts, 1 direction cuts, concept=code" in cap.out
+    assert "removes directions" in cap.err and "--label-safety" in cap.err
     cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
     assert "abliterated" not in cfg["neshter"]  # uyarı etiketlemez
 
 
 def test_apply_no_warning_for_refusal_or_head_only_or_flag(tmp_path, tiny_model_dir, lm, capsys):
     assert _apply(_dir_recipe(tmp_path, lm, "refusal"), tiny_model_dir, tmp_path / "o1") == 0
-    assert "yön silme" not in capsys.readouterr().err
+    assert "removes directions" not in capsys.readouterr().err
     assert _apply(_recipe_file(tmp_path, lm, [HeadAblation(1, 0)]), tiny_model_dir, tmp_path / "o2") == 0
-    assert "yön silme" not in capsys.readouterr().err
+    assert "removes directions" not in capsys.readouterr().err
     assert _apply(_dir_recipe(tmp_path, lm, "code"), tiny_model_dir, tmp_path / "o3", "--label-safety") == 0
-    assert "yön silme" not in capsys.readouterr().err
+    assert "removes directions" not in capsys.readouterr().err
 
 
 def test_apply_label_safety_sets_metadata(tmp_path, tiny_model_dir, lm):
@@ -517,6 +516,6 @@ def test_apply_source_modified_removes_output(tmp_path, tiny_model_dir, lm, monk
 def test_apply_capitalised_refusal_concept_is_labelled_without_warning(tmp_path, tiny_model_dir, lm, capsys):
     r = _dir_recipe(tmp_path, lm, "Refusal")
     assert _apply(r, tiny_model_dir, tmp_path / "o") == 0
-    assert "yön silme" not in capsys.readouterr().err
+    assert "removes directions" not in capsys.readouterr().err
     cfg = json.loads((tmp_path / "o" / "config.json").read_text(encoding="utf-8"))
     assert cfg["neshter"]["abliterated"] == "refusal"

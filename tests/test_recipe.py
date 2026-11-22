@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from conftest import recipe_for
 from neshter.interventions import DirectionAblation, HeadAblation
 from neshter.recipe import (
-    DirectionOp,
     HeadOp,
     Recipe,
     check_against,

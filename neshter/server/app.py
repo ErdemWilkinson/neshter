@@ -562,9 +562,9 @@ async def job_stream(jobs: JobManager, job_id: str, request, poll: float = 0.1, 
 
 
 _PLACEHOLDER_HTML = """<!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><title>Neşter</title></head>
+<html lang="tr"><head><meta charset="utf-8"><title>Neshter</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
-<h1>Neşter</h1>
+<h1>Neshter</h1>
 <p>Arayüz henüz derlenmedi; yerel API çalışıyor.</p>
 <p lang="en">The web UI has not been built yet; the local API is running.</p>
 </body></html>
@@ -588,7 +588,7 @@ def create_app(token: str, port: int, roots: dict | None = None) -> FastAPI:
         if line is not None:
             print(line, flush=True)
 
-    app = FastAPI(title="Neşter", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Neshter", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
     app.state.jobs = jobs
     app.state.request_exit = None  # cli._run_server bağlar; yoksa /api/shutdown 501 döner

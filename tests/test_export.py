@@ -399,7 +399,7 @@ def test_source_license_file_not_overwritten_by_license_text(tmp_path, tiny_mode
 
 def test_card_has_modification_line(lm):
     card = _card(lm, [HeadAblation(0, 1), DirectionAblation(torch.randn(64))])
-    assert re.search(r"Modified with Neşter \S+ on \d{4}-\d{2}-\d{2}: 1 heads silenced, 1 directions removed\.", card)
+    assert re.search(r"Modified with Neshter \S+ on \d{4}-\d{2}-\d{2}: 1 heads silenced, 1 directions removed\.", card)
 
 
 def test_find_llama_cpp_env(tmp_path, monkeypatch):

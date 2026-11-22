@@ -49,7 +49,7 @@ class Qwen2Tokenizer(vocab: List<String>, merges: List<String>, added: List<Adde
         return out.toIntArray()
     }
 
-    /** The token as Neşter shows it: its bytes decoded as UTF-8, broken sequences as U+FFFD. */
+    /** The token as Neshter shows it: its bytes decoded as UTF-8, broken sequences as U+FFFD. */
     fun piece(id: Int): String {
         val added = addedById[id]
         if (added != null) return added.content

@@ -351,11 +351,11 @@ def model_card(
         "Bu model, Neşter ile seçili dikkat head'leri susturularak ve/veya rezidüel akımdan "
         "yönler silinerek kaynak modelden türetilmiştir. Değişiklikler ağırlıklara gömülmüştür.",
         "",
-        "This model was derived from the base model with Neşter (neshter) by silencing selected "
+        "This model was derived from the base model with Neshter by silencing selected "
         "attention heads and/or removing directions from the residual stream. The changes are baked "
         "into the weights.",
         "",
-        f"Modified with Neşter {neshter.__version__} on {date.today().isoformat()}: "
+        f"Modified with Neshter {neshter.__version__} on {date.today().isoformat()}: "
         f"{n_heads} heads silenced, {n_dirs} directions removed.",
         "",
     ]

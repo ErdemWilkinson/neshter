@@ -73,3 +73,10 @@ testpaths = ["tests"]
 # Gerçek model duman testi varsayılan çalıştırmada atlanır: `pytest -m integration` ile açılır.
 addopts = '-m "not integration"'
 markers = ["integration: gerçek model indirip çalıştıran yavaş testler (varsayılan olarak atlanır)"]
+
+[tool.ruff.lint]
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# The integration tests import pytest fixtures and take them as parameters; ruff reads that as a redefinition.
+"tests/integration/*" = ["F811"]

@@ -62,9 +62,9 @@ def _port(value: str) -> int:
     try:
         port = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"geçersiz port: {value!r}") from None
+        raise argparse.ArgumentTypeError(f"invalid port: {value!r}") from None
     if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError(f"port 1 ile 65535 arasında olmalı: {port}")
+        raise argparse.ArgumentTypeError(f"port must be between 1 and 65535: {port}")
     return port
 
 
@@ -96,9 +96,9 @@ def _serve(args: argparse.Namespace) -> int:
     token = secrets.token_urlsafe(24)
     app = create_app(token, port)
     url = f"http://{HOST}:{port}/#token={token}"
-    print(f"Neşter çalışıyor: {url}")
+    print(f"Neshter is running: {url}")
     # flush: with --no-browser the address is the only way in, also when the output goes to a file or a pipe
-    print("Durdurmak için Ctrl+C. Adres yalnızca bu bilgisayardan erişilebilir.", flush=True)
+    print("Press Ctrl+C to stop. The address works only on this computer.", flush=True)
     if not args.no_browser:
         threading.Thread(target=_open_when_ready, args=(url, port), daemon=True).start()
     _run_server(app, host=HOST, port=port)
@@ -109,16 +109,16 @@ def _apply(args: argparse.Namespace) -> int:
     try:
         recipe = load_recipe(args.recipe)
     except Exception as e:  # geçersiz şema, büyük dosya, okunamayan dosya
-        _err(f"Tarif okunamadı: {e}")
+        _err(f"Could not read the recipe: {e}")
         return EXIT_RECIPE
 
     heads = sum(isinstance(op, HeadOp) for op in recipe.interventions)
     dirs = len(recipe.interventions) - heads
-    print(f"Tarif: {heads} head, {dirs} yön, kavram={recipe.concept or '-'}")
+    print(f"Recipe: {heads} head cuts, {dirs} direction cuts, concept={recipe.concept or '-'}")
     if dirs and not is_refusal(recipe.concept) and not args.label_safety:
         _err(
-            "Uyarı: bu tarif yön silme içeriyor; Neşter tarifin iddia ettiği kavramı doğrulayamaz. "
-            "Bir reddetme yönüyse --label-safety ile etiketleyin."
+            "Warning: this recipe removes directions; Neshter cannot verify the concept the recipe claims. "
+            "If it is a refusal direction, label it with --label-safety."
         )
 
     quant = _QUANT.get(args.format)
@@ -127,35 +127,35 @@ def _apply(args: argparse.Namespace) -> int:
         llama_cpp = find_llama_cpp()
         if llama_cpp is None:
             _err(
-                "llama.cpp gerekli: GGUF çıktısı için NESHTER_LLAMA_CPP ortam değişkenini "
-                "llama.cpp klasörüne ayarlayın ya da llama-quantize'ı PATH'e ekleyin."
+                "llama.cpp is required for GGUF output: set the NESHTER_LLAMA_CPP environment variable "
+                "to the llama.cpp folder, or put llama-quantize on PATH."
             )
             return EXIT_NO_LLAMA_CPP
 
     out = Path(args.out)
     if out.exists():
-        _err(f"'{out}' zaten var; üzerine yazılmaz. Başka bir klasör adı seçin.")
+        _err(f"'{out}' already exists and is never overwritten. Pick another folder name.")
         return EXIT_ERROR
 
     try:
         lm = load_model(Path(args.model), device="auto")  # sunucuyla aynı politika: sığarsa GPU, dtype pick_compute_dtype
     except Exception as e:
-        _err(f"Model yüklenemedi: {e}")
+        _err(f"Could not load the model: {e}")
         return EXIT_ERROR
 
     check = check_against(recipe, lm.arch, lm.source_sha256)
     if not check.ok:
-        _err("Tarif bu modele uymuyor:")
+        _err("The recipe does not match this model:")
         for e in check.errors:
             _err(f"  - {e}")
         return EXIT_RECIPE
     if check.sha_mismatch:
         _err(
-            "Uyarı: tarifin yazıldığı modelin SHA-256 değeri bu modelinkiyle uyuşmuyor; "
-            "tarif başka bir model sürümü için hazırlanmış olabilir."
+            "Warning: the SHA-256 of the model this recipe was written for does not match this model; "
+            "the recipe may have been made for another version of the model."
         )
         if not args.force:
-            _err("Yine de uygulamak için --force kullanın.")
+            _err("Use --force to apply it anyway.")
             return EXIT_SHA
 
     try:
@@ -170,37 +170,37 @@ def _apply(args: argparse.Namespace) -> int:
             result = export_gguf(lm, recipe, out, out.name, quant, llama_cpp, safety=safety)
         ensure_source_untouched(lm, out)  # uyuşmazlıkta `out` silinir
     except SourceModified:
-        _err("Hata: kaynak model dosyaları işlem sırasında değişmiş görünüyor (SHA-256 uyuşmuyor); çıktı silindi.")
+        _err("Error: the source model files seem to have changed during the run (SHA-256 mismatch); the output was deleted.")
         return EXIT_ERROR
     except Exception as e:
-        _err(f"Kayıt başarısız: {e}")
+        _err(f"Saving failed: {e}")
         return EXIT_ERROR
 
-    print(f"{count} müdahale uygulandı, kaydedildi: {result}")
+    print(f"{count} cuts applied, saved to: {result}")
     return EXIT_OK
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="neshter",
-        description="Neşter: yerel dil modellerinin dikkat head'lerini inceler ve ablasyon yapar.",
+        description="Neshter: inspects the attention heads of local language models and ablates them.",
     )
     sub = p.add_subparsers(dest="command")
 
-    serve = sub.add_parser("serve", help="yerel sunucuyu başlat ve tarayıcıyı aç (varsayılan)")
-    serve.add_argument("--no-browser", action="store_true", help="tarayıcıyı açma")
-    serve.add_argument("--port", type=_port, default=0, help="sabit port (varsayılan: boş bir port)")
+    serve = sub.add_parser("serve", help="start the local server and open the browser (default)")
+    serve.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    serve.add_argument("--port", type=_port, default=0, help="fixed port (default: any free port)")
     serve.set_defaults(func=_serve)
 
-    apply = sub.add_parser("apply", help="bir .nester.json tarifini modele uygula ve kaydet")
-    apply.add_argument("recipe", type=Path, help="tarif dosyası (.nester.json)")
-    apply.add_argument("model", type=Path, help="model klasörü, .gguf veya .pt dosyası")
-    apply.add_argument("--out", type=Path, required=True, help="çıktı klasörü (var olmamalı)")
+    apply = sub.add_parser("apply", help="apply a .nester.json recipe to a model and save the result")
+    apply.add_argument("recipe", type=Path, help="recipe file (.nester.json)")
+    apply.add_argument("model", type=Path, help="model folder, .gguf or .pt file")
+    apply.add_argument("--out", type=Path, required=True, help="output folder (must not exist)")
     apply.add_argument("--format", choices=_FORMATS, default="safetensors")
-    apply.add_argument("--force", action="store_true", help="SHA-256 uyuşmazlığına rağmen uygula")
+    apply.add_argument("--force", action="store_true", help="apply even if the SHA-256 does not match")
     apply.add_argument(
         "--label-safety", action="store_true",
-        help="çıktıyı güvenlik-ablasyonu olarak etiketle (tarifteki yön bir reddetme yönüyse)",
+        help="label the output as a safety ablation (if a direction in the recipe is a refusal direction)",
     )
     apply.set_defaults(func=_apply)
     return p

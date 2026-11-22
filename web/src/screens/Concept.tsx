@@ -46,7 +46,7 @@ function customId(name: string, concepts: readonly ConceptInfo[]): string {
   return taken ? `${slug.slice(0, 58)}-ozel` : slug;
 }
 
-/** Spec §2 step 3b: describe a behaviour with examples, let Neşter find the heads or the direction that carry it. */
+/** Spec §2 step 3b: describe a behaviour with examples, let Neshter find the heads or the direction that carry it. */
 export function Concept() {
   const t = useT();
   const model = useStore(sessionStore, (s) => s.model);

@@ -133,7 +133,7 @@ class NativeBridge(
     private fun activeInfo(): JSONObject {
         val id = activeId ?: throw BridgeError("no_model", "Önce bir model aç.")
         if (id == ModelLibrary.BUNDLED) return bundledInfo()
-        // A GGUF carries no neutral prompts or license line of Neşter's: the bundled set is used for measuring.
+        // A GGUF carries no neutral prompts or license line of Neshter's: the bundled set is used for measuring.
         // What the open engine found (heads, lens) wins over the note written when the file came in.
         val live = engine?.info
         return library.ggufInfo(id)
