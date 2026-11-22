@@ -3,8 +3,6 @@ __pycache__/
 *.tmp/
 /dist/
 .pytest_cache/
-.superpowers/
-.claude/
 web/node_modules
 
 # phone build of the web UI (web: npm run build:mobile)

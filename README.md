@@ -60,10 +60,10 @@ heatmap and chat, with no server and no internet.
 ## What it supports
 
 - **Model families:** Llama, Qwen2 and Gemma2 (up to 8B parameters). Other architectures are rejected.
-- **Cut types in v0.1:**
+- **Cut types:**
   - **Head ablation:** silence a query attention head (its `o_proj` columns are zeroed).
   - **Direction orthogonalization:** remove a behavior direction from the weights.
-- Both keep tensor shapes, so the result is GGUF compatible. Structural pruning is not in v0.1.
+- Both keep tensor shapes, so the result is GGUF compatible. Structural pruning is not supported yet.
 - **Verified on real weights:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) and GGUF loading
   (SmolLM2-135M Q8_0). Gemma2 runs on tiny random models in the tests.
 - The real effect of a cut is measured as KL divergence against 30 layer-matched random head sets,
@@ -161,7 +161,7 @@ whenever you apply a recipe you did not make.
 
 ## Status
 
-v0.1 backend: model loading, scanning, head activity maps, concept hunting, comparison, recipes,
+Version 0.2: model loading, scanning, head activity maps, concept hunting, comparison, recipes,
 export, local API and CLI. The web UI is done: model picker, heatmap, measuring, cutting, compare,
 concept hunt, save, drafts and restore, logit lens and attention patterns, and the 3D views (3D heatmap
 and the connection graph). An Android app runs GGUF models on the phone (heatmap, 3D heatmap, logit

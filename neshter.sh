@@ -10,7 +10,7 @@ if ! command -v uv >/dev/null 2>&1; then
   done
 fi
 if ! command -v uv >/dev/null 2>&1; then
-  echo "uv bulunamadi / uv not found. Neshter needs uv (https://docs.astral.sh/uv/)."
+  echo "uv not found. Neshter needs uv (https://docs.astral.sh/uv/)."
   printf "Install it now with Astral's official script (uv 0.13.6)? [y/N] "
   read -r answer || answer=n
   case "$answer" in

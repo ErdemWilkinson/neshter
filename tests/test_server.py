@@ -229,6 +229,14 @@ def test_endpoints_need_loaded_model(client, auth):
         assert "model" in r.json()["detail"].lower()
 
 
+@pytest.mark.parametrize("bad", [r"\\sunucu\paylasim\model", "//sunucu/paylasim/model", r"\\?\UNC\sunucu\paylasim\model"])
+def test_load_rejects_network_paths(client, auth, bad):
+    # A UNC path would make this machine authenticate to a remote share; no job may start.
+    r = client.post("/api/session/load", json={"path": bad}, headers=auth)
+    assert r.status_code == 422
+    assert r.json()["error_code"] == "invalid_input"
+
+
 def test_load_then_activity(client, auth, tiny_model_dir):
     job = client.post("/api/session/load", json={"path": str(tiny_model_dir)}, headers=auth).json()["job_id"]
     st = wait_done(client, auth, job)

@@ -368,7 +368,7 @@ def test_launcher_uses_lockfile_and_asks_before_installing_uv():
     assert 'set "TORCH_GROUPS=--no-group cpu --group gpu"' in lines
     assert lines.index('if /I "%NESHTER_TORCH%"=="cpu" goto launch') < lines.index("nvidia-smi -L >nul 2>nul")
     # choice: beklenmeyen hata kodu (0, Ctrl+C) asla kuruma gitmez; yalnızca 1 (Y) kurar
-    i = lines.index('choice /M "uv simdi kurulsun mu"')
+    i = lines.index('choice /M "Install uv now"')
     assert lines[i + 1 : i + 4] == ["if errorlevel 2 goto declined", "if errorlevel 1 goto install", "goto declined"]
     assert lines.index(":install") > i and "irm https://astral.sh/uv/" in lines[lines.index(":install") + 1]
     # uv run başarısızsa çift tıklayan hatayı görsün: pause, sonra çıkış

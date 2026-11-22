@@ -3,7 +3,7 @@ name = "neshter"
 version = "0.2.0"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-description = "Yerel LLM'lerin dikkat kafalarını inceleyen ve ablasyon yapan araç"
+description = "A tool that shows which attention heads of a local language model do what, and lets you measure and cut them"
 requires-python = ">=3.11"
 # Test edilen ana sürüm aralıkları (kod transformers 5.x davranışına dayanır: dtype=, katman yerleşimi,
 # 5.22 gizli durum kancaları). Yeni bir ana sürüm sessizce bozmasın.

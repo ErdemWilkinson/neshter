@@ -159,6 +159,11 @@ class LoadReq(_Req):
     name: str | None = Field(default=None, min_length=1, max_length=256)  # görünen ad (ör. "qwen2.5:7b")
     dtype: Literal["auto", "bfloat16", "float32"] = "auto"  # auto = politika (loader.pick_compute_dtype)
 
+    @model_validator(mode="after")
+    def _local_path_only(self) -> LoadReq:
+        _reject_unc(self.path)
+        return self
+
 
 class EffectReq(_Req):
     heads: list[tuple[int, int]] = Field(min_length=1)
@@ -198,12 +203,16 @@ class SuiteReq(_Req):
     quick: bool = False  # yalnızca hedef + QUICK_GUARD kategorisi, ≤ 64 token, 20 rastgele kontrol
 
 
+def _reject_unc(path: str) -> None:
+    """UNC (\\\\sunucu\\paylaşım, //sunucu/paylaşım, \\\\?\\UNC\\...): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler."""
+    if path.startswith(("\\\\", "//")):
+        raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir yol seçin.")
+
+
 def _check_out_dir(out_dir: str) -> None:
     if re.search(r"[\x00-\x1f]", out_dir):  # ör. satır sonu Modelfile'ın FROM satırına ulaşabilirdi
         raise ValueError("out_dir denetim karakteri içeremez.")
-    if out_dir.startswith(("\\\\", "//")):
-        # UNC (\\sunucu\paylaşım): makinenin uzak bir paylaşıma kimlik doğrulaması yapmasını önler.
-        raise ValueError("Ağ (UNC) yolları desteklenmiyor; yerel bir klasör seçin.")
+    _reject_unc(out_dir)
     if not Path(out_dir).is_absolute():
         raise ValueError("out_dir mutlak bir yol olmalı (ör. C:\\Modeller\\yeni-model).")
 

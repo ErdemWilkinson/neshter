@@ -61,10 +61,10 @@ haritası ve sohbet; sunucu ve internet gerekmez.
 ## Neleri destekler
 
 - **Model aileleri:** Llama, Qwen2 ve Gemma2 (8B parametreye kadar). Diğer mimariler reddedilir.
-- **v0.1 kesim türleri:**
+- **Kesim türleri:**
   - **Head susturma:** bir sorgu (Q) dikkat head'ini susturur (`o_proj` sütunları sıfırlanır).
   - **Yön ortogonalizasyonu:** bir davranış yönünü ağırlıklardan çıkarır.
-- İkisi de tensör şeklini korur, bu yüzden sonuç GGUF ile uyumludur. Yapısal budama v0.1'de yok.
+- İkisi de tensör şeklini korur, bu yüzden sonuç GGUF ile uyumludur. Yapısal budama henüz desteklenmiyor.
 - **Gerçek ağırlıklarda doğrulandı:** Qwen2 (Qwen2.5-0.5B), Llama (SmolLM2-135M) ve GGUF yükleme
   (SmolLM2-135M Q8_0). Gemma2 testlerde küçük rastgele modellerle çalışır.
 - Bir kesimin gerçek etkisi, katmanı eşleştirilmiş 30 rastgele head kümesine karşı KL ıraksaması olarak
@@ -167,7 +167,7 @@ kendi yapmadığın bir tarifi uygularken `--label-safety` kullan.
 
 ## Durum
 
-v0.1 arka ucu hazır: model yükleme, tarama, head etkinlik haritaları, davranış bulma, karşılaştırma,
+Sürüm 0.2: model yükleme, tarama, head etkinlik haritaları, davranış bulma, karşılaştırma,
 tarifler, dışa aktarma, yerel API ve komut satırı. Web arayüzü tamam: model seçici, ısı haritası, ölçme,
 kesme, karşılaştırma, davranış avı, kaydetme, taslaklar ve geri yükleme, katman katman tahmin ve dikkat
 desenleri, 3B görünümler (3B ısı haritası ve bağ grafiği). Android uygulaması GGUF modelleri telefonda
