@@ -69,8 +69,9 @@ haritası ve sohbet; sunucu ve internet gerekmez.
   (SmolLM2-135M Q8_0). Gemma2 testlerde küçük rastgele modellerle çalışır.
 - Bir kesimin gerçek etkisi, katmanı eşleştirilmiş 30 rastgele head kümesine karşı KL ıraksaması olarak
   ölçülür ve yüzdelik dilim ile permütasyon p değeri olarak bildirilir. Yön içeren tariflerde her yönün
-  kontrolü rastgele izotropik bir birim yöndür; bu zayıf bir karşılaştırmadır (API bunu
-  `direction_control: "isotropic"` diye etiketler). Tekil oranlar Wilson %95 aralığı taşır. Test seti
+  kontrolü, yönün en yüksek varyans gösterdiği katmandaki nötr istemlerin rastgele ikiye bölünmesinden
+  üretilen birim aktivasyon fark vektörlerinden çekilir (`direction_control: "empirical_diff"`; ikiden az
+  farklı istem verildiğinde `"isotropic"` yedeğine düşer). Tekil oranlar Wilson %95 aralığı taşır. Test seti
   farkları McNemar exact testiyle karşılaştırılır; p >= 0,05 ise sonuç "belirsiz" diye bildirilir. Holm
   düzeltmesi yalnızca hedef dışı kategoriler arasında uygulanır; hedef kategori ham McNemar p'sini kullanır.
 - Test setindeki KL ve perplexity kancalarla ölçülür; yön içeren tariflerin ürettiği cevaplar ise

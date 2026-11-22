@@ -229,7 +229,7 @@ class EffectResult:
     p_value: float  # (1 + #{rastgele >= kl}) / (1 + N): permütasyon p
     n_random: int
     layer_matched: bool  # tüm HEAD kontrolleri katman eşleşmeli mi (False: havuz yetmedi, en yakın katmanlardan tamamlandı)
-    direction_control: Literal["isotropic"] | None  # yön içeren tarifte "isotropic" (katman eşleşmez); aksi halde None
+    direction_control: Literal["empirical_diff", "isotropic"] | None  # yön içeren tarifte "empirical_diff" (≥2 istem, model içi fark vektörü) ya da "isotropic" (yedek); aksi halde None
 
 
 def _dedupe(interventions: Sequence[Intervention]) -> list[Intervention]:
@@ -288,36 +288,87 @@ def layer_matched_heads(
     return picked, not deficits
 
 
+def _match_direction_layer(resid: torch.Tensor, direction: torch.Tensor, window: Sequence[int]) -> int:
+    """Hedef yönün modelin artık akımında en çok varyans gösterdiği aday katmanı seçer."""
+    r = direction.detach().to(device="cpu", dtype=torch.float32)
+    norm = r.norm()
+    if norm <= 0:
+        return window[len(window) // 2]
+    r = r / norm
+    return max(window, key=lambda layer: float((resid[layer] @ r).var(unbiased=False)))
+
+
+def _sample_empirical_direction(acts: torch.Tensor, rng: random.Random) -> torch.Tensor | None:
+    """Aynı katmandaki istem aktivasyonlarını ([N, d]) rastgele ikiye bölüp birim ortalama fark yönü üretir."""
+    n = acts.shape[0]
+    if n < 2:
+        return None
+    mid = n // 2
+    idx = list(range(n))
+    for _ in range(8):
+        rng.shuffle(idx)
+        diff = acts[idx[:mid]].mean(dim=0) - acts[idx[mid:]].mean(dim=0)
+        norm = diff.norm()
+        if norm > 1e-8:
+            return diff / norm
+    return None
+
+
+def _build_dir_pools(
+    lm: LoadedModel, interventions: Sequence[Intervention], prompts: list[str]
+) -> tuple[list[torch.Tensor] | None, Literal["empirical_diff", "isotropic"] | None]:
+    """Yön içeren tariflerde katman eşleşmeli ampirik fark havuzu; <2 istemde ya da sabit aktivasyonda izotropik yedek."""
+    dirs = [iv for iv in interventions if isinstance(iv, DirectionAblation)]
+    if not dirs:
+        return None, None
+    if len(prompts) < 2:
+        return None, "isotropic"
+    from neshter.concepts.hunt import candidate_layers, last_token_resid
+
+    resid = last_token_resid(lm, prompts)
+    window = list(candidate_layers(lm.arch.n_layers))
+    pools = [resid[_match_direction_layer(resid, iv.direction, window)] for iv in dirs]
+    if not all((p - p.mean(dim=0, keepdim=True)).norm() > 1e-7 for p in pools):
+        return None, "isotropic"
+    return pools, "empirical_diff"
+
+
 def random_control(
     lm: LoadedModel,
     interventions: Sequence[Intervention],
     rng: random.Random,
     gen: torch.Generator,
+    dir_pools: Sequence[torch.Tensor] | None = None,
 ) -> tuple[list[Intervention], bool]:
     """Aynı biçimde rastgele kontrol — "rastgele kontrol"ün tek tanımı. (kontrol, katman_eşleşti_mi) döner.
 
     Her HeadAblation yerine katman eşleşmeli, seçilmemiş rastgele head (`layer_matched_heads`);
-    her DirectionAblation yerine rastgele izotropik birim yön.
-
-    Yön kontrolü: v0.1.1'de rastgele izotropik birim vektör kalır. Daha iyi kontrol (nötr
-    istemlerin rastgele bölünmesinden ortalama fark yönü, AT §4) v0.2'dedir.
+    her DirectionAblation yerine `dir_pools` verildiyse aynı katmandaki istem çiftlerinden birim
+    fark yönü (`empirical_diff`), verilmediyse rastgele izotropik birim yön (`isotropic`).
     """
     heads = [iv for iv in interventions if isinstance(iv, HeadAblation)]
     n_dirs = sum(isinstance(iv, DirectionAblation) for iv in interventions)
     picked, matched = layer_matched_heads(lm, heads, rng)
     control: list[Intervention] = list(picked)
-    for _ in range(n_dirs):
-        control.append(DirectionAblation(torch.randn(lm.arch.d_model, generator=gen)))
+    for idx in range(n_dirs):
+        vec = _sample_empirical_direction(dir_pools[idx], rng) if dir_pools is not None else None
+        if vec is None:
+            vec = torch.randn(lm.arch.d_model, generator=gen)
+        control.append(DirectionAblation(vec))
     return control, matched
 
 
 def _draw_controls(
-    lm: LoadedModel, interventions: Sequence[Intervention], n: int, seed: int
+    lm: LoadedModel,
+    interventions: Sequence[Intervention],
+    n: int,
+    seed: int,
+    dir_pools: Sequence[torch.Tensor] | None = None,
 ) -> tuple[list[list[Intervention]], bool]:
     """n rastgele kontrol (tek random.Random + torch.Generator, tohum `seed`; çekiş sırası sabit) ve
     hepsinin katman eşleşmeli olup olmadığı. Havuz yetmezse ValueError (ölçümden önce)."""
     rng, gen = random.Random(seed), torch.Generator().manual_seed(seed)
-    drawn = [random_control(lm, interventions, rng, gen) for _ in range(n)]
+    drawn = [random_control(lm, interventions, rng, gen, dir_pools=dir_pools) for _ in range(n)]
     return [control for control, _ in drawn], all(matched for _, matched in drawn)
 
 
@@ -360,7 +411,8 @@ def recipe_effect(
         raise ValueError(f"n_random en az 1 olmalı: {n_random}.")
     check_cancel(cancel)
     interventions = _dedupe(interventions)
-    drawn, layer_matched = _draw_controls(lm, interventions, n_random, seed)  # önce doğrula
+    dir_pools, dir_control = _build_dir_pools(lm, interventions, prompts)
+    drawn, layer_matched = _draw_controls(lm, interventions, n_random, seed, dir_pools=dir_pools)  # önce doğrula
 
     base = _log_probs_batch(lm, prompts, last_k, cancel)
     kl, kl_std = _target_kl(lm, base, prompts, interventions, last_k, progress)
@@ -386,7 +438,7 @@ def recipe_effect(
         p_value=(1 + sum(r >= kl for r in random_kls)) / (1 + n_random),
         n_random=n_random,
         layer_matched=layer_matched,
-        direction_control="isotropic" if any(isinstance(iv, DirectionAblation) for iv in interventions) else None,
+        direction_control=dir_control,
     )
 
 

@@ -68,8 +68,9 @@ heatmap and chat, with no server and no internet.
   (SmolLM2-135M Q8_0). Gemma2 runs on tiny random models in the tests.
 - The real effect of a cut is measured as KL divergence against 30 layer-matched random head sets,
   reported as a percentile and a permutation p-value. For recipes with directions the control for each
-  direction is a random isotropic unit direction, a weak baseline (the API labels it
-  `direction_control: "isotropic"`). Single rates carry Wilson 95% intervals. Test suite differences use
+  direction is drawn from the model itself as unit-norm activation difference vectors from random splits
+  of the neutral prompt set at the direction's peak-variance layer (`direction_control: "empirical_diff"`,
+  falling back to `"isotropic"` only when fewer than two distinct prompts are given). Single rates carry Wilson 95% intervals. Test suite differences use
   McNemar's exact test and are reported as "uncertain" (belirsiz) when p >= 0.05. Holm adjustment is
   applied across the non-target categories only; the target category uses its raw McNemar p.
 - Suite KL and perplexity are measured through hooks, while the generated answers of direction

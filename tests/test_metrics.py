@@ -285,9 +285,29 @@ def test_recipe_effect_with_direction_has_random_unit_control(lm, monkeypatch):
         assert not torch.allclose(dirs[0].direction, d.direction)
     again = m.recipe_effect(lm, [d, HeadAblation(0, 1)], ["bir iki üç dört beş"], n_random=2, seed=0)
     assert again == r  # tohumlu
-    assert r.direction_control == "isotropic" and r.layer_matched  # yön var: etiket dürüst, head'ler yine eşleşmiş
+    assert r.direction_control == "isotropic" and r.layer_matched  # tek istem: izotropik yedek, head'ler yine eşleşmiş
     ctrl, matched = m.random_control(lm, [d, HeadAblation(0, 1)], random.Random(0), torch.Generator().manual_seed(0))
     assert matched and len(ctrl) == 2  # artık (kontrol, eşleşti_mi) çifti döner
+
+
+def test_recipe_effect_with_direction_uses_empirical_diff_for_multiple_prompts(lm, monkeypatch):
+    import neshter.metrics as m
+    from neshter.interventions import DirectionAblation
+
+    seen = []
+    real = m._kl_from
+    monkeypatch.setattr(m, "_kl_from", lambda lm_, b, p, iv, k: seen.append(list(iv)) or real(lm_, b, p, iv, k))
+    d = DirectionAblation(torch.ones(lm.arch.d_model))
+    prompts = ["bir iki üç dört beş", "altı yedi sekiz dokuz on", "kedi köpek kuş balık at", "yaz kış bahar güz yağmur"]
+    r = m.recipe_effect(lm, [d], prompts, n_random=3, seed=7)
+    assert r.direction_control == "empirical_diff" and r.layer_matched
+    assert len(r.random_kls) == 3
+    for control in seen[1:]:
+        assert len(control) == 1 and isinstance(control[0], DirectionAblation)
+        assert control[0].direction.norm().item() == pytest.approx(1.0, abs=1e-5)
+        assert not torch.allclose(control[0].direction, d.direction / d.direction.norm())
+    again = m.recipe_effect(lm, [d], prompts, n_random=3, seed=7)
+    assert again == r  # aynı tohumla deterministik
 
 
 def test_effect_does_not_touch_global_seed(lm):
