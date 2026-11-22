@@ -100,7 +100,7 @@ python mobile/export/verify_engine.py <hf model folder> D:/neshter/mobile-build/
 # 2. the phone build of the UI (relative URLs, into mobile/web-dist)
 cd web && npm run build:mobile
 
-# 3. APK (outputs go to D:/neshter/android-build, outside OneDrive)
+# 3. APK (outputs go to neshter.buildRoot, D:/neshter/android-build by default; see gradle.properties)
 cd mobile/android && ./gradlew :app:assembleDebug
 ```
 

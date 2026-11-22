@@ -168,7 +168,7 @@ def test_shape_helpers():
 
 
 def test_fixture_form_truncates_and_scrubs():
-    form = _fixture_form({"p": "C:\\Users\\erdem\\x", "q": "/tmp/x", "s": "a" * 300, "l": [1, 2, 3]})
+    form = _fixture_form({"p": "C:\\Users\\someone\\x", "q": "/tmp/x", "s": "a" * 300, "l": [1, 2, 3]})
     assert form == {"p": PLACEHOLDER_PATH, "q": PLACEHOLDER_PATH, "s": "a" * 200, "l": [1, 2]}
 
 
