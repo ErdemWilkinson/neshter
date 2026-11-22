@@ -1,6 +1,6 @@
 [project]
 name = "neshter"
-version = "0.1.1"
+version = "0.2.0"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 description = "Yerel LLM'lerin dikkat kafalarını inceleyen ve ablasyon yapan araç"

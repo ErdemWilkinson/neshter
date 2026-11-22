@@ -23,7 +23,7 @@ def test_docs_have_no_private_links_or_local_paths():
 
 
 def test_version_is_0_1_1():
-    assert neshter.__version__ == "0.1.1"
+    assert neshter.__version__ == "0.2.0"
 
 
 def test_license_is_apache_2():
